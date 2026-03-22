@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mindrian-marketplace",
+  "description": "MindrianOS plugins for venture innovation and structured thinking",
+  "owner": {
+    "name": "Jonathan Sagir",
+    "email": "jonathan@mindrian.ai"
+  },
+  "plugins": [
+    {
+      "name": "mindrian-os",
+      "description": "MindrianOS -- Your AI innovation co-founder. Larry thinks with you through PWS methodology, builds your Data Room, and chains 38 framework commands intelligently.",
+      "category": "productivity",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/jsagir/mindrian-os-plugin.git"
+      },
+      "homepage": "https://mindrian.ai"
+    }
+  ]
+}
