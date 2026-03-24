@@ -14,10 +14,10 @@
   "plugins": [
     {
       "name": "mindrian-os",
-      "description": "41 commands, 5 agents, auto-organizing Data Room, meeting intelligence. Larry - modeled on the inventor of PWS methodology - thinks with you through venture innovation.",
-      "version": "0.3.0",
+      "description": "41 commands, 5 agents, auto-organizing Data Room, full meeting intelligence pipeline with cross-meeting convergence/contradiction detection, three-layer knowledge graph, team room with speaker profiles. Larry -- modeled on the inventor of PWS methodology -- thinks with you through venture innovation. Built on Simon's Architecture of Complexity.",
+      "version": "0.4.0",
       "category": "productivity",
-      "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph"],
+      "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git"
