@@ -193,4 +193,4 @@ MindrianOS and PWS are grounded in established research:
 
 ## License
 
-Proprietary. Copyright Jonathan Sagir / Mindrian.
+Proprietary. Copyright Jonathan Sagir & PWS / Mindrian.
