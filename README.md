@@ -9,7 +9,7 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v0.4.2-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v0.5.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
   [![Commands](https://img.shields.io/badge/commands-41-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![Frameworks](https://img.shields.io/badge/PWS_frameworks-26-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
@@ -88,15 +88,14 @@ mindrian-marketplace/
 └── README.md
 
 mindrian-os-plugin/
-├── .claude-plugin/plugin.json  # Plugin manifest (v0.4.2)
+├── .claude-plugin/plugin.json  # Plugin manifest (v0.5.0)
+├── bin/
+│   ├── mindrian-tools.cjs      # CLI entry point
+│   └── mindrian-mcp-server.cjs # MCP server (Desktop/Cowork)
+├── lib/core/                   # Shared modules (CLI + MCP)
+├── mcp-server-brain/           # Brain hosting (Express + StreamableHTTP)
 ├── commands/                   # 41 commands (/mindrian-os:*)
-├── skills/                     # Auto-activated intelligence
-│   ├── larry-personality/      # Larry's teaching voice
-│   ├── room-passive/           # Filing intelligence
-│   ├── room-proactive/         # Gap & contradiction detection
-│   ├── pws-methodology/        # Framework routing
-│   ├── context-engine/         # Session continuity
-│   └── brain-connector/        # Optional Brain enrichment
+├── skills/                     # Auto-activated intelligence (6 skills)
 ├── agents/                     # Larry, Brain, Grading, Research, Investor
 ├── hooks/                      # SessionStart, PostToolUse, Stop
 ├── scripts/                    # compute-state, build-graph, render-pdf, etc.
@@ -114,9 +113,23 @@ mindrian-os-plugin/
 
 ---
 
-## v2.0: Meeting Intelligence
+## v3.0: MCP Platform
 
-The Data Room is now a team intelligence system:
+**MindrianOS now works on every Claude surface.** One plugin, three ways to use it:
+
+| Surface | How | Setup |
+|---------|-----|-------|
+| **Claude Code** | Direct — hooks, scripts, full power | `claude plugin install mindrian-os@mindrian-marketplace` |
+| **Claude Desktop** | MCP server — 6 tools, 5 resources, 5 prompts | One line in `claude_desktop_config.json` |
+| **Cowork** | Shared MCP — multi-user Data Room | Same MCP config, shared `00_Context/` |
+
+**Brain Hosting** — Self-host the Brain MCP server (Neo4j + Pinecone) or get an API key for hosted access. Paid tier unlocks framework graph enrichment, calibrated grading, and cross-domain pattern discovery.
+
+**Dual Delivery** — Every command works identically on CLI and MCP. No feature gaps.
+
+---
+
+## v2.0: Meeting Intelligence
 
 ```
 Paste transcript / provide file / provide audio
@@ -129,7 +142,7 @@ Paste transcript / provide file / provide audio
     -> Updates knowledge graph with meeting/speaker/concept nodes
 ```
 
-**Connect Read AI, Vexa, or Recall.ai** via `/mindrian-os:setup meetings` -- then `--latest` auto-fetches transcripts. No paste required.
+**Connect Read AI, Vexa, or Recall.ai** via `/mindrian-os:setup meetings` — auto-fetch transcripts with `--latest`.
 
 ---
 
@@ -137,7 +150,7 @@ Paste transcript / provide file / provide audio
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mindrian-os** | v0.4.2 | MindrianOS powered by PWS. Data Room + Meeting Intelligence + Knowledge Graph. |
+| **mindrian-os** | v0.5.0 | MindrianOS powered by PWS. CLI + MCP dual delivery. Data Room, Meeting Intelligence, Knowledge Graph, Brain hosting. |
 
 ---
 
