@@ -73,7 +73,7 @@ Paste transcript / provide file / provide audio
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mindrian-os** | v0.4.0 | Your AI innovation co-founder. PWS methodology + Data Room + Meeting Intelligence + Knowledge Graph. |
+| **mindrian-os** | v0.4.2 | Your AI innovation co-founder. PWS methodology + Data Room + Meeting Intelligence + Knowledge Graph. |
 
 ---
 
