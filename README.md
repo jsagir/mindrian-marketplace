@@ -1,26 +1,29 @@
-<p align="center">
-  <img src="https://mindrianos-jsagirs-projects.vercel.app/logo_dark.svg" width="200" alt="MindrianOS" />
-</p>
+<div align="center">
+  <img src="https://mindrianos-jsagirs-projects.vercel.app/logo_dark.svg" alt="MindrianOS" width="160" />
 
-<h1 align="center">MindrianOS</h1>
+  # MindrianOS
 
-<p align="center">
-  <strong>Your project becomes your co-founder.</strong><br/>
-  MindrianOS powered by PWS -- the practical innovation methodology<br/>
-  developed by <a href="https://www.linkedin.com/in/lawrence-aronhime-8363894/">Prof. Lawrence Aronhime</a> (30+ years at Johns Hopkins University)<br/>
-  Built by <a href="https://www.linkedin.com/in/jonathansagir/">Jonathan Sagir</a>
-</p>
+  **Your project becomes your co-founder.**
 
-<p align="center">
-  <a href="https://mindrianos-jsagirs-projects.vercel.app">Website</a> ·
-  <a href="https://github.com/jsagir/mindrian-os-plugin">Plugin Repo</a> ·
-  <a href="https://mindrianos-jsagirs-projects.vercel.app/docs">Install Guide</a> ·
-  <a href="https://mindrianos-jsagirs-projects.vercel.app/roadmap">Roadmap</a>
-</p>
+  Powered by PWS -- the practical innovation methodology developed by
+  [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
+  Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
+
+  [![Plugin Version](https://img.shields.io/badge/plugin-v0.4.2-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-41-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Frameworks](https://img.shields.io/badge/PWS_frameworks-26-orange)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
+
+  [Website](https://mindrianos-jsagirs-projects.vercel.app) |
+  [Plugin Repo](https://github.com/jsagir/mindrian-os-plugin) |
+  [Install Guide](https://mindrianos-jsagirs-projects.vercel.app/docs) |
+  [Roadmap](https://mindrianos-jsagirs-projects.vercel.app/roadmap)
+
+</div>
 
 ---
 
-## Install
+## Quick Start
 
 ```bash
 # Add the marketplace (one time)
@@ -46,7 +49,7 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 
 PWS is the building blocks. MindrianOS is the operating system that runs them.
 
-**5 Venture Stages, 26 framework commands, one intelligent progression:**
+**5 Venture Stages. 26 framework commands. One intelligent progression.**
 
 | Stage | What You're Doing | PWS Frameworks |
 |-------|------------------|----------------|
@@ -71,8 +74,43 @@ Larry knows which stage you're in and which framework you need before you do.
 | **Team room** | Living team directory with speaker profiles, role-gap analysis, knowledge landscape |
 | **Knowledge graph** | Three-layer graph (Structure/Content/Intelligence) with [[wikilinks]], timeline mode, layer toggles |
 | **5 agents** | Larry, Brain Agent, Grading Agent, Research Agent, Investor Agent |
-| **PDF export** | Investment thesis, executive summary, due diligence report, venture profile, Minto-structured meeting report |
+| **PDF export** | Investment thesis, executive summary, due diligence report, venture profile, Minto meeting report |
 | **Brain** | 23K nodes, 170K+ relationships mapping how 79 PWS frameworks connect (optional MCP) |
+
+---
+
+## How It Works
+
+```text
+mindrian-marketplace/
+├── .claude-plugin/
+│   └── marketplace.json       # Plugin catalog for Claude Code
+└── README.md
+
+mindrian-os-plugin/
+├── .claude-plugin/plugin.json  # Plugin manifest (v0.4.2)
+├── commands/                   # 41 commands (/mindrian-os:*)
+├── skills/                     # Auto-activated intelligence
+│   ├── larry-personality/      # Larry's teaching voice
+│   ├── room-passive/           # Filing intelligence
+│   ├── room-proactive/         # Gap & contradiction detection
+│   ├── pws-methodology/        # Framework routing
+│   ├── context-engine/         # Session continuity
+│   └── brain-connector/        # Optional Brain enrichment
+├── agents/                     # Larry, Brain, Grading, Research, Investor
+├── hooks/                      # SessionStart, PostToolUse, Stop
+├── scripts/                    # compute-state, build-graph, render-pdf, etc.
+├── references/                 # PWS framework definitions + meeting protocols
+├── templates/                  # PDF templates (De Stijl styled)
+├── dashboard/                  # Knowledge graph viewer + chat
+├── pipelines/                  # ICM stage contracts
+└── CLAUDE.md                   # Architecture + Simon's basis theorem
+```
+
+- **Marketplace** publishes the catalog. Claude installs from it.
+- **Plugin** is self-contained. One command to install, zero config to start.
+- **Skills** auto-activate based on context. Larry is always present.
+- **Scripts** compute room state, build the knowledge graph, generate PDFs.
 
 ---
 
@@ -82,13 +120,13 @@ The Data Room is now a team intelligence system:
 
 ```
 Paste transcript / provide file / provide audio
-    → Larry identifies speakers (12 roles, auto-profiles)
-    → Classifies segments (insight, decision, action-item...)
-    → Files to Data Room sections with attribution
-    → Builds meeting archive (7-file package)
-    → Detects convergence and contradictions across meetings
-    → Tracks action items across meeting history
-    → Updates knowledge graph with meeting/speaker/concept nodes
+    -> Larry identifies speakers (12 roles, auto-profiles)
+    -> Classifies segments (insight, decision, action-item...)
+    -> Files to Data Room sections with attribution
+    -> Builds meeting archive (7-file package)
+    -> Detects convergence and contradictions across meetings
+    -> Tracks action items across meeting history
+    -> Updates knowledge graph with meeting/speaker/concept nodes
 ```
 
 **Connect Read AI, Vexa, or Recall.ai** via `/mindrian-os:setup meetings` -- then `--latest` auto-fetches transcripts. No paste required.
@@ -103,13 +141,34 @@ Paste transcript / provide file / provide audio
 
 ---
 
+## Example: Filing a Meeting
+
+```bash
+# Paste a transcript
+/mindrian-os:file-meeting
+
+# Or provide a file
+/mindrian-os:file-meeting --file meeting-notes.txt
+
+# Or transcribe audio (via Modulate Velma)
+/mindrian-os:file-meeting --audio recording.mp3
+
+# Or auto-fetch from Read AI
+/mindrian-os:file-meeting --latest
+```
+
+Larry identifies speakers, classifies every segment, files to the right room section with full provenance, and produces a meeting summary with decisions, action items, and cross-meeting intelligence.
+
+---
+
 ## Links
 
 - **Website**: [mindrianos-jsagirs-projects.vercel.app](https://mindrianos-jsagirs-projects.vercel.app)
 - **Plugin Repo**: [github.com/jsagir/mindrian-os-plugin](https://github.com/jsagir/mindrian-os-plugin)
 - **Blog**: [Case Study: When Frameworks Intersect](https://mindrianos-jsagirs-projects.vercel.app/blog/reverse-salient-case-study)
 - **PWS LinkedIn**: [Problems Worth Solving](https://www.linkedin.com/company/problem-solving-workspace/)
-- **Jonathan Sagir**: [LinkedIn](https://www.linkedin.com/in/jonathansagir/)
+- **Prof. Lawrence Aronhime**: [LinkedIn](https://www.linkedin.com/in/lawrence-aronhime-8363894/) -- PWS methodology inventor
+- **Jonathan Sagir**: [LinkedIn](https://www.linkedin.com/in/jonathansagir/) -- MindrianOS developer
 
 ---
 
