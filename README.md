@@ -9,7 +9,7 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v0.5.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v0.6.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
   [![Commands](https://img.shields.io/badge/commands-41-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![Frameworks](https://img.shields.io/badge/PWS_frameworks-26-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
@@ -30,7 +30,7 @@
 claude plugin marketplace add jsagir/mindrian-marketplace
 
 # Install MindrianOS
-claude plugin install mindrian-os@mindrian-marketplace
+claude plugin install mos@mindrian-marketplace
 ```
 
 Larry starts talking. The Room starts listening. No setup required.
@@ -88,13 +88,13 @@ mindrian-marketplace/
 └── README.md
 
 mindrian-os-plugin/
-├── .claude-plugin/plugin.json  # Plugin manifest (v0.5.0)
+├── .claude-plugin/plugin.json  # Plugin manifest (v0.6.0)
 ├── bin/
 │   ├── mindrian-tools.cjs      # CLI entry point
 │   └── mindrian-mcp-server.cjs # MCP server (Desktop/Cowork)
 ├── lib/core/                   # Shared modules (CLI + MCP)
 ├── mcp-server-brain/           # Brain hosting (Express + StreamableHTTP)
-├── commands/                   # 41 commands (/mindrian-os:*)
+├── commands/                   # 41 commands (/mos:*)
 ├── skills/                     # Auto-activated intelligence (6 skills)
 ├── agents/                     # Larry, Brain, Grading, Research, Investor
 ├── hooks/                      # SessionStart, PostToolUse, Stop
@@ -119,7 +119,7 @@ mindrian-os-plugin/
 
 | Surface | How | Setup |
 |---------|-----|-------|
-| **Claude Code** | Direct — hooks, scripts, full power | `claude plugin install mindrian-os@mindrian-marketplace` |
+| **Claude Code** | Direct — hooks, scripts, full power | `claude plugin install mos@mindrian-marketplace` |
 | **Claude Desktop** | MCP server — 6 tools, 5 resources, 5 prompts | One line in `claude_desktop_config.json` |
 | **Cowork** | Shared MCP — multi-user Data Room | Same MCP config, shared `00_Context/` |
 
@@ -142,7 +142,7 @@ Paste transcript / provide file / provide audio
     -> Updates knowledge graph with meeting/speaker/concept nodes
 ```
 
-**Connect Read AI, Vexa, or Recall.ai** via `/mindrian-os:setup meetings` — auto-fetch transcripts with `--latest`.
+**Connect Read AI, Vexa, or Recall.ai** via `/mos:setup meetings` — auto-fetch transcripts with `--latest`.
 
 ---
 
@@ -150,7 +150,7 @@ Paste transcript / provide file / provide audio
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mindrian-os** | v0.5.0 | MindrianOS powered by PWS. CLI + MCP dual delivery. Data Room, Meeting Intelligence, Knowledge Graph, Brain hosting. |
+| **mos** | v0.6.0 | MindrianOS powered by PWS. CLI + MCP dual delivery. `/mos:` commands with thinking traces. Data Room, Meeting Intelligence, Knowledge Graph, Brain hosting. |
 
 ---
 
@@ -158,16 +158,16 @@ Paste transcript / provide file / provide audio
 
 ```bash
 # Paste a transcript
-/mindrian-os:file-meeting
+/mos:file-meeting
 
 # Or provide a file
-/mindrian-os:file-meeting --file meeting-notes.txt
+/mos:file-meeting --file meeting-notes.txt
 
 # Or transcribe audio (via Modulate Velma)
-/mindrian-os:file-meeting --audio recording.mp3
+/mos:file-meeting --audio recording.mp3
 
 # Or auto-fetch from Read AI
-/mindrian-os:file-meeting --latest
+/mos:file-meeting --latest
 ```
 
 Larry identifies speakers, classifies every segment, files to the right room section with full provenance, and produces a meeting summary with decisions, action items, and cross-meeting intelligence.
