@@ -1,21 +1,29 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "mindrian-marketplace",
-  "description": "MindrianOS plugins for venture innovation and structured thinking",
+  "description": "MindrianOS - Your AI innovation co-founder. Stop thinking alone.",
   "owner": {
     "name": "Jonathan Sagir",
     "email": "jonathan@mindrian.ai"
   },
+  "metadata": {
+    "version": "1.1.0",
+    "website": "https://mindrianos-jsagirs-projects.vercel.app",
+    "repository": "https://github.com/jsagir/mindrian-marketplace"
+  },
   "plugins": [
     {
       "name": "mindrian-os",
-      "description": "MindrianOS -- Your AI innovation co-founder. Larry thinks with you through PWS methodology, builds your Data Room, and chains 38 framework commands intelligently.",
+      "description": "41 commands, 5 agents, auto-organizing Data Room, meeting intelligence. Larry - modeled on the inventor of PWS methodology - thinks with you through venture innovation.",
+      "version": "0.3.0",
       "category": "productivity",
+      "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph"],
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git"
       },
-      "homepage": "https://mindrian.ai"
+      "homepage": "https://mindrianos-jsagirs-projects.vercel.app",
+      "license": "Proprietary"
     }
   ]
 }
