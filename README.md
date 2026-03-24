@@ -77,30 +77,39 @@ Paste transcript / provide file / provide audio
 
 ---
 
-## The Theoretical Foundation
+## Problems Worth Solving (PWS) -- The Methodology
 
-MindrianOS is not a collection of prompts. It is a principled system built on:
+MindrianOS is the software implementation of **PWS (Problems Worth Solving)** -- a practical innovation methodology developed by **Prof. Lawrence Aronhime** over 30+ years of teaching at Johns Hopkins University. PWS isn't a theory. It's a battle-tested system for turning undefined problems into fundable ventures.
 
-| Theorist | Contribution | How MindrianOS Uses It |
-|----------|-------------|----------------------|
+**The core insight:** Most startups fail because they solve the wrong problem. PWS teaches you to find problems worth solving *before* you build solutions.
+
+**5 Venture Stages, each with matched frameworks:**
+
+| Stage | What You're Doing | Key Frameworks |
+|-------|------------------|----------------|
+| **Pre-Opportunity** | Still looking for problems | Scenario Analysis, Beautiful Question, Trending to the Absurd |
+| **Opportunity Identified** | Found a problem, understanding it deeply | JTBD, Nested Hierarchies, Domain Explorer |
+| **Problem Validated** | Confirmed the problem is real and worth solving | Root Cause, Systems Thinking, Red Team |
+| **Solution Designed** | Building and testing solutions | Lean Canvas, Minto, HSI Cross-Domain Scoring |
+| **Investment Ready** | Preparing for funding | Investment Thesis, Deep Grade, Scenario Plan |
+
+Larry knows which stage you're in and which framework you need before you do.
+
+---
+
+## The Foundation -- Why It Works
+
+PWS is the practical methodology. These theorists explain *why* it works:
+
+| Source | Contribution | How MindrianOS Uses It |
+|--------|-------------|----------------------|
+| **Aronhime (30+ years)** | PWS Methodology | 26 framework commands, 5-stage progression, Larry's teaching voice. The HOW. |
 | **Simon (1962)** | Architecture of Complexity | Room sections = near-decomposable subsystems. Folder structure IS the hierarchy. |
 | **Rittel & Webber (1973)** | Wicked Problems | The venture IS a wicked problem. The Data Room manages it. |
 | **Van Clief & McDermott (2026)** | ICM | Folder structure IS the code. No framework needed. |
 | **Tetlock (2015)** | Superforecasting | Intelligence layer = Bayesian updating across meetings and rooms. |
 | **Hughes (1983)** | Reverse Salients | Cross-relationship scan finds where venture understanding lags. |
 | **Knight (1921)** | Risk vs Uncertainty | Risk can be managed. Uncertainty must be navigated. MindrianOS navigates. |
-
----
-
-## Problems Worth Solving (PWS)
-
-MindrianOS implements the PWS methodology through 5 venture stages:
-
-```
-PRE-OPPORTUNITY  ->  DISCOVERY  ->  VALIDATION  ->  DESIGN  ->  INVESTMENT
-```
-
-Each stage has matched commands. Larry knows which one you need before you do.
 
 ---
 
