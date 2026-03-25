@@ -15,7 +15,7 @@
     {
       "name": "mos",
       "description": "46 commands, 7 agents, Reasoning Engine with Minto/MECE per-section critical thinking, embedded knowledge graph (KuzuDB LazyGraph), MCP server for Desktop/Cowork, Brain hosting, Opportunity Bank, Funding Room, AI Team Personas, persistent chain-of-thought. Two-graph architecture + autonomous methodology orchestration. Larry -- modeled on the inventor of PWS methodology -- thinks with you through venture innovation.",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {
