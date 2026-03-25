@@ -14,8 +14,8 @@
   "plugins": [
     {
       "name": "mos",
-      "description": "43 commands, 6 agents, auto-organizing Data Room, meeting intelligence, knowledge graph, team room, MCP server for Desktop/Cowork, Brain hosting, Opportunity Bank with grant discovery, Funding Room with lifecycle tracking. Larry -- modeled on the inventor of PWS methodology -- thinks with you through venture innovation.",
-      "version": "0.7.0",
+      "description": "44 commands, 7 agents, auto-organizing Data Room, meeting intelligence, knowledge graph, team room, MCP server for Desktop/Cowork, Brain hosting, Opportunity Bank, Funding Room, AI Team Personas with De Bono Six Hats. Larry -- modeled on the inventor of PWS methodology -- thinks with you through venture innovation.",
+      "version": "0.8.0",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {
