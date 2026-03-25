@@ -14,8 +14,8 @@
   "plugins": [
     {
       "name": "mos",
-      "description": "49 commands, 7 agents, auto-organizing Data Room, meeting intelligence, embedded knowledge graph (KuzuDB LazyGraph), team room, MCP server for Desktop/Cowork, Brain hosting, Opportunity Bank, Funding Room, AI Team Personas. Two-graph architecture: Brain (methodology) + Room Graph (venture data). Larry -- modeled on the inventor of PWS methodology -- thinks with you through venture innovation.",
-      "version": "0.9.0",
+      "description": "46 commands, 7 agents, Reasoning Engine with Minto/MECE per-section critical thinking, embedded knowledge graph (KuzuDB LazyGraph), MCP server for Desktop/Cowork, Brain hosting, Opportunity Bank, Funding Room, AI Team Personas, persistent chain-of-thought. Two-graph architecture + autonomous methodology orchestration. Larry -- modeled on the inventor of PWS methodology -- thinks with you through venture innovation.",
+      "version": "1.0.0",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {

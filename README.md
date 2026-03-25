@@ -62,7 +62,7 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | **45 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding |
 | **49 MCP tools** | Every command works on Desktop and Cowork via hierarchical MCP router |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
-| **Embedded knowledge graph** | KuzuDB LazyGraph -- inter-room relationships grow as you file artifacts. Natural language queries. |
+| **Embedded knowledge graph** | Inter-room relationships grow as you file artifacts. Natural language queries via Larry. |
 | **Meeting intelligence** | File transcripts, identify speakers, classify segments, track action items, detect convergence and contradictions |
 | **AI Team Personas** | 6 De Bono Thinking Hat perspectives generated from YOUR room data |
 | **Opportunity Bank** | Context-driven grant discovery. Larry reads your room and finds relevant opportunities. |
@@ -179,15 +179,15 @@ Larry knows which stage you're in and which framework you need before you do.
 
 ---
 
-## Two-Graph Architecture
+## Two Levels of Intelligence
 
-MindrianOS uses two knowledge graphs that work together:
+MindrianOS uses two knowledge layers that work together:
 
 ```
-Brain (Neo4j, remote)              Room Graph (KuzuDB, local)
-23K nodes of methodology           YOUR venture's relationships
-170K+ framework connections        Grows as you file artifacts
-Serves via MCP                     Embedded, zero server
+Brain (remote, optional)           Room Graph (local, always on)
+Methodology intelligence           YOUR venture's relationships
+Framework chains + calibration     Grows as you file artifacts
+Connects via API key               Embedded, zero server
 
          Brain tells you HOW to think
          Room Graph tells you WHAT your data says
@@ -230,10 +230,10 @@ Meeting filing pipeline (paste/file/audio + Velma transcription). Speaker identi
 ### v3.0 MCP Platform & Intelligence Expansion (shipped 2026-03-25)
 - **Phase 10:** Shared core library (mindrian-tools.cjs)
 - **Phase 11:** MCP server for Desktop/Cowork (6 hierarchical tools, 5 resources, 5 prompts)
-- **Phase 12:** Brain hosting on Render with Supabase-backed API key auth
+- **Phase 12:** Brain hosting with API key management
 - **Phase 13:** Opportunity Bank (context-driven grant discovery) + Funding Room (4-stage lifecycle)
 - **Phase 14:** AI Team Personas (De Bono Six Hats from room intelligence)
-- **Phase 15:** User Knowledge Graph (KuzuDB LazyGraph, inter-room relationships, NL queries)
+- **Phase 15:** User Knowledge Graph (embedded graph, inter-room relationships, NL queries)
 - **UX:** `/mos:` prefix, thinking traces, visual confirmations, room-aware status line
 
 ---
@@ -250,7 +250,7 @@ mindrian-os-plugin/
 │   ├── core/                   # Shared modules (room-ops, state-ops, graph-ops, etc.)
 │   ├── mcp/                    # MCP tools, resources, prompts, Larry context
 │   └── parity/                 # CLI/MCP parity check (CI gate)
-├── mcp-server-brain/           # Brain hosting (Express + StreamableHTTP + Supabase auth)
+├── mcp-server-brain/           # Brain hosting server
 ├── commands/                   # 45 commands (/mos:*)
 ├── skills/                     # Auto-activated (room-passive, room-proactive, larry-personality, etc.)
 ├── agents/                     # Larry, Brain, Grading, Research, Investor, Scanner, Persona
