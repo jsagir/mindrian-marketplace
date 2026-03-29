@@ -7,15 +7,15 @@
     "email": "jonathan@mindrian.ai"
   },
   "metadata": {
-    "version": "1.3.0",
+    "version": "1.4.0",
     "website": "https://mindrianos-jsagirs-projects.vercel.app",
     "repository": "https://github.com/jsagir/mindrian-marketplace"
   },
   "plugins": [
     {
       "name": "mos",
-      "description": "47 commands, 7 agents, Wikipedia-style Data Room wiki with BYOAPI chat, per-page PDF, onboarding tour. Reasoning Engine, embedded knowledge graph (KuzuDB), MCP server, Brain hosting, Opportunity Bank, Funding Room, AI Personas, De Stijl visual identity. Created by Jonathan Sagir, powered by PWS methodology.",
-      "version": "1.3.0",
+      "description": "50+ commands, 8 agents, Multi-Room Management, Autonomous Engine (/mos:act with Brain-driven framework selection, chain mode), CLI UI Ruling System (4-zone anatomy, 5 body shapes), Brain API key management, Admin Panel, De Stijl HTML export with 4 views, Wikipedia-style Data Room wiki. Created by Jonathan Sagir, powered by PWS methodology.",
+      "version": "1.4.0",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {

@@ -9,10 +9,10 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v0.9.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-45-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.4.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-50+-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![MCP Tools](https://img.shields.io/badge/MCP_tools-49-teal)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Agents](https://img.shields.io/badge/agents-7-orange)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
 
   [Website](https://mindrianos-jsagirs-projects.vercel.app) |
@@ -59,15 +59,20 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | Capability | What It Does |
 |-----------|-------------|
 | **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **45 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding |
+| **50+ commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act |
 | **49 MCP tools** | Every command works on Desktop and Cowork via hierarchical MCP router |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
+| **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
+| **Autonomous Engine** | `/mos:act` -- Brain-driven framework selection with thinking traces, subagent isolation, chain mode (3-5 frameworks), dry-run |
+| **CLI UI Ruling System** | 4-zone output anatomy, 5 body shapes, 12 glyphs, session start contract. Every interaction follows the same visual grammar. |
+| **Admin Panel** | Hidden `/mos:admin` for Brain API key management. Self-teaching, consequence previews. |
+| **De Stijl HTML Export** | Single-file export with 4 views: Mondrian grid, document reader, intelligence, Cytoscape knowledge graph |
 | **Embedded knowledge graph** | Inter-room relationships grow as you file artifacts. Natural language queries via Larry. |
 | **Meeting intelligence** | File transcripts, identify speakers, classify segments, track action items, detect convergence and contradictions |
 | **AI Team Personas** | 6 De Bono Thinking Hat perspectives generated from YOUR room data |
 | **Opportunity Bank** | Context-driven grant discovery. Larry reads your room and finds relevant opportunities. |
 | **Funding Room** | 4-stage lifecycle tracking: Discovered > Researched > Applying > Submitted |
-| **7 agents** | Larry, Brain, Grading, Research, Investor, Opportunity Scanner, Persona Analyst |
+| **8 agents** | Larry, Brain, Grading, Research, Investor, Opportunity Scanner, Persona Analyst, Framework Runner |
 | **PDF export** | Thesis, summary, report, profile, Minto meeting report |
 | **Brain** | 23K nodes, 170K+ relationships. Optional MCP for enriched intelligence. |
 | **Two-graph architecture** | Brain (methodology intelligence) + Room Graph (venture intelligence) |
