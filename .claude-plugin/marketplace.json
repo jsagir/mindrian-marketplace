@@ -1,21 +1,21 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "mindrian-marketplace",
-  "description": "MindrianOS - Your AI innovation co-founder. Stop thinking alone.",
+  "description": "MindrianOS - Your AI innovation co-founder. 51 commands, 8 agents, 49 MCP tools. Git integration, KuzuDB backbone, proactive intelligence.",
   "owner": {
     "name": "Jonathan Sagir",
     "email": "jonathan@mindrian.ai"
   },
   "metadata": {
-    "version": "1.4.0",
+    "version": "1.4.1",
     "website": "https://mindrianos-jsagirs-projects.vercel.app",
     "repository": "https://github.com/jsagir/mindrian-marketplace"
   },
   "plugins": [
     {
       "name": "mos",
-      "description": "50+ commands, 8 agents, Multi-Room Management, Autonomous Engine (/mos:act with Brain-driven framework selection, chain mode), CLI UI Ruling System (4-zone anatomy, 5 body shapes), Brain API key management, Admin Panel, De Stijl HTML export with 4 views, Wikipedia-style Data Room wiki. Created by Jonathan Sagir, powered by PWS methodology.",
-      "version": "1.4.0",
+      "description": "51 commands, 8 agents, 49 MCP tools. Git integration (optional), KuzuDB automatic backbone, HSI pipeline, cross-room detection, proactive intelligence. Multi-Room Management, Autonomous Engine, CLI UI Ruling System, Brain API key management, Admin Panel, De Stijl HTML export with 4 views, Wikipedia-style Data Room wiki. Created by Jonathan Sagir, powered by PWS methodology.",
+      "version": "1.4.1",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {

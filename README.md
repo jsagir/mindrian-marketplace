@@ -9,8 +9,8 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.4.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-50+-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.4.1-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-51-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![MCP Tools](https://img.shields.io/badge/MCP_tools-49-teal)](https://github.com/jsagir/mindrian-os-plugin)
   [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
@@ -59,7 +59,7 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | Capability | What It Does |
 |-----------|-------------|
 | **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **50+ commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act |
+| **51 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git integration |
 | **49 MCP tools** | Every command works on Desktop and Cowork via hierarchical MCP router |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
 | **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
@@ -76,6 +76,11 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | **PDF export** | Thesis, summary, report, profile, Minto meeting report |
 | **Brain** | 23K nodes, 170K+ relationships. Optional MCP for enriched intelligence. |
 | **Two-graph architecture** | Brain (methodology intelligence) + Room Graph (venture intelligence) |
+| **Git integration** | Optional git tracking for room artifacts. Automatic commits on filing. |
+| **KuzuDB backbone** | Automatic embedded graph database powering cross-room detection and proactive intelligence |
+| **HSI pipeline** | Human Systems Integration pipeline for venture readiness assessment |
+| **Cross-room detection** | Automatic pattern and contradiction detection across multiple rooms |
+| **Proactive intelligence** | Larry surfaces gaps, convergence signals, and contradictions without being asked |
 
 ---
 
@@ -275,7 +280,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v0.9.0 | MindrianOS powered by PWS. 45 commands, 49 MCP tools, 7 agents. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting. |
+| **mos** | v1.4.1 | MindrianOS powered by PWS. 51 commands, 49 MCP tools, 8 agents. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 
