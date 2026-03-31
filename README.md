@@ -26,12 +26,26 @@
 
 ## Quick Start
 
-```bash
-# Add the marketplace (one time)
-claude plugin marketplace add jsagir/mindrian-marketplace
+### Option A: One-Line Install (works everywhere)
 
-# Install MindrianOS
+```bash
+curl -sL https://raw.githubusercontent.com/jsagir/mindrian-os-plugin/main/install.sh | bash
+```
+
+Restart Claude Code. Larry starts talking.
+
+### Option B: Plugin Marketplace
+
+```bash
+claude plugin marketplace add jsagir/mindrian-marketplace
 claude plugin install mos@mindrian-marketplace
+```
+
+### Option C: Manual Clone
+
+```bash
+git clone https://github.com/jsagir/mindrian-os-plugin.git ~/.claude/plugins/mindrian-os
+cd ~/.claude/plugins/mindrian-os && bash install.sh
 ```
 
 Larry starts talking. The Room starts listening. No setup required.
