@@ -7,15 +7,15 @@
     "email": "jonathan@mindrian.ai"
   },
   "metadata": {
-    "version": "1.4.1",
+    "version": "1.5.0",
     "website": "https://mindrianos-jsagirs-projects.vercel.app",
     "repository": "https://github.com/jsagir/mindrian-marketplace"
   },
   "plugins": [
     {
       "name": "mos",
-      "description": "51 commands, 8 agents, 49 MCP tools. Git integration (optional), KuzuDB automatic backbone, HSI pipeline, cross-room detection, proactive intelligence. Multi-Room Management, Autonomous Engine, CLI UI Ruling System, Brain API key management, Admin Panel, De Stijl HTML export with 4 views, Wikipedia-style Data Room wiki. Created by Jonathan Sagir, powered by PWS methodology.",
-      "version": "1.4.1",
+      "description": "52 commands, 8 agents, 49 MCP tools. 6-View Data Room Presentation System (Dashboard, Wiki, Deck, Insights, Diagrams, Graph). Canvas knowledge graph with particles and glow. BYOAPI chat with Larry. Git integration, KuzuDB backbone, HSI pipeline, Vercel one-click deploy. Created by Jonathan Sagir, powered by PWS methodology.",
+      "version": "1.5.0",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
       "source": {
