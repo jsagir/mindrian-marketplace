@@ -9,8 +9,8 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.6.1_Powerhouse-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-62-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.6.2_RoomHub-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-63-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![MCP Tools](https://img.shields.io/badge/MCP_tools-49-teal)](https://github.com/jsagir/mindrian-os-plugin)
   [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Hooks](https://img.shields.io/badge/hooks-9-red)](https://github.com/jsagir/mindrian-os-plugin)
@@ -75,7 +75,7 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | Capability | What It Does |
 |-----------|-------------|
 | **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **62 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git integration + model routing + sentinel + Design-by-Analogy |
+| **63 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git integration + model routing + sentinel + Design-by-Analogy + snapshot |
 | **49 MCP tools** | Every command works on Desktop and Cowork via hierarchical MCP router |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
 | **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
@@ -273,6 +273,14 @@ The transformation from reactive teaching partner to proactive venture intellige
 - **Platform Optimization:** Prompt cache optimization, modular CLAUDE.md via @include, deep link protocol, environment variable tuning.
 - **Future-Proofing:** KAIROS-compatible room/.context/, Coordinator Mode team manifest, formal MWP specification (525 lines), moat mandate documentation.
 
+### v6.2 RoomHub + SnapshotHub (shipped 2026-03-31)
+The Room becomes a living, adaptive intelligence hub:
+- **RoomHub:** Living adaptive intelligence hub for any Room. Adaptive Room detection (venture/website/research/general) tailors the experience to your project type.
+- **SnapshotHub:** `/mos:snapshot` exports a 7-view standalone HTML -- Overview, Library, Narrative, Synthesis, Blueprint, Constellation, Chat.
+- **12-Thread Constellation Graph:** Interactive knowledge graph with De Stijl colors and spectral coloring.
+- **Generative Fabric Chat:** Query KuzuDB via natural language directly inside the SnapshotHub.
+- **JTBD-Powered Contextual Discovery:** Every 3-7 turns, Larry surfaces the next command based on your state and the Jobs-To-Be-Done framework.
+
 ---
 
 ## Plugin Structure
@@ -307,7 +315,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.6.1 | MindrianOS powered by PWS. 62 commands, 49 MCP tools, 8 agents, 9 hooks, 12 edge types. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence, spectral OM-HMM. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
+| **mos** | v1.6.2 | MindrianOS powered by PWS. 63 commands, 49 MCP tools, 8 agents, 9 hooks, 12 edge types. RoomHub, SnapshotHub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 
