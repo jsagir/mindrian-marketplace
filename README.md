@@ -9,10 +9,12 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.6.0-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-58-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.6.1_Powerhouse-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-62-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![MCP Tools](https://img.shields.io/badge/MCP_tools-49-teal)](https://github.com/jsagir/mindrian-os-plugin)
   [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Hooks](https://img.shields.io/badge/hooks-9-red)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Edge Types](https://img.shields.io/badge/edge_types-12-yellow)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
 
   [Website](https://mindrianos-jsagirs-projects.vercel.app) |
@@ -73,7 +75,7 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | Capability | What It Does |
 |-----------|-------------|
 | **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **51 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git integration |
+| **62 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git integration + model routing + sentinel + Design-by-Analogy |
 | **49 MCP tools** | Every command works on Desktop and Cowork via hierarchical MCP router |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
 | **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
@@ -260,6 +262,17 @@ Meeting filing pipeline (paste/file/audio + Velma transcription). Speaker identi
 - **Phase 15:** User Knowledge Graph (embedded graph, inter-room relationships, NL queries)
 - **UX:** `/mos:` prefix, thinking traces, visual confirmations, room-aware status line
 
+### v1.6.0 Powerhouse (shipped 2026-03-31)
+The transformation from reactive teaching partner to proactive venture intelligence engine:
+- **Model Routing:** Per-agent model selection (quality/balanced/budget/inherit) with venture-stage adaptive hints. `/mos:models` command. 60-86% cost reduction.
+- **Hook Expansion:** 6 new Claude Code hooks (PreCompact, PostCompact, FileChanged, CwdChanged, SubagentStop, TaskCompleted). Larry never loses context. External edits auto-sync. Agent results auto-file.
+- **Parallel Agents:** `--swarm`, `--parallel`, `--full`, `--broad` flags on act/persona/grade/research. 3x speed via simultaneous execution.
+- **Spectral OM-HMM:** Markov chain thinking-mode analysis replaces keyword-density scoring. Per-artifact spectral profiles. 15% breakthrough bonus for genuine integrative thinking.
+- **Design-by-Analogy:** 5-stage pipeline (Decompose/Abstract/Search/Transfer/Validate). TRIZ contradiction matrix (39x39). SAPPhIRE functional encoding. 3 new KuzuDB edge types. `/mos:find-analogies` command.
+- **Sentinel Intelligence:** `/mos:scout` for scheduled room health checks, grant deadline monitoring, competitor watch, HSI recomputation.
+- **Platform Optimization:** Prompt cache optimization, modular CLAUDE.md via @include, deep link protocol, environment variable tuning.
+- **Future-Proofing:** KAIROS-compatible room/.context/, Coordinator Mode team manifest, formal MWP specification (525 lines), moat mandate documentation.
+
 ---
 
 ## Plugin Structure
@@ -294,7 +307,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.4.1 | MindrianOS powered by PWS. 51 commands, 49 MCP tools, 8 agents. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
+| **mos** | v1.6.1 | MindrianOS powered by PWS. 62 commands, 49 MCP tools, 8 agents, 9 hooks, 12 edge types. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence, spectral OM-HMM. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 

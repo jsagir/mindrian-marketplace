@@ -1,23 +1,23 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "mindrian-marketplace",
-  "description": "MindrianOS - Your AI innovation co-founder. 51 commands, 8 agents, 49 MCP tools. Git integration, KuzuDB backbone, proactive intelligence.",
+  "description": "MindrianOS - Your AI innovation co-founder. 62 commands, 8 agents, 49 MCP tools, 9 hooks, 12 edge types. Model routing, parallel agents, Design-by-Analogy, sentinel intelligence.",
   "owner": {
     "name": "Jonathan Sagir",
     "email": "jonathan@mindrian.ai"
   },
   "metadata": {
-    "version": "1.5.0",
+    "version": "1.6.1",
     "website": "https://mindrianos-jsagirs-projects.vercel.app",
     "repository": "https://github.com/jsagir/mindrian-marketplace"
   },
   "plugins": [
     {
       "name": "mos",
-      "description": "52 commands, 8 agents, 49 MCP tools. 6-View Data Room Presentation System (Dashboard, Wiki, Deck, Insights, Diagrams, Graph). Canvas knowledge graph with particles and glow. BYOAPI chat with Larry. Git integration, KuzuDB backbone, HSI pipeline, Vercel one-click deploy. Created by Jonathan Sagir, powered by PWS methodology.",
-      "version": "1.5.0",
+      "description": "62 commands, 8 agents, 49 MCP tools, 9 hooks, 12 KuzuDB edge types, 3 pipelines. Model routing with venture-stage hints. Parallel agent swarm execution. Design-by-Analogy pipeline (TRIZ + SAPPhIRE). Sentinel intelligence. Spectral OM-HMM innovation discovery. MWP formal specification. Created by Jonathan Sagir, powered by PWS methodology.",
+      "version": "1.6.1",
       "category": "productivity",
-      "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems"],
+      "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems", "model-routing", "parallel-agents", "design-by-analogy", "triz", "spectral-markov", "sentinel"],
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git"
