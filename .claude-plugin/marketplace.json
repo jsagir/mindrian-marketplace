@@ -1,21 +1,21 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "mindrian-marketplace",
-  "description": "MindrianOS - Your AI innovation co-founder. 63 commands, 8 agents, 49 MCP tools, 9 hooks, 12 edge types. RoomHub, SnapshotHub, Fabric Chat, Brain Proactive Command Engine, JTBD contextual discovery.",
+  "description": "MindrianOS - Your AI innovation co-founder. 66 commands, 64 MCP tools (9 routers), 3 MCP Apps, 8 agents, 9 hooks, 12 edge types. Works on CLI + Desktop + Cowork. Brain-driven routing, scheduled intelligence, persistent De Bono hats, token optimization.",
   "owner": {
     "name": "Jonathan Sagir",
     "email": "jonathan@mindrian.ai"
   },
   "metadata": {
-    "version": "1.6.3",
+    "version": "1.8.1",
     "website": "https://mindrianos-jsagirs-projects.vercel.app",
     "repository": "https://github.com/jsagir/mindrian-marketplace"
   },
   "plugins": [
     {
       "name": "mos",
-      "description": "63 commands, 8 agents, 49 MCP tools, 9 hooks, 12 KuzuDB edge types, 3 pipelines. RoomHub adaptive intelligence hub. SnapshotHub 7-view HTML export. Generative Fabric Chat (KuzuDB NL queries). JTBD-powered contextual command discovery. Model routing. Parallel agents. Design-by-Analogy (TRIZ + SAPPhIRE). Sentinel intelligence. Created by Jonathan Sagir, powered by PWS methodology.",
-      "version": "1.6.3",
+      "description": "66 commands, 64 MCP tools (9 routers), 3 MCP Apps (dashboard/wiki/graph), 8 agents, 9 hooks, 12 KuzuDB edge types. Works on CLI + Desktop + Cowork. Brain-driven routing, scheduled intelligence, persistent De Bono hats, token optimization, pipeline chaining, session catch-up. Created by Jonathan Sagir, powered by PWS methodology.",
+      "version": "1.8.1",
       "category": "productivity",
       "keywords": ["innovation", "methodology", "venture", "pws", "thinking-partner", "data-room", "knowledge-graph", "meeting-intelligence", "team-room", "wicked-problems", "model-routing", "parallel-agents", "design-by-analogy", "triz", "spectral-markov", "sentinel", "roomhub", "snapshothub", "fabric-chat", "jtbd-discovery", "brain-commands"],
       "source": {

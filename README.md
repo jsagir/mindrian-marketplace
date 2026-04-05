@@ -9,13 +9,15 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.7.1_Causality_Engine-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-68-green)](https://github.com/jsagir/mindrian-os-plugin)
-  [![MCP Tools](https://img.shields.io/badge/MCP_tools-49-teal)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.8.1_Cowork_Adaptation-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-66-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![MCP Tools](https://img.shields.io/badge/MCP_tools-64_(9_routers)-teal)](https://github.com/jsagir/mindrian-os-plugin)
+  [![MCP Apps](https://img.shields.io/badge/MCP_Apps-3_(dashboard,_wiki,_graph)-cyan)](https://github.com/jsagir/mindrian-os-plugin)
   [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Hooks](https://img.shields.io/badge/hooks-9-red)](https://github.com/jsagir/mindrian-os-plugin)
   [![Edge Types](https://img.shields.io/badge/edge_types-12-yellow)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-23K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Surfaces](https://img.shields.io/badge/surfaces-CLI_+_Desktop_+_Cowork-brightgreen)](https://github.com/jsagir/mindrian-os-plugin)
 
   [Website](https://mindrianos-jsagirs-projects.vercel.app) |
   [Plugin Repo](https://github.com/jsagir/mindrian-os-plugin) |
@@ -56,9 +58,9 @@ Larry starts talking. The Room starts listening. No setup required.
 
 | Surface | How | What You Do |
 |---------|-----|-------------|
-| **Claude Code CLI** | Plugin (full power) | `claude plugin install mos@mindrian-marketplace` |
-| **Claude Desktop** | MCP server | Add one line to `claude_desktop_config.json` |
-| **Cowork** | Shared MCP | Same config, multi-user Data Room |
+| **Claude Code CLI** | Plugin (full power) | `claude plugin install mos@mindrian-marketplace` -- hooks, scripts, full UI |
+| **Claude Desktop** | MCP server (auto-wired) | Plugin install auto-registers MCP server. 64 tools + 3 MCP Apps inline. |
+| **Cowork** | MCP + Scheduled Tasks | Same plugin. Streamable HTTP transport. Daily briefings, persistent hats, session catch-up. |
 
 ---
 
@@ -75,11 +77,17 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | Capability | What It Does |
 |-----------|-------------|
 | **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **63 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git integration + model routing + sentinel + Design-by-Analogy + snapshot |
-| **49 MCP tools** | Every command works on Desktop and Cowork via hierarchical MCP router |
+| **66 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git + model routing + sentinel + DbA + snapshot + hat-briefing + scheduled-tasks |
+| **64 MCP tools (9 routers)** | ALL commands work on Desktop and Cowork via hierarchical MCP router. Brain-driven routing selects framework chains. |
+| **3 MCP Apps** | Dashboard, Wiki, and Knowledge Graph rendered inline in Desktop/Cowork conversations via ext-apps |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
 | **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
-| **Autonomous Engine** | `/mos:act` -- Brain-driven framework selection with thinking traces, subagent isolation, chain mode (3-5 frameworks), dry-run |
+| **Autonomous Engine** | `/mos:act` -- Brain-driven framework selection with cost estimation, chain checkpoints, budget-aware swarm sizing, dry-run |
+| **Surface Detection** | Auto-detects CLI/Desktop/Cowork. Dual transport (stdio + Streamable HTTP). Zero manual config. |
+| **Scheduled Intelligence** | Daily briefings, prediction deadline alerts, competitor/grant/news scanning on Cowork. Session catch-up after gaps. |
+| **De Bono Persistent Hats** | 6 perspective personas with cross-session memory. Hat findings feed Brain routing. `/mos:hat-briefing` |
+| **Token Optimization** | Native-first skills (65% smaller). Progressive 3-layer loading. ~10K tokens per turn (was ~20K). |
+| **Pipeline Chaining** | Room-file-based state for LLM-orchestrated multi-step methodology chains across MCP. |
 | **CLI UI Ruling System** | 4-zone output anatomy, 5 body shapes, 12 glyphs, session start contract. Every interaction follows the same visual grammar. |
 | **Admin Panel** | Hidden `/mos:admin` for Brain API key management. Self-teaching, consequence previews. |
 | **De Stijl HTML Export** | Single-file export with 4 views: Mondrian grid, document reader, intelligence, Cytoscape knowledge graph |
