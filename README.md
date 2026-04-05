@@ -162,7 +162,7 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Restart Claude Desktop. All 49 tools appear automatically. Larry's personality is identical.
+Restart Claude Desktop. All 64 tools appear automatically. Larry's personality is identical.
 
 ### Connect the Brain (optional, paid tier)
 
@@ -234,6 +234,13 @@ Connects via API key               Embedded, zero server
 - **CONVERGES** -- themes appear across 3+ sections
 - **ENABLES** -- this artifact unblocks something elsewhere
 - **INVALIDATES** -- this artifact makes an assumption stale
+- **BELONGS_TO** -- this artifact is part of a parent entity
+- **CAUSES** -- this artifact directly causes an outcome
+- **CASCADES_TO** -- changes here ripple to connected artifacts
+- **EXTRACTED_FROM** -- this insight was derived from a source artifact
+- **HSI_CONNECTION** -- Human Systems Integration link across domains
+- **REVERSE_SALIENT** -- lagging component holding the system back
+- **ANALOGY_MATCH** -- cross-domain structural similarity
 
 ---
 
@@ -312,10 +319,10 @@ mindrian-os-plugin/
 │   ├── mcp/                    # MCP tools, resources, prompts, Larry context
 │   └── parity/                 # CLI/MCP parity check (CI gate)
 ├── mcp-server-brain/           # Brain hosting server
-├── commands/                   # 45 commands (/mos:*)
+├── commands/                   # 66 commands (/mos:*)
 ├── skills/                     # Auto-activated (room-passive, room-proactive, larry-personality, etc.)
-├── agents/                     # Larry, Brain, Grading, Research, Investor, Scanner, Persona
-├── hooks/                      # SessionStart, PostToolUse, PostWrite, Stop
+├── agents/                     # Larry, Brain, Grading, Research, Investor, Opportunity Scanner, Persona Analyst, Framework Runner
+├── hooks/                      # SessionStart, PreCompact, PostCompact, Stop, PostToolUse, FileChanged, CwdChanged, SubagentStop, TaskCompleted
 ├── scripts/                    # compute-state, build-graph, render-pdf, analyze-room, etc.
 ├── references/                 # PWS frameworks, meeting protocols, personas, opportunities
 ├── templates/                  # PDF templates (De Stijl styled)
@@ -331,7 +338,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.7.1 | MindrianOS powered by PWS. 68 commands, 49 MCP tools, 8 agents, 9 hooks, 12 edge types. Causal Reasoning Layer, Synteris-quality hub export, macOS compatibility. RoomHub, SnapshotHub, single-file De Stijl hub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
+| **mos** | v1.8.1 | MindrianOS powered by PWS. 66 commands, 64 MCP tools, 8 agents, 9 hooks, 12 edge types. Causal Reasoning Layer, Synteris-quality hub export, macOS compatibility. RoomHub, SnapshotHub, single-file De Stijl hub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 
