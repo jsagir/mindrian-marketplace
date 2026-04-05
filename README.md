@@ -9,8 +9,8 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.6.3_Powerhouse-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-63-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.7.1_Causality_Engine-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-68-green)](https://github.com/jsagir/mindrian-os-plugin)
   [![MCP Tools](https://img.shields.io/badge/MCP_tools-49-teal)](https://github.com/jsagir/mindrian-os-plugin)
   [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Hooks](https://img.shields.io/badge/hooks-9-red)](https://github.com/jsagir/mindrian-os-plugin)
@@ -273,6 +273,14 @@ The transformation from reactive teaching partner to proactive venture intellige
 - **Platform Optimization:** Prompt cache optimization, modular CLAUDE.md via @include, deep link protocol, environment variable tuning.
 - **Future-Proofing:** KAIROS-compatible room/.context/, Coordinator Mode team manifest, formal MWP specification (525 lines), moat mandate documentation.
 
+### v1.7.1 Causality Engine (shipped 2026-04-05)
+The Causal Reasoning Layer + production-quality exports + macOS compatibility:
+- **Causal Reasoning:** `/mos:causal extract` traces cause-effect chains with mechanisms and falsifiable predictions. `/mos:causal validate` runs natural experiments. `/mos:causal diagram` generates DAG visualizations. `/mos:causal what-if` simulates interventions. `/mos:causal audit` checks reasoning quality.
+- **Synteris-Quality Hub Export:** `generate-hub.cjs` rebuilt with full De Stijl component library -- venture cards, grade circles, badge system (BUILT/OPEN/DESIGNING), smart content detection (bug/wish/decision cards), Data Room Views button row, scroll-highlight navigation. Single standalone HTML file. Default for `/mos:snapshot` and `/mos:export`.
+- **15 Beta Fixes:** All 29 methodology commands unblocked (disable-model-invocation removed). Brain setup two-stage health check. Banner on every cold start. `/mos:onboard reset` for replaying welcome. Global Brain key fallback (`~/.mindrian.env`). Post-room "open folder" command. Status line 3-bug fix. Recursive scanning for all visualization scripts.
+- **macOS Compatibility:** Python3 fallbacks for all bash 4+ scripts (43 `declare -A` instances). POSIX grep alternatives for all `grep -P` patterns. Zero new dependencies -- works on macOS bash 3.2 out of the box.
+- **MindrianOS Data Room:** The product manages itself -- 63 artifacts across product/, ip/, decisions/, beta-testing/, product-evolution/ sections. 19 decisions, 14 wishes, 3 patterns, 5 resolved bugs, 8 theoretical foundations.
+
 ### v6.2 RoomHub + SnapshotHub (shipped 2026-03-31)
 The Room becomes a living, adaptive intelligence hub:
 - **RoomHub:** Living adaptive intelligence hub for any Room. Adaptive Room detection (venture/website/research/general) tailors the experience to your project type.
@@ -315,7 +323,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.6.3 | MindrianOS powered by PWS. 63 commands, 49 MCP tools, 8 agents, 9 hooks, 12 edge types. RoomHub, SnapshotHub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
+| **mos** | v1.7.1 | MindrianOS powered by PWS. 68 commands, 49 MCP tools, 8 agents, 9 hooks, 12 edge types. Causal Reasoning Layer, Synteris-quality hub export, macOS compatibility. RoomHub, SnapshotHub, single-file De Stijl hub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 
