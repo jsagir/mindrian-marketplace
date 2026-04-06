@@ -91,7 +91,7 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | **Pipeline Chaining** | Room-file-based state for LLM-orchestrated multi-step methodology chains across MCP. |
 | **CLI UI Ruling System** | 4-zone output anatomy, 5 body shapes, 12 glyphs, session start contract. Every interaction follows the same visual grammar. |
 | **Admin Panel** | Hidden `/mos:admin` for Brain API key management. Self-teaching, consequence previews. |
-| **De Stijl HTML Export** | Single-file export with 4 views: Mondrian grid, document reader, intelligence, Cytoscape knowledge graph |
+| **De Stijl HTML Export** | Single-file export with 7 views: Mondrian grid, document reader, intelligence, vis-network knowledge graph, constellation, library, narrative |
 | **Embedded knowledge graph** | Inter-room relationships grow as you file artifacts. Natural language queries via Larry. |
 | **Meeting intelligence** | File transcripts, identify speakers, classify segments, track action items, detect convergence and contradictions |
 | **AI Team Personas** | 6 De Bono Thinking Hat perspectives generated from YOUR room data |
@@ -339,7 +339,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.8.1 | MindrianOS powered by PWS. 66 commands, 64 MCP tools, 8 agents, 9 hooks, 12 edge types. Causal Reasoning Layer, Synteris-quality hub export, macOS compatibility. RoomHub, SnapshotHub, single-file De Stijl hub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
+| **mos** | v1.8.4 | MindrianOS powered by PWS. 66 commands, 64 MCP tools, 8 agents, 9 hooks, 12 edge types. Brain Graph Optimization (47 FEEDS_INTO, 40 TYPICAL_AT, 14 PREREQUISITE). vis-network graph visualization standard. Causal Reasoning Layer, Synteris-quality hub export, macOS compatibility. RoomHub, SnapshotHub, single-file De Stijl hub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 
