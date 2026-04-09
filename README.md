@@ -9,17 +9,18 @@
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.9.0_Whitespace_Mapping-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-67-green)](https://github.com/jsagir/mindrian-os-plugin)
-  [![MCP Tools](https://img.shields.io/badge/MCP_tools-64_(9_routers)-teal)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.9.4_Opportunity_Engine-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Commands](https://img.shields.io/badge/commands-70+-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![MCP Tools](https://img.shields.io/badge/MCP_tools-66_(9_routers)-teal)](https://github.com/jsagir/mindrian-os-plugin)
   [![MCP Apps](https://img.shields.io/badge/MCP_Apps-3_(dashboard,_wiki,_graph)-cyan)](https://github.com/jsagir/mindrian-os-plugin)
   [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
   [![Hooks](https://img.shields.io/badge/hooks-9-red)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Edge Types](https://img.shields.io/badge/edge_types-15-yellow)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Edge Types](https://img.shields.io/badge/edge_types-18_(+CONFIRMS,_DEFERRED,_INVALIDATES)-yellow)](https://github.com/jsagir/mindrian-os-plugin)
   [![Brain Nodes](https://img.shields.io/badge/brain_nodes-32K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Brain Edges](https://img.shields.io/badge/brain_edges-114_FEEDS__INTO,_100_TYPICAL__AT,_15_PREREQUISITE-blueviolet)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Whitespace](https://img.shields.io/badge/NEW-Whitespace_Mapping-ff6600)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Brain Edges](https://img.shields.io/badge/brain_edges-131_FEEDS__INTO,_100_TYPICAL__AT,_15_PREREQUISITE-blueviolet)](https://github.com/jsagir/mindrian-os-plugin)
+  [![NEW](https://img.shields.io/badge/NEW-Opportunity_Bank_+_3_Mode_Entry-ff6600)](https://github.com/jsagir/mindrian-os-plugin)
   [![Surfaces](https://img.shields.io/badge/surfaces-CLI_+_Desktop_+_Cowork-brightgreen)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Auto Update](https://img.shields.io/badge/auto--update-enabled_by_default-success)](https://github.com/jsagir/mindrian-os-plugin)
 
   [Website](https://mindrianos-jsagirs-projects.vercel.app) |
   [Plugin Repo](https://github.com/jsagir/mindrian-os-plugin) |
@@ -79,8 +80,8 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | Capability | What It Does |
 |-----------|-------------|
 | **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **66 commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git + model routing + sentinel + DbA + snapshot + hat-briefing + scheduled-tasks |
-| **64 MCP tools (9 routers)** | ALL commands work on Desktop and Cowork via hierarchical MCP router. Brain-driven routing selects framework chains. |
+| **70+ commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git + model routing + sentinel + DbA + snapshot + hat-briefing + scheduled-tasks + bank-ops + conversation-mode |
+| **66 MCP tools (9 routers)** | ALL commands work on Desktop and Cowork via hierarchical MCP router. Brain-driven routing selects framework chains. |
 | **3 MCP Apps** | Dashboard, Wiki, and Knowledge Graph rendered inline in Desktop/Cowork conversations via ext-apps |
 | **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
 | **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
@@ -96,8 +97,11 @@ Most startups fail because they solve the wrong problem. PWS teaches you to find
 | **Embedded knowledge graph** | Inter-room relationships grow as you file artifacts. Natural language queries via Larry. |
 | **Meeting intelligence** | File transcripts, identify speakers, classify segments, track action items, detect convergence and contradictions |
 | **AI Team Personas** | 6 De Bono Thinking Hat perspectives generated from YOUR room data |
-| **Opportunity Bank** | Context-driven grant discovery. Larry reads your room and finds relevant opportunities. |
-| **Funding Room** | 4-stage lifecycle tracking: Discovered > Researched > Applying > Submitted |
+| **Opportunity Bank** | PWS core concept: every framework interaction banks opportunities automatically. Well-defined problems paired with mirror solutions, scored by confidence and Knight position (risk vs uncertainty). Brain enrichment suggests validation steps from 100 frameworks x 131 chains. |
+| **Conversation-First Entry** | Three modes: Explore (think freely), Explore+Capture (room builds as you talk), Build Then Work. Persona detection (TTO/Researcher/Business) selects Brain framework chains. Pre-room scratchpad persists across sessions. |
+| **Intelligence Loop** | APPROVE/REJECT/DEFER workflow: Larry surfaces cross-subsystem impacts after filing, user decides, decisions become KuzuDB graph edges. Mid-session findings, repeat suppression, evidence-change detection. |
+| **Funding Room** | 4-stage lifecycle tracking: Discovered > Researched > Applying > Submitted. Separate from Opportunity Bank. |
+| **Auto-Update** | New installs get updates automatically. Session-start detects and applies updates silently. Opt-out: `rm ~/.mindrian/auto-update` |
 | **8 agents** | Larry, Brain, Grading, Research, Investor, Opportunity Scanner, Persona Analyst, Framework Runner |
 | **PDF export** | Thesis, summary, report, profile, Minto meeting report |
 | **Brain** | 23K nodes, 170K+ relationships. Optional MCP for enriched intelligence. |
@@ -306,6 +310,15 @@ The Room becomes a living, adaptive intelligence hub:
 - **Generative Fabric Chat:** Query KuzuDB via natural language directly inside the SnapshotHub.
 - **JTBD-Powered Contextual Discovery:** Every 3-7 turns, Larry surfaces the next command based on your state and the Jobs-To-Be-Done framework.
 
+### v1.9.2 Full Wiring Audit (shipped 2026-04-09)
+8-audit deep scan of every execution path. 13 critical fixes: post-write hook (was dead -- entire cascade silently did nothing), MCP routes, allowed-tools, hook timeouts. Intelligence cascade wired end-to-end for the first time.
+
+### v1.9.3 Intelligence Loop + Filing Completeness (shipped 2026-04-09)
+The APPROVE/REJECT/DEFER workflow is live. File an artifact, Larry surfaces cross-subsystem impacts, user decides, decision becomes KuzuDB graph data. Filing produces git commits + classification metadata. All scripts work on macOS. 4 phases, 12 requirements.
+
+### v1.9.4 Opportunity Engine + Conversation-First Entry (shipped 2026-04-09)
+Every framework banks opportunities automatically. Three-mode session entry with persona detection (TTO/Researcher/Business). Brain-guided framework chains. Pre-room scratchpad. Room seeding from Opportunity Bank. Onboarding redesigned around Knight uncertainty-to-risk conversion. Auto-update by default. 5 phases, 15 requirements.
+
 ---
 
 ## Plugin Structure
@@ -340,7 +353,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.8.4 | MindrianOS powered by PWS. 66 commands, 64 MCP tools, 8 agents, 9 hooks, 12 edge types. Brain Graph Optimization (47 FEEDS_INTO, 40 TYPICAL_AT, 14 PREREQUISITE). vis-network graph visualization standard. Causal Reasoning Layer, Synteris-quality hub export, macOS compatibility. RoomHub, SnapshotHub, single-file De Stijl hub, Fabric Chat, JTBD discovery. Model routing, parallel agents, Design-by-Analogy (TRIZ + SAPPhIRE), sentinel intelligence. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Opportunity Bank, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
+| **mos** | v1.9.4 | MindrianOS powered by PWS. 70+ commands, 66 MCP tools, 8 agents, 9 hooks, 18 edge types. **NEW:** Opportunity Bank (every framework banks opportunities automatically), Conversation-First Entry (3 modes with persona detection), Intelligence Loop (APPROVE/REJECT/DEFER decisions become graph data), auto-update. Brain-guided framework chains (100 frameworks, 131 FEEDS_INTO). Knight uncertainty-to-risk conversion engine. Pre-room scratchpad. Room seeding from bank. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
 
 ---
 
