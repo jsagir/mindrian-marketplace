@@ -7,11 +7,11 @@
     {
       "name": "mos",
       "description": "MindrianOS - Your AI innovation co-founder. 66 commands, 8 agents, 9 hooks. PWS methodology, Data Room, Brain intelligence. CLI + Desktop + Cowork.",
-      "version": "1.10.11",
+      "version": "1.10.12",
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git",
-        "ref": "v1.10.11"
+        "ref": "v1.10.12"
       }
     }
   ]
