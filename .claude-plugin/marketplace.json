@@ -6,12 +6,12 @@
   "plugins": [
     {
       "name": "mos",
-      "description": "MindrianOS - Your AI innovation co-founder. 72 commands, 8 agents, 11 hooks, rs-engine reverse-salient detection (4 modes: internal/cross-room/external/hybrid) with Obsidian bridge artifacts + De Stijl mind maps. PWS methodology, Data Room, Brain intelligence. CLI + Desktop + Cowork.",
-      "version": "1.10.17",
+      "description": "MindrianOS - Your AI innovation co-founder. 73 commands (+/mos:brain-derive), 8 agents, 13 hooks. Brain Derivation Layer: BRAIN.md quadruple with 5-tripwire Canon Part 8 defense. rs-engine reverse-salient. PWS methodology, Data Room, Brain intelligence. CLI + Desktop + Cowork.",
+      "version": "1.10.18",
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git",
-        "ref": "v1.10.17"
+        "ref": "v1.10.18"
       }
     }
   ]
