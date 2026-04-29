@@ -11,7 +11,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git",
-        "ref": "v1.11.1-beta.1"
+        "ref": "v1.11.1"
       }
     }
   ]
