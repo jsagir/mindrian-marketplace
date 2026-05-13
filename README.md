@@ -3,43 +3,49 @@
 
   # MindrianOS
 
-  **Your project becomes your co-founder.**
+  **For the wicked navigator. Compass and map for the founder, researcher, or operator walking through a problem worth solving.**
 
-  Powered by PWS -- the practical innovation methodology developed by
+  Powered by PWS, the practical innovation methodology developed by
   [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
-  [![Plugin Version](https://img.shields.io/badge/plugin-v1.9.4_Opportunity_Engine-blue)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Commands](https://img.shields.io/badge/commands-70+-green)](https://github.com/jsagir/mindrian-os-plugin)
-  [![MCP Tools](https://img.shields.io/badge/MCP_tools-66_(9_routers)-teal)](https://github.com/jsagir/mindrian-os-plugin)
-  [![MCP Apps](https://img.shields.io/badge/MCP_Apps-3_(dashboard,_wiki,_graph)-cyan)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Agents](https://img.shields.io/badge/agents-8-orange)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Hooks](https://img.shields.io/badge/hooks-9-red)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Edge Types](https://img.shields.io/badge/edge_types-18_(+CONFIRMS,_DEFERRED,_INVALIDATES)-yellow)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Brain Nodes](https://img.shields.io/badge/brain_nodes-32K+-purple)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Brain Edges](https://img.shields.io/badge/brain_edges-131_FEEDS__INTO,_100_TYPICAL__AT,_15_PREREQUISITE-blueviolet)](https://github.com/jsagir/mindrian-os-plugin)
-  [![NEW](https://img.shields.io/badge/NEW-Opportunity_Bank_+_3_Mode_Entry-ff6600)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Plugin Version](https://img.shields.io/badge/plugin-v1.13.0_(currently_beta.12)-blue)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Milestone](https://img.shields.io/badge/milestone-The_Closed_Loop-success)](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
+  [![Commands](https://img.shields.io/badge/commands-85-green)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Skills](https://img.shields.io/badge/skills-10-cyan)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Agents](https://img.shields.io/badge/agents-9-orange)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Hook surfaces](https://img.shields.io/badge/hook_surfaces-4-red)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Edge Types](https://img.shields.io/badge/cascade_edges-12-yellow)](https://github.com/jsagir/mindrian-os-plugin)
+  [![License](https://img.shields.io/badge/license-BSL_1.1-orange)](https://github.com/jsagir/mindrian-os-plugin/blob/main/LICENSE)
   [![Surfaces](https://img.shields.io/badge/surfaces-CLI_+_Desktop_+_Cowork-brightgreen)](https://github.com/jsagir/mindrian-os-plugin)
-  [![Auto Update](https://img.shields.io/badge/auto--update-enabled_by_default-success)](https://github.com/jsagir/mindrian-os-plugin)
+  [![Node](https://img.shields.io/badge/node-%3E%3D22.5.0-brightgreen)](https://github.com/jsagir/mindrian-os-plugin)
 
   [Website](https://mindrianos-jsagirs-projects.vercel.app) |
   [Plugin Repo](https://github.com/jsagir/mindrian-os-plugin) |
   [Brain Access](https://mindrianos-jsagirs-projects.vercel.app/brain-access) |
-  [Roadmap](https://mindrianos-jsagirs-projects.vercel.app/roadmap)
+  [Changelog](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
 
 </div>
 
 ---
 
+## v1.13.0 -- The Closed Loop
+
+MindrianOS turns the venture from a folder you archive into a closed conversation loop you walk through. Larry leads turn 1. A local SQL graph remembers what you said. The Brain (optional remote methodology graph) reasons over typed packets and never sees your data. The first material you file kicks off a triple-filter math layer (whitespace + reverse salient + cross-domain match) and surfaces non-obvious opportunities by your next turn. Every decision becomes a typed edge in your room graph.
+
+This release is currently shipping as `v1.13.0-beta.12`; final `v1.13.0` is imminent. Install today to track the closing capstones (Phase 121.5 terminal coherence + Phase 122 Workflow Layer, both shipped in beta.12).
+
+---
+
 ## Quick Start
 
-### Option A: One-Line Install (works everywhere)
+### Option A: npm one-liner (recommended for v1.13.0)
 
 ```bash
-curl -sL https://raw.githubusercontent.com/jsagir/mindrian-os-plugin/main/install.sh | bash
+npx @mindrian_os/install
 ```
 
-Restart Claude Code. Larry starts talking.
+Runs the Claude Code plugin install end-to-end. Adds the marketplace, installs the `mos` plugin, and stamps the statusline. Restart Claude Code, Larry starts talking.
 
 ### Option B: Plugin Marketplace
 
@@ -48,304 +54,110 @@ claude plugin marketplace add jsagir/mindrian-marketplace
 claude plugin install mos@mindrian-marketplace
 ```
 
-### Option C: Manual Clone
+### Option C: One-line shell install
 
 ```bash
-git clone https://github.com/jsagir/mindrian-os-plugin.git ~/.claude/plugins/mindrian-os
-cd ~/.claude/plugins/mindrian-os && bash install.sh
+curl -sL https://raw.githubusercontent.com/jsagir/mindrian-os-plugin/main/install.sh | bash
 ```
 
-Larry starts talking. The Room starts listening. No setup required.
-
-**Works on all three Claude surfaces:**
-
-| Surface | How | What You Do |
-|---------|-----|-------------|
-| **Claude Code CLI** | Plugin (full power) | `claude plugin install mos@mindrian-marketplace` -- hooks, scripts, full UI |
-| **Claude Desktop** | MCP server (auto-wired) | Plugin install auto-registers MCP server. 64 tools + 3 MCP Apps inline. |
-| **Cowork** | MCP + Scheduled Tasks | Same plugin. Streamable HTTP transport. Daily briefings, persistent hats, session catch-up. |
-
----
-
-## What Is MindrianOS?
-
-A Claude Code plugin built on **PWS (Problems Worth Solving)** -- the practical innovation methodology that turns undefined problems into fundable ventures.
-
-Most startups fail because they solve the wrong problem. PWS teaches you to find problems worth solving *before* you build solutions. MindrianOS puts PWS in your terminal -- with Larry as your thinking partner, a self-organizing Data Room, and an embedded knowledge graph that grows with your venture.
-
----
-
-## What You Get
-
-| Capability | What It Does |
-|-----------|-------------|
-| **Larry** | AI teaching agent modeled on Prof. Aronhime. Shows his thinking with visual traces. Challenges your thinking, not your confidence. |
-| **70+ commands** | 26 PWS frameworks + 5 Brain-powered + 7 infrastructure + 3 intelligence + 2 meeting + 2 funding + admin + rooms + act + git + model routing + sentinel + DbA + snapshot + hat-briefing + scheduled-tasks + bank-ops + conversation-mode |
-| **66 MCP tools (9 routers)** | ALL commands work on Desktop and Cowork via hierarchical MCP router. Brain-driven routing selects framework chains. |
-| **3 MCP Apps** | Dashboard, Wiki, and Knowledge Graph rendered inline in Desktop/Cowork conversations via ext-apps |
-| **Data Room** | Self-organizing workspace: 8 DD sections + meetings/ + team/ + opportunity-bank/ + funding/ + personas/ |
-| **Multi-Room Management** | Multiple projects simultaneously. Room registry, safe switching, context lock, header canary. `/mos:rooms` |
-| **Autonomous Engine** | `/mos:act` -- Brain-driven framework selection with cost estimation, chain checkpoints, budget-aware swarm sizing, dry-run |
-| **Surface Detection** | Auto-detects CLI/Desktop/Cowork. Dual transport (stdio + Streamable HTTP). Zero manual config. |
-| **Scheduled Intelligence** | Daily briefings, prediction deadline alerts, competitor/grant/news scanning on Cowork. Session catch-up after gaps. |
-| **De Bono Persistent Hats** | 6 perspective personas with cross-session memory. Hat findings feed Brain routing. `/mos:hat-briefing` |
-| **Token Optimization** | Native-first skills (65% smaller). Progressive 3-layer loading. ~10K tokens per turn (was ~20K). |
-| **Pipeline Chaining** | Room-file-based state for LLM-orchestrated multi-step methodology chains across MCP. |
-| **CLI UI Ruling System** | 4-zone output anatomy, 5 body shapes, 12 glyphs, session start contract. Every interaction follows the same visual grammar. |
-| **Admin Panel** | Hidden `/mos:admin` for Brain API key management. Self-teaching, consequence previews. |
-| **De Stijl HTML Export** | Single-file export with 7 views: Mondrian grid, document reader, intelligence, vis-network knowledge graph, constellation, library, narrative |
-| **Embedded knowledge graph** | Inter-room relationships grow as you file artifacts. Natural language queries via Larry. |
-| **Meeting intelligence** | File transcripts, identify speakers, classify segments, track action items, detect convergence and contradictions |
-| **AI Team Personas** | 6 De Bono Thinking Hat perspectives generated from YOUR room data |
-| **Opportunity Bank** | PWS core concept: every framework interaction banks opportunities automatically. Well-defined problems paired with mirror solutions, scored by confidence and Knight position (risk vs uncertainty). Brain enrichment suggests validation steps from 100 frameworks x 131 chains. |
-| **Conversation-First Entry** | Three modes: Explore (think freely), Explore+Capture (room builds as you talk), Build Then Work. Persona detection (TTO/Researcher/Business) selects Brain framework chains. Pre-room scratchpad persists across sessions. |
-| **Intelligence Loop** | APPROVE/REJECT/DEFER workflow: Larry surfaces cross-subsystem impacts after filing, user decides, decisions become KuzuDB graph edges. Mid-session findings, repeat suppression, evidence-change detection. |
-| **Funding Room** | 4-stage lifecycle tracking: Discovered > Researched > Applying > Submitted. Separate from Opportunity Bank. |
-| **Auto-Update** | New installs get updates automatically. Session-start detects and applies updates silently. Opt-out: `rm ~/.mindrian/auto-update` |
-| **8 agents** | Larry, Brain, Grading, Research, Investor, Opportunity Scanner, Persona Analyst, Framework Runner |
-| **PDF export** | Thesis, summary, report, profile, Minto meeting report |
-| **Brain** | 23K nodes, 170K+ relationships. Optional MCP for enriched intelligence. |
-| **Two-graph architecture** | Brain (methodology intelligence) + Room Graph (venture intelligence) |
-| **Git integration** | Optional git tracking for room artifacts. Automatic commits on filing. |
-| **KuzuDB backbone** | Automatic embedded graph database powering cross-room detection and proactive intelligence |
-| **HSI pipeline** | Human Systems Integration pipeline for venture readiness assessment |
-| **Cross-room detection** | Automatic pattern and contradiction detection across multiple rooms |
-| **Proactive intelligence** | Larry surfaces gaps, convergence signals, and contradictions without being asked |
-
----
-
-## How To Use MindrianOS
-
-### On Claude Code CLI (full power)
+### To update or repair an existing install
 
 ```bash
-# Install
-claude plugin install mos@mindrian-marketplace
-
-# Start a venture project
-/mos:new-project
-
-# Get help -- Larry recommends commands based on your stage
-/mos:help
-
-# Diagnose your problem type
-/mos:diagnose
-
-# File a meeting
-/mos:file-meeting
-
-# Discover grant opportunities
-/mos:opportunities
-
-# Track funding lifecycle
-/mos:funding
-
-# Generate AI team personas
-/mos:persona
-
-# Query your knowledge graph
-/mos:query "What contradicts my pricing model?"
-
-# See your room status
-/mos:status
+mindrian-os update           # marketplace update + plugin update
+mindrian-os doctor --all     # diagnose every drift class with fix suggestions
 ```
 
-### On Claude Desktop / Cowork (MCP)
+Both shell out to the active plugin install resolved via `lib/core/active-plugin-root.cjs` (the single resolver introduced in beta.12), so they work on any of the four installation paths.
 
-Add to your `claude_desktop_config.json`:
+---
 
-```json
-{
-  "mcpServers": {
-    "mindrian-os": {
-      "command": "node",
-      "args": ["/path/to/MindrianOS-Plugin/bin/mindrian-mcp-server.cjs"],
-      "env": {
-        "MINDRIAN_ROOM": "/path/to/your/room"
-      }
-    }
-  }
-}
-```
+## Works on All Three Claude Surfaces
 
-Restart Claude Desktop. All 64 tools appear automatically. Larry's personality is identical.
+| Surface | How | What you get |
+|---------|-----|--------------|
+| **Claude Code CLI** | Plugin (full power) | `claude plugin install mos@mindrian-marketplace`. Hooks fire, scripts run, full UI Ruling System, statusline, Data Room exports. |
+| **Claude Desktop** | MCP server (auto-wired) | Plugin install registers the local MCP server. Hierarchical tools + 3 MCP Apps (dashboard, wiki, knowledge graph) inline. |
+| **Cowork** | MCP + Scheduled Tasks | Same plugin, Streamable HTTP transport. Daily briefings, persistent hats, session catch-up. |
 
-### Connect the Brain (optional, paid tier)
+---
 
-The Brain adds 23K nodes of teaching intelligence -- framework chain suggestions, calibrated grading, cross-domain pattern discovery.
+## What v1.13.0 Adds
 
-**Request access:** [mindrianos-jsagirs-projects.vercel.app/brain-access](https://mindrianos-jsagirs-projects.vercel.app/brain-access)
+| Capability | What it does |
+|-----------|--------------|
+| **Closed Loop** | Larry leads turn 1. Conversation produces a populated room in 45 seconds. Rooms are receipts, not setup wizards. |
+| **Auto-Explore on first material** | First file you write inside a room triggers the triple-filter math layer in the background. Findings surface on your next turn via a Decision Gate (Explore / Skip / Later). |
+| **Unresolved Tension Hook** | Larry remembers contradictions across sessions and re-opens them when relevant. The variable-reward closer of the closed loop. |
+| **30-Second MVA + Room-as-Receipt** | A first conversation always produces a Minimum Viable Artifact and a populated room in under a minute. The room is a receipt of what the conversation produced. |
+| **Workflow Layer (Phase 122)** | `data/command-registry.json` + `lib/workflow/command-resolver.cjs`. Framework-to-command becomes a CI-enforced guarantee instead of model recall. Hallucinated commands cannot be emitted. |
+| **Brain Context Packet Contract** | Brain queries are typed packets, not free-form prompts. Part 8 (the Graph Boundary) is structurally enforced, not just audited. |
+| **SQL Navigation Spine + Memory Event Log** | `lib/core/navigation.cjs` is the single 13-function chokepoint over `room.db`. Every navigation step writes a `memory_event`. Instrumented test asserts zero non-SQLite filesystem reads during navigation. |
+| **npx installer + active-plugin-root resolver** | `npx @mindrian_os/install` is a real one-command install. `lib/core/active-plugin-root.cjs` retires the whole "wrong plugin path" bug family across doctor / update / statusline. |
+| **Install-cache Windows hardening** | Skill-loop no longer halts mid-install. `core.longpaths` auto-set, statusline registered first, `.install-receipt.json` records progress, doctor class H detects and re-stamps. |
+| **Terminal Coherence Capstone (Phase 121.5)** | Every UI surface across the milestone harmonized into one terminal experience: SessionStart Coordinator, four-zone body shape sweep, two-row statusline, canonical De Stijl palette. |
 
-After approval, add to your config:
+---
 
-```json
-{
-  "mcpServers": {
-    "mindrian-brain": {
-      "url": "https://mindrian-brain.onrender.com/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
+## Connect the Brain (optional)
+
+The Brain is a remote MCP server holding 32K+ teaching-graph nodes (framework chains, calibrated grading, cross-domain pattern discovery). It enriches Larry but is never required. Your local room data never leaves your machine; the Brain only ever receives generic framework handles, phase identifiers, sha256 hashes, and enum scalars (the Brain Context Packet contract).
+
+Request access: [mindrianos-jsagirs-projects.vercel.app/brain-access](https://mindrianos-jsagirs-projects.vercel.app/brain-access)
 
 | Capability | Without Brain | With Brain |
-|-----------|--------------|-----------|
-| Larry personality | Full | Full |
-| 26 methodology commands | All | All + graph-informed recommendations |
-| Data Room intelligence | Keyword-based | + framework chain suggestions |
-| Grading | Basic rubric | Calibrated against 100+ real projects |
-| Cross-domain connections | Manual | Automatic pattern discovery |
+|-----------|---------------|------------|
+| Larry teaching personality | Full | Full |
+| 85 commands | All work | All work |
+| Framework chaining | Local-Only (Navigation Engine) | Mode A (Brain-derived, with confidence-gated RECOMMENDED) |
+| Grading | Rubric only | Calibrated against 100+ real projects |
+| Cross-domain analogy | Local SQL + Pinecone | + Brain FEEDS_INTO traversal |
+
+After approval, paste the provided key. The plugin's resolver picks it up from any of: `MINDRIAN_BRAIN_KEY` env var, `~/.mindrian.env`, or the per-room `.env`.
 
 ---
 
-## PWS Inside MindrianOS
+## First Five Moves Inside a Room
 
-PWS is the building blocks. MindrianOS is the operating system that runs them.
+```bash
+# 1. Start a venture room (Larry leads the conversation)
+/mos:new-project
 
-**5 Venture Stages. 26 framework commands. One intelligent progression.**
+# 2. Pick the right next move (Brain or Local Only, your call)
+/mos:suggest-next
 
-| Stage | What You're Doing | Key Commands |
-|-------|------------------|--------------|
-| **Pre-Opportunity** | Still looking for problems | `/mos:beautiful-question`, `/mos:explore-domains`, `/mos:diagnose` |
-| **Opportunity Identified** | Understanding the problem deeply | `/mos:analyze-needs`, `/mos:build-knowledge`, `/mos:map-unknowns` |
-| **Problem Validated** | Confirmed the problem is real | `/mos:challenge-assumptions`, `/mos:validate`, `/mos:root-cause` |
-| **Solution Designed** | Building and testing solutions | `/mos:lean-canvas`, `/mos:structure-argument`, `/mos:systems-thinking` |
-| **Investment Ready** | Preparing for funding | `/mos:grade`, `/mos:build-thesis`, `/mos:score-innovation` |
+# 3. Run methodology (one /mos: command per framework, chainable)
+/mos:beautiful-question
+/mos:analyze-needs
 
-Larry knows which stage you're in and which framework you need before you do.
+# 4. File a meeting (paste, file, or audio via Velma)
+/mos:file-meeting
 
----
-
-## Two Levels of Intelligence
-
-MindrianOS uses two knowledge layers that work together:
-
-```
-Brain (remote, optional)           Room Graph (local, always on)
-Methodology intelligence           YOUR venture's relationships
-Framework chains + calibration     Grows as you file artifacts
-Connects via API key               Embedded, zero server
-
-         Brain tells you HOW to think
-         Room Graph tells you WHAT your data says
-         Together = far more powerful than either alone
+# 5. Ask the graph (natural language over your local room.db)
+/mos:query "what contradicts my pricing model?"
 ```
 
-**Room Graph edge types:**
-- **INFORMS** -- this artifact references another section
-- **CONTRADICTS** -- this artifact conflicts with an existing claim
-- **CONVERGES** -- themes appear across 3+ sections
-- **ENABLES** -- this artifact unblocks something elsewhere
-- **INVALIDATES** -- this artifact makes an assumption stale
-- **BELONGS_TO** -- this artifact is part of a parent entity
-- **CAUSES** -- this artifact directly causes an outcome
-- **CASCADES_TO** -- changes here ripple to connected artifacts
-- **EXTRACTED_FROM** -- this insight was derived from a source artifact
-- **HSI_CONNECTION** -- Human Systems Integration link across domains
-- **REVERSE_SALIENT** -- lagging component holding the system back
-- **ANALOGY_MATCH** -- cross-domain structural similarity
+Don't know which command? Just talk. Larry routes through the Workflow Layer registry to the right `/mos:*` command. Hallucinated commands cannot be emitted.
 
 ---
 
-## Larry's Thinking Traces
+## The Two Graphs
 
-Larry shows his reasoning -- not just the answer:
-
-> **Larry's Thinking**
-> Problem -- Wicked (8/10 characteristics)
-> Stage -- Pre-Opportunity
-> Method -- Bono Six Hats *divergent exploration needed*
-> Chain -- Bono -> JTBD -> Market Sizing
-> Filing -- problem-definition/
-> *3 Brain connections - 2 cross-references*
-
-Mode-adaptive: hidden when Larry is asking questions, full when teaching.
-
----
-
-## Milestones
-
-### v1.0 MVP (shipped 2026-03-22)
-One-command install. Larry talks immediately. 26 methodology commands. Data Room with 8 sections. De Stijl dashboard with knowledge graph. PDF export. Brain MCP integration. Self-update system.
-
-### v2.0 Meeting Intelligence (shipped 2026-03-24)
-Meeting filing pipeline (paste/file/audio + Velma transcription). Speaker identification with 12 roles. Team room with profiles. Cross-meeting intelligence (convergence, contradictions, action items). Three-layer knowledge graph with timeline mode. Minto meeting-report PDF.
-
-### v3.0 MCP Platform & Intelligence Expansion (shipped 2026-03-25)
-- **Phase 10:** Shared core library (mindrian-tools.cjs)
-- **Phase 11:** MCP server for Desktop/Cowork (6 hierarchical tools, 5 resources, 5 prompts)
-- **Phase 12:** Brain hosting with API key management
-- **Phase 13:** Opportunity Bank (context-driven grant discovery) + Funding Room (4-stage lifecycle)
-- **Phase 14:** AI Team Personas (De Bono Six Hats from room intelligence)
-- **Phase 15:** User Knowledge Graph (embedded graph, inter-room relationships, NL queries)
-- **UX:** `/mos:` prefix, thinking traces, visual confirmations, room-aware status line
-
-### v1.6.0 Powerhouse (shipped 2026-03-31)
-The transformation from reactive teaching partner to proactive venture intelligence engine:
-- **Model Routing:** Per-agent model selection (quality/balanced/budget/inherit) with venture-stage adaptive hints. `/mos:models` command. 60-86% cost reduction.
-- **Hook Expansion:** 6 new Claude Code hooks (PreCompact, PostCompact, FileChanged, CwdChanged, SubagentStop, TaskCompleted). Larry never loses context. External edits auto-sync. Agent results auto-file.
-- **Parallel Agents:** `--swarm`, `--parallel`, `--full`, `--broad` flags on act/persona/grade/research. 3x speed via simultaneous execution.
-- **Spectral OM-HMM:** Markov chain thinking-mode analysis replaces keyword-density scoring. Per-artifact spectral profiles. 15% breakthrough bonus for genuine integrative thinking.
-- **Design-by-Analogy:** 5-stage pipeline (Decompose/Abstract/Search/Transfer/Validate). TRIZ contradiction matrix (39x39). SAPPhIRE functional encoding. 3 new KuzuDB edge types. `/mos:find-analogies` command.
-- **Sentinel Intelligence:** `/mos:scout` for scheduled room health checks, grant deadline monitoring, competitor watch, HSI recomputation.
-- **Platform Optimization:** Prompt cache optimization, modular CLAUDE.md via @include, deep link protocol, environment variable tuning.
-- **Future-Proofing:** KAIROS-compatible room/.context/, Coordinator Mode team manifest, formal MWP specification (525 lines), moat mandate documentation.
-
-### v1.7.1 Causality Engine (shipped 2026-04-05)
-The Causal Reasoning Layer + production-quality exports + macOS compatibility:
-- **Causal Reasoning:** `/mos:causal extract` traces cause-effect chains with mechanisms and falsifiable predictions. `/mos:causal validate` runs natural experiments. `/mos:causal diagram` generates DAG visualizations. `/mos:causal what-if` simulates interventions. `/mos:causal audit` checks reasoning quality.
-- **Synteris-Quality Hub Export:** `generate-hub.cjs` rebuilt with full De Stijl component library -- venture cards, grade circles, badge system (BUILT/OPEN/DESIGNING), smart content detection (bug/wish/decision cards), Data Room Views button row, scroll-highlight navigation. Single standalone HTML file. Default for `/mos:snapshot` and `/mos:export`.
-- **15 Beta Fixes:** All 29 methodology commands unblocked (disable-model-invocation removed). Brain setup two-stage health check. Banner on every cold start. `/mos:onboard reset` for replaying welcome. Global Brain key fallback (`~/.mindrian.env`). Post-room "open folder" command. Status line 3-bug fix. Recursive scanning for all visualization scripts.
-- **macOS Compatibility:** Python3 fallbacks for all bash 4+ scripts (43 `declare -A` instances). POSIX grep alternatives for all `grep -P` patterns. Zero new dependencies -- works on macOS bash 3.2 out of the box.
-- **MindrianOS Data Room:** The product manages itself -- 63 artifacts across product/, ip/, decisions/, beta-testing/, product-evolution/ sections. 19 decisions, 14 wishes, 3 patterns, 5 resolved bugs, 8 theoretical foundations.
-
-### v6.2 RoomHub + SnapshotHub (shipped 2026-03-31)
-The Room becomes a living, adaptive intelligence hub:
-- **RoomHub:** Living adaptive intelligence hub for any Room. Adaptive Room detection (venture/website/research/general) tailors the experience to your project type.
-- **SnapshotHub:** `/mos:snapshot` exports a 7-view standalone HTML -- Overview, Library, Narrative, Synthesis, Blueprint, Constellation, Chat.
-- **12-Thread Constellation Graph:** Interactive knowledge graph with De Stijl colors and spectral coloring.
-- **Generative Fabric Chat:** Query KuzuDB via natural language directly inside the SnapshotHub.
-- **JTBD-Powered Contextual Discovery:** Every 3-7 turns, Larry surfaces the next command based on your state and the Jobs-To-Be-Done framework.
-
-### v1.9.2 Full Wiring Audit (shipped 2026-04-09)
-8-audit deep scan of every execution path. 13 critical fixes: post-write hook (was dead -- entire cascade silently did nothing), MCP routes, allowed-tools, hook timeouts. Intelligence cascade wired end-to-end for the first time.
-
-### v1.9.3 Intelligence Loop + Filing Completeness (shipped 2026-04-09)
-The APPROVE/REJECT/DEFER workflow is live. File an artifact, Larry surfaces cross-subsystem impacts, user decides, decision becomes KuzuDB graph data. Filing produces git commits + classification metadata. All scripts work on macOS. 4 phases, 12 requirements.
-
-### v1.9.4 Opportunity Engine + Conversation-First Entry (shipped 2026-04-09)
-Every framework banks opportunities automatically. Three-mode session entry with persona detection (TTO/Researcher/Business). Brain-guided framework chains. Pre-room scratchpad. Room seeding from Opportunity Bank. Onboarding redesigned around Knight uncertainty-to-risk conversion. Auto-update by default. 5 phases, 15 requirements.
-
----
-
-## Plugin Structure
-
-```text
-mindrian-os-plugin/
-├── .claude-plugin/plugin.json  # Plugin manifest (v0.9.0)
-├── bin/
-│   ├── mindrian-tools.cjs      # Shared CLI entry point
-│   └── mindrian-mcp-server.cjs # MCP server (Desktop/Cowork)
-├── lib/
-│   ├── core/                   # Shared modules (room-ops, state-ops, graph-ops, etc.)
-│   ├── mcp/                    # MCP tools, resources, prompts, Larry context
-│   └── parity/                 # CLI/MCP parity check (CI gate)
-├── mcp-server-brain/           # Brain hosting server
-├── commands/                   # 66 commands (/mos:*)
-├── skills/                     # Auto-activated (room-passive, room-proactive, larry-personality, etc.)
-├── agents/                     # Larry, Brain, Grading, Research, Investor, Opportunity Scanner, Persona Analyst, Framework Runner
-├── hooks/                      # SessionStart, PreCompact, PostCompact, Stop, PostToolUse, FileChanged, CwdChanged, SubagentStop, TaskCompleted
-├── scripts/                    # compute-state, build-graph, render-pdf, analyze-room, etc.
-├── references/                 # PWS frameworks, meeting protocols, personas, opportunities
-├── templates/                  # PDF templates (De Stijl styled)
-├── dashboard/                  # Knowledge graph viewer + chat
-├── pipelines/                  # ICM stage contracts
-├── tests/                      # 8 test suites, 100+ assertions
-└── CLAUDE.md                   # Architecture (Simon + ICM + Wicked Problems)
 ```
+Brain  (remote, optional)                    Room Graph  (local, always on)
+Methodology graph                            YOUR venture's structure
+Framework chains + calibrated grading        Grows as you file artifacts
+~32K nodes / 65K+ relationships              ~12 cascade edge types
+Connects via API key                         Embedded SQLite (room.db)
+NEVER receives your data (Part 8)            Never egresses anywhere
+
+         Brain tells you HOW to think about this kind of problem.
+         Room Graph tells you WHAT your own data is saying.
+         Together: more powerful than either alone.
+```
+
+**Cascade edge types** (room graph): INFORMS, CONTRADICTS, CONVERGES, ENABLES, INVALIDATES, BELONGS_TO, CAUSES, CASCADES_TO, EXTRACTED_FROM, HSI_CONNECTION, REVERSE_SALIENT, ANALOGY_MATCH.
+
+**Part 8 Graph Boundary**: LOCAL data never reaches BRAIN. Brain queries carry only generic framework names, phase identifiers, sha256 hashes, and enum scalars. This is a constitutional property of the system, enforced at the wire by the Brain Context Packet Contract and audited at the PR layer by the brain-boundary scan.
 
 ---
 
@@ -353,48 +165,7 @@ mindrian-os-plugin/
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| **mos** | v1.9.4 | MindrianOS powered by PWS. 70+ commands, 66 MCP tools, 8 agents, 9 hooks, 18 edge types. **NEW:** Opportunity Bank (every framework banks opportunities automatically), Conversation-First Entry (3 modes with persona detection), Intelligence Loop (APPROVE/REJECT/DEFER decisions become graph data), auto-update. Brain-guided framework chains (100 frameworks, 131 FEEDS_INTO). Knight uncertainty-to-risk conversion engine. Pre-room scratchpad. Room seeding from bank. Dual delivery (CLI + Desktop/Cowork). Data Room, Meeting Intelligence, Knowledge Graph, Funding Room, AI Personas, Brain hosting, Git integration, KuzuDB backbone, HSI pipeline, cross-room detection, proactive intelligence. |
-
----
-
-## Example: A Complete Session
-
-```bash
-# 1. Start a venture project
-/mos:new-project
-> "I'm exploring digital twins for agricultural supply chains in East Africa"
-
-# 2. Larry diagnoses the problem type
-/mos:diagnose
-> Larry's Thinking: Wicked problem, Pre-Opportunity stage
-> Recommends: /mos:explore-domains, /mos:beautiful-question
-
-# 3. Explore the domain
-/mos:explore-domains
-> Larry maps adjacent innovation domains, files to room/problem-definition/
-
-# 4. File a meeting with an advisor
-/mos:file-meeting --file advisor-call.txt
-> Larry identifies 3 speakers, classifies 12 segments, files to 4 room sections
-
-# 5. Discover grant opportunities
-/mos:opportunities
-> Larry finds 3 relevant USAID grants based on your room context
-> Confirm-first: "File these?" → Yes → room/opportunity-bank/
-
-# 6. Generate AI team perspectives
-/mos:persona
-> 6 De Bono hats analyze your venture from different angles
-> Black Hat (Risk): "Supply chain data quality is your biggest unknown"
-
-# 7. Query your knowledge graph
-/mos:query "What connects my problem definition to the advisor's feedback?"
-> Larry translates to Cypher, returns graph relationships
-
-# 8. Grade your venture
-/mos:grade
-> Honest assessment calibrated against 100+ real projects (Brain-powered)
-```
+| **mos** | v1.13.0 (currently beta.12) | MindrianOS by PWS. 85 commands, 10 skills, 9 agents, 4 hook surfaces, 12 cascade edge types. v1.13.0 "The Closed Loop": Larry leads turn 1, conversation IS the front door, Workflow Layer makes framework-to-command CI-enforced, Brain Context Packet Contract structurally enforces Part 8, SQL Navigation Spine + Memory Event Log replace folder-scanning with graph navigation, auto-explore on first material, 30-second MVA, room-as-receipt invariant, terminal coherence capstone. Dual delivery (CLI + Desktop + Cowork). |
 
 ---
 
@@ -402,33 +173,13 @@ mindrian-os-plugin/
 
 - **Website**: [mindrianos-jsagirs-projects.vercel.app](https://mindrianos-jsagirs-projects.vercel.app)
 - **Plugin Repo**: [github.com/jsagir/mindrian-os-plugin](https://github.com/jsagir/mindrian-os-plugin)
+- **Changelog**: [CHANGELOG.md](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
 - **Brain Access**: [Request API Key](https://mindrianos-jsagirs-projects.vercel.app/brain-access)
-- **PWS LinkedIn**: [Problems Worth Solving](https://www.linkedin.com/company/problem-solving-workspace/)
-- **Prof. Lawrence Aronhime**: [LinkedIn](https://www.linkedin.com/in/lawrence-aronhime-8363894/) -- PWS methodology inventor
-- **Jonathan Sagir**: [LinkedIn](https://www.linkedin.com/in/jonathansagir/) -- MindrianOS developer
-
----
-
-<details>
-<summary><strong>Theoretical Foundations</strong></summary>
-
-MindrianOS is grounded in established research:
-
-| Source | Contribution to MindrianOS |
-|--------|---------------------------|
-| **Simon (1962)** | Architecture of Complexity -- room sections as near-decomposable subsystems |
-| **Rittel & Webber (1973)** | Wicked Problems -- the Data Room manages ventures as wicked problems |
-| **Van Clief & McDermott (2026)** | ICM -- folder structure as agentic architecture |
-| **Tetlock (2015)** | Superforecasting -- intelligence layer as Bayesian updating |
-| **Hughes (1983)** | Reverse Salients -- LazyGraph finds where venture understanding lags |
-| **Knight (1921)** | Risk vs Uncertainty -- MindrianOS navigates uncertainty |
-| **Ashby (1956)** | Law of Requisite Variety -- 26 frameworks match venture complexity |
-| **De Bono (1985)** | Six Thinking Hats -- AI personas as structured perspective lenses |
-
-</details>
+- **Prof. Lawrence Aronhime**: [LinkedIn](https://www.linkedin.com/in/lawrence-aronhime-8363894/), PWS methodology
+- **Jonathan Sagir**: [LinkedIn](https://www.linkedin.com/in/jonathansagir/), MindrianOS developer
 
 ---
 
 ## License
 
-Proprietary. Copyright Jonathan Sagir & PWS / Mindrian.
+Source-available (BSL 1.1), not open source. See [LICENSE](https://github.com/jsagir/mindrian-os-plugin/blob/main/LICENSE). Copyright Jonathan Sagir and PWS / Mindrian.
