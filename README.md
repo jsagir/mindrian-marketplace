@@ -6,7 +6,7 @@
   **When you are walking through a problem worth solving and you cannot yet name what is missing, MindrianOS is the thinking partner that walks beside you.**
 
   Powered by PWS, the practical innovation methodology developed by
-  [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years at Johns Hopkins University.
+  [Prof. Lawrence Aronhime](https://www.linkedin.com/in/lawrence-aronhime-8363894/) over 30+ years of teaching.
   Built by [Jonathan Sagir](https://www.linkedin.com/in/jonathansagir/).
 
   [![Version](https://img.shields.io/badge/v1.13.0-The_Closed_Loop-blue)](https://github.com/jsagir/mindrian-os-plugin)
