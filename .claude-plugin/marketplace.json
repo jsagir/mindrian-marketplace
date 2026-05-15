@@ -7,11 +7,11 @@
     {
       "name": "mos",
       "description": "MindrianOS - Your AI innovation co-founder. 73 commands (+/mos:brain-derive), 8 agents, 13 hooks. Brain Derivation Layer: BRAIN.md quadruple with 5-tripwire Canon Part 8 defense. rs-engine reverse-salient. PWS methodology, Data Room, Brain intelligence. CLI + Desktop + Cowork.",
-      "version": "1.13.0-beta.16",
+      "version": "1.13.0-beta.17",
       "source": {
         "source": "url",
         "url": "https://github.com/jsagir/mindrian-os-plugin.git",
-        "ref": "v1.13.0-beta.16"
+        "ref": "v1.13.0-beta.17"
       }
     }
   ]
