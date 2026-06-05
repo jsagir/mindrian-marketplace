@@ -53,7 +53,7 @@ A conversation that becomes a room. A room that surfaces what you cannot see on 
 ### npm (one line, recommended)
 
 ```bash
-npx @mindrian_os/install
+npx @mindrian_os/cli
 ```
 
 ### Plugin marketplace
@@ -106,7 +106,7 @@ Free plugin. It requires a paid Claude plan (Claude Pro, $20/mo, or higher) beca
 
 | Surface | What you do |
 |---------|-------------|
-| **Claude Code CLI** | `npx @mindrian_os/install`. Full power. Hooks fire. You own the folder. |
+| **Claude Code CLI** | `npx @mindrian_os/cli`. Full power. Hooks fire. You own the folder. |
 | **Claude Desktop** | The plugin auto-registers as an MCP server. Talk to Larry, see the room. |
 | **Cowork** | Same plugin, shared room, team-wide. |
 
