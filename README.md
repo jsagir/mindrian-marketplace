@@ -48,6 +48,19 @@ A conversation that becomes a room. A room that surfaces what you cannot see on 
 
 ---
 
+## Why not just talk to Claude, ChatGPT, or Gemini directly?
+
+You can. MindrianOS is not instead of them. It is the layer that makes one of them remember, judge, and hold you to your own reasoning. It adds the four things a raw model structurally cannot be:
+
+- **It remembers.** Your venture lives in a room that persists across every session. The contradiction you found three weeks ago is still there, still checking today's input.
+- **It knows when.** Not just which framework exists, but which one fits this stage and this problem, chained in the right order, calibrated from decades of teaching.
+- **It pushes back.** It blocks you when the evidence is thin and surfaces the conflict between your pricing and your market. A co-founder tells you when you are wrong; a chatbot tells you that you are brilliant.
+- **It keeps your data yours.** The teaching that travels is generic methodology. Your specifics never leave your machine. Smarter-from-the-world intelligence without becoming the product.
+
+A raw AI is the engine. MindrianOS is the operating system around it. For a one-off question, use the engine. For a venture you carry for months, you want the OS.
+
+---
+
 ## Install
 
 ### npm (one line, recommended)
