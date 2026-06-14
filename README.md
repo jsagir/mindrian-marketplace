@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://mindrianos-jsagirs-projects.vercel.app/logo_dark.svg" alt="MindrianOS" width="200" />
+  <img src="https://mindrian-os.com/logo_dark.svg" alt="MindrianOS" width="200" />
 
   # MindrianOS
 
@@ -14,9 +14,9 @@
   [![License](https://img.shields.io/badge/license-BSL_1.1-C8A43C)](https://github.com/jsagir/mindrian-os-plugin/blob/main/LICENSE)
   [![Surfaces](https://img.shields.io/badge/CLI_+_Desktop_+_Cowork-2D6B4A)](https://github.com/jsagir/mindrian-os-plugin)
 
-  [Website](https://mindrianos-jsagirs-projects.vercel.app) &middot;
+  [Website](https://mindrian-os.com) &middot;
   [Plugin Repo](https://github.com/jsagir/mindrian-os-plugin) &middot;
-  [Brain Access](https://mindrianos-jsagirs-projects.vercel.app/brain-access)
+  [Brain Access](https://mindrian-os.com/brain-access)
 </div>
 
 ---
@@ -82,7 +82,7 @@ claude plugin install mos@mindrian-marketplace
 curl -sL https://raw.githubusercontent.com/jsagir/mindrian-os-plugin/main/install.sh | bash
 ```
 
-Restart Claude Code. Larry starts talking. Built for people who have never opened a terminal; full guide at [the install page](https://mindrianos-jsagirs-projects.vercel.app/docs/install).
+Restart Claude Code. Larry starts talking. Built for people who have never opened a terminal; full guide at [the install page](https://mindrian-os.com/docs/install).
 
 ---
 
@@ -105,7 +105,7 @@ The Brain is a shared teaching graph that connects your findings across projects
 
 The Brain never sees your room. Brain queries carry methodology questions only. Your venture stays on your machine.
 
-Request access: [mindrianos-jsagirs-projects.vercel.app/brain-access](https://mindrianos-jsagirs-projects.vercel.app/brain-access)
+Request access: [mindrian-os.com/brain-access](https://mindrian-os.com/brain-access)
 
 ---
 
@@ -127,9 +127,9 @@ Free plugin. It requires a paid Claude plan (Claude Pro, $20/mo, or higher) beca
 
 ## Links
 
-- **Website**: [mindrianos-jsagirs-projects.vercel.app](https://mindrianos-jsagirs-projects.vercel.app)
+- **Website**: [mindrian-os.com](https://mindrian-os.com)
 - **Plugin Repo + Changelog**: [github.com/jsagir/mindrian-os-plugin](https://github.com/jsagir/mindrian-os-plugin)
-- **Brain Access**: [Request API Key](https://mindrianos-jsagirs-projects.vercel.app/brain-access)
+- **Brain Access**: [Request API Key](https://mindrian-os.com/brain-access)
 - **Prof. Lawrence Aronhime**: [LinkedIn](https://www.linkedin.com/in/lawrence-aronhime-8363894/)
 - **Jonathan Sagir**: [LinkedIn](https://www.linkedin.com/in/jonathansagir/)
 
