@@ -10,7 +10,7 @@
   Powered by PWS (Problems Worth Solving), an innovation methodology built and tested through 20 years of teaching by Prof. Lawrence Aronhime.
   Engineered by Jonathan Sagir.
 
-  [![Version](https://img.shields.io/badge/version-1.15.1-1E3A6E)](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
+  [![Version](https://img.shields.io/badge/version-1.15.3--beta.26-1E3A6E)](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
   [![License](https://img.shields.io/badge/license-BSL_1.1-C8A43C)](https://github.com/jsagir/mindrian-os-plugin/blob/main/LICENSE)
   [![Surfaces](https://img.shields.io/badge/CLI_+_Desktop_+_Cowork-2D6B4A)](https://github.com/jsagir/mindrian-os-plugin)
 
