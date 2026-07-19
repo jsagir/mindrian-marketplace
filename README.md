@@ -7,7 +7,7 @@
 
   When you are working a problem worth solving and cannot yet name what is missing, MindrianOS sequences the right method at the right moment, pushes back when your reasoning has gaps, and remembers every decision across sessions.
 
-  Powered by PWS (Problems Worth Solving), an innovation methodology built and tested through 20 years of teaching by Prof. Lawrence Aronhime.
+  Powered by PWS (Problems Worth Solving), an innovation methodology built and tested through 20 years of teaching practice.
   Engineered by Jonathan Sagir.
 
   [![Version](https://img.shields.io/badge/version-1.15.3--beta.26-1E3A6E)](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
@@ -130,7 +130,6 @@ Free plugin. It requires a paid Claude plan (Claude Pro, $20/mo, or higher) beca
 - **Website**: [mindrian-os.com](https://mindrian-os.com)
 - **Plugin Repo + Changelog**: [github.com/jsagir/mindrian-os-plugin](https://github.com/jsagir/mindrian-os-plugin)
 - **Brain Access**: [Request API Key](https://mindrian-os.com/brain-access)
-- **Prof. Lawrence Aronhime**: [LinkedIn](https://www.linkedin.com/in/lawrence-aronhime-8363894/)
 - **Jonathan Sagir**: [LinkedIn](https://www.linkedin.com/in/jonathansagir/)
 
 ---
