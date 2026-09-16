@@ -10,7 +10,7 @@
   Powered by PWS (Problems Worth Solving), an innovation methodology built and tested through 20 years of teaching practice.
   Engineered by Jonathan Sagir.
 
-  [![Version](https://img.shields.io/badge/version-1.15.3--beta.48-1E3A6E)](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
+  [![Version](https://img.shields.io/badge/version-2.0.0--beta.41-1E3A6E)](https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md)
   [![License](https://img.shields.io/badge/license-BSL_1.1-C8A43C)](https://github.com/jsagir/mindrian-os-plugin/blob/main/LICENSE)
   [![Surfaces](https://img.shields.io/badge/CLI_+_Desktop_+_Cowork-2D6B4A)](https://github.com/jsagir/mindrian-os-plugin)
 
@@ -99,19 +99,19 @@ Five minutes in, the room has more structure than a folder you spent an hour org
 
 ---
 
-## The Brain (optional)
+## The Brain
 
-The Brain is a shared teaching graph that connects your findings across projects. Two stores: one for connections, one for meanings. Connecting it makes Larry sharper. Not connecting it is fine; the system still teaches you.
+The Brain is the teaching graph behind Larry's methodology: hundreds of frameworks, calibrated from 20 years of teaching, holding WHEN to use WHICH method and in WHAT sequence. It installs with the plugin and registers silently on first use, no API key to paste, no account to create first. If you already hold a Brain key, it wins and nothing changes; the manual key is an override path, not a requirement.
 
-The Brain never sees your room. Brain queries carry methodology questions only. Your venture stays on your machine.
+The Brain never sees your room. Every query it answers carries a generic methodology question only, never your notes, your decisions, or your meetings.
 
-Request access: [mindrian-os.com/brain-access](https://mindrian-os.com/brain-access)
+Manual key / override path: [mindrian-os.com/brain-access](https://mindrian-os.com/brain-access)
 
 ---
 
 ## Pricing
 
-Free plugin. It requires a paid Claude plan (Claude Pro, $20/mo, or higher) because it runs on top of Claude. The Brain is an optional add-on.
+Free plugin. It requires a paid Claude plan (Claude Pro, $20/mo, or higher) because it runs on top of Claude. The Brain installs with it, silently registered, at no separate cost.
 
 ---
 
