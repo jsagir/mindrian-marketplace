@@ -1,0 +1,327 @@
+'use strict';
+// Phase 109-04 truth-state transition chokepoint. Per Phase 108 TRUTH-STATES.md L40-58
+// and L88. Every promoteNodeStatus call validates the transition pair against the
+// closed Set; logs a status_* memory_event; populates confirmed_by + confirmed_at when
+// transitioning to confirmed or validated.
+//
+// Canon Part 4: every status change is graph data; the memory_event row IS the audit
+// edge for the transition.
+// Canon Part 9: truth-state promotion is gated by the documented 9-transition closed
+// taxonomy; any other (from, to) pair is rejected.
+// Phase 365 D-20 (navigator ruling "proceed", additive): the ninth member is
+// needs_evidence->confirmed. A claim held below the room's verification floor is
+// released by a human approval once the floor is met or lowered; validated would
+// assert evidence that may not exist. The human-attribution guard below already
+// covers 'confirmed' as a target, so only a person can take this exit.
+
+const { logEvent } = require('./memory-events.cjs');
+
+// CANON PART 9 v1.5 HUMAN-ATTRIBUTION GUARD (Phase 129.5-02 / D-02).
+// AGENT_IDENTITIES is the closed lowercased set of non-human callers that MUST
+// NOT confirm or validate a truth-claim node. The human-confirms-truth rule
+// (role 5) forbids any agent (larry / brain / system / assistant) from promoting
+// a truth-claim node to confirmed or validated. The guard fires before any
+// mutation. resolveByUser (confirm-node.cjs) coerces any of these out of a
+// USER.md identity so a poisoned file cannot smuggle an agent into a confirm.
+const AGENT_IDENTITIES = Object.freeze(new Set(['larry', 'brain', 'system', 'assistant']));
+
+// Truth-claim node types per the Canon Part 9 v1.5 audit-node carve-out (Plan
+// 129.5-01). Only these nodes assert something about the venture's world and so
+// require a human byUser to reach confirmed or validated. System-bookkeeping
+// nodes (memory_event / audit / focus) are EXEMPT: they record what the system
+// DID, not what is TRUE, so created_by=system is canon-legal for them.
+//
+// NAVIGATOR-GATED ADDITION (Phase 164-01, D-164-S1 / E1, canon v1.13 Appendix D
+// entry 24): SyntheticExpert is added as a truth-claim NODE type. A SyntheticExpert
+// is a reusable expert graph citizen (a high-value team member FILED from room /
+// team / personas .md files and re-invokable as a hat). It is a truth-claim node
+// because a HUMAN confirms which experts are worth keeping (Part 9 role 5: the
+// navigator decides). Because the promoteNodeStatus human-confirm-gate below
+// (lines ~92-96) keys on row.type via TRUTH_CLAIM_TYPES.has(row.type), this single
+// additive member AUTOMATICALLY gates a SyntheticExpert's proposed->confirmed
+// promotion exactly as it gates {claim, CausalClaim, assumption, decision,
+// opportunity}: an agent-attributed confirm is rejected, only a human byUser
+// promotes. The promoteNodeStatus signature and the TRANSITIONS table are
+// UNCHANGED. ADDITIVE only; never a rewrite (the FLOOR doctrine, mirroring the
+// edges.cjs ALLOWED_EDGE_TYPES additive moves of entries 18/21/22/23).
+const TRUTH_CLAIM_TYPES = Object.freeze(new Set(['claim', 'CausalClaim', 'assumption', 'decision', 'opportunity', 'SyntheticExpert']));
+
+// PHASE 181-01 SEC-01 NON_PROMOTABLE STRUCTURAL GUARD (D-181-01).
+// EvidenceClaim is the node type that carries UNTRUSTED EXTERNAL WEB BYTES into the
+// local graph (lib/core/navigation/evidence-claim.cjs writeEvidenceClaim). Canon
+// Part 8 (external content stays local and untrusted) + Part 9 role 5 promise that
+// such bytes never silently harden into trusted memory. This is a DEDICATED guard,
+// stronger than the truth-claim human-confirm gate: a human MAY confirm a truth-claim
+// node, but an EvidenceClaim can NEVER leave 'proposed' through promoteNodeStatus --
+// agent OR human attributed, to ANY non-proposed target status. It is NOT a
+// TRUTH_CLAIM_TYPES member: adding EvidenceClaim there would be a Part 9 frozen-set
+// move requiring a NEW canon amendment (entry 32), which the just-ratified entry-31
+// self-binding clause BLOCKS. So the bar is minted as this dedicated set instead --
+// no frozen-set move, no Brain wire, no canon amendment. TRUTH_CLAIM_TYPES above
+// stays BYTE-UNCHANGED (D-181-01).
+const NON_PROMOTABLE = Object.freeze(new Set(['EvidenceClaim']));
+
+// Closed Set of allowed (from, to) transitions. The Set member is 'from->to' string.
+const TRANSITIONS = Object.freeze(new Set([
+  'proposed->confirmed',
+  'proposed->needs_evidence',
+  'needs_evidence->validated',
+  'needs_evidence->confirmed',
+  'confirmed->validated',
+  'validated->invalidated',
+  'proposed->rejected',
+  'confirmed->superseded',
+  'confirmed->stale',
+]));
+
+// event_type for each transition.
+const EVENT_FOR_TRANSITION = Object.freeze({
+  'proposed->confirmed': 'status_promoted',
+  'proposed->needs_evidence': 'status_promoted',
+  'needs_evidence->validated': 'status_promoted',
+  'needs_evidence->confirmed': 'status_promoted',
+  'confirmed->validated': 'status_promoted',
+  'validated->invalidated': 'status_promoted',
+  'proposed->rejected': 'status_rejected',
+  'confirmed->superseded': 'status_superseded',
+  'confirmed->stale': 'status_stale',
+});
+
+function promoteNodeStatus(db, nodeId, fromStatus, toStatus, byUser, reason, opts) {
+  // Clock seam (opts.now) per Phase 160-04 D-01a so tests inject a fixed
+  // reference and the Phase 160 last_modified_at write-discipline stamps the
+  // reference now (getReferenceNow) rather than the raw system clock. Defaults
+  // to Date.now in production -- byte-compatible for every existing caller that
+  // passes no opts. Mirrors the logEvent(opts.now) seam in memory-events.cjs.
+  const options = opts && typeof opts === 'object' ? opts : {};
+  const nowFn = typeof options.now === 'function' ? options.now : Date.now;
+  // Phase 160-04 R8 non-lossy supersession close (D-bitemporal). When the caller
+  // (supersession.cjs) supplies opts.invalidatedAt / opts.validTo, the same
+  // chokepoint UPDATE that sets review_status='superseded' ALSO closes the
+  // bitemporal axes on the node -- so the fact is CLOSED, never deleted, and the
+  // whole close stays inside this one truth-state chokepoint (Canon Part 9: no
+  // side-door write). Only honoured on the non-confirmed branch (a close, never a
+  // confirm/validate). Both values are nullable epoch-ms scalars; absent opts keep
+  // every existing promoteNodeStatus caller byte-compatible.
+  const closeInvalidatedAt = Number.isFinite(options.invalidatedAt) ? options.invalidatedAt : null;
+  const closeValidTo = Number.isFinite(options.validTo) ? options.validTo : null;
+  const wantsBitemporalClose = closeInvalidatedAt !== null || closeValidTo !== null;
+  // Phase 348 (SUPER-13) bitemporal-close schema gate. Mirrors the sibling
+  // precedent node-insert.cjs::isMigratedSchema, which gates its own INSERT
+  // on this exact same PRAGMA probe idiom. Phase 343 measured three live
+  // schema variants in the fleet, including bare legacy rooms whose nodes
+  // table lacks invalidated_at / valid_to (and, on the bare 3-column shape,
+  // review_status itself). WD-348-7: on such a room the bitemporal close
+  // must fail CLOSED with this named reason, never degrade to the plain
+  // status UPDATE below and never throw a raw SQLite error -- a superseded
+  // node with no invalidated_at and no valid_to is exactly the non-traceable
+  // close deliverable 2 forbids.
+  //
+  // This check runs HERE, before the transition-legality check and the
+  // row lookup below (not merely before db.exec('BEGIN')), because a schema
+  // this incompatible can fail even that row lookup (a bare legacy room has
+  // no review_status column to select at all). Scoped strictly to
+  // wantsBitemporalClose: a non-bitemporal call (reject / stale / confirm /
+  // validate) never reaches this probe and is completely unaffected by it,
+  // including on a legacy room -- a missing review_status column there
+  // breaks every status write equally and predates this phase; widening
+  // this gate to those other two UPDATE branches is out of scope, named
+  // here rather than silently done, so the change stays small enough to
+  // reason about.
+  //
+  // Fails CLOSED on any probe error (a PRAGMA that itself throws), never
+  // open. Does NOT cache its result on the module: promoteNodeStatus runs
+  // against a caller-owned handle that may be a different database on every
+  // call, and a module-level cache would be a correctness bug the moment
+  // two rooms are open in one process.
+  if (wantsBitemporalClose) {
+    let hasBitemporalColumns = false;
+    try {
+      const cols = db.prepare('PRAGMA table_info(nodes)').all();
+      const colNames = new Set(cols.map(function (c) { return c && c.name; }));
+      hasBitemporalColumns = colNames.has('invalidated_at') && colNames.has('valid_to');
+    } catch (_e) {
+      hasBitemporalColumns = false;
+    }
+    if (!hasBitemporalColumns) {
+      return { ok: false, reason: 'bitemporal_close_unsupported_schema' };
+    }
+  }
+  const key = fromStatus + '->' + toStatus;
+  if (!TRANSITIONS.has(key)) {
+    return { ok: false, reason: 'invalid_transition' };
+  }
+  const row = db.prepare('SELECT id, review_status, type FROM nodes WHERE id = ?').get(nodeId);
+  if (!row) {
+    return { ok: false, reason: 'unknown_node' };
+  }
+  // PHASE 181-01 SEC-01 NON_PROMOTABLE guard (D-181-01). An external-byte node type
+  // (EvidenceClaim) can NEVER harden into trusted memory: REJECT every promotion
+  // attempt -- agent OR human attributed, to ANY non-proposed target status -- BEFORE
+  // the state_mismatch check and before any mutation. Emit a rejection memory_event
+  // carrying ONLY enum/scalar handles + the node id (Part 8: no prose, never crosses
+  // to Brain). created_by 'system' because the rejection is a system-bookkeeping
+  // audit node (Part 9 v1.5 carve-out). ZERO signature change; the only net-new is
+  // this EvidenceClaim branch -- the TRANSITIONS table and the existing
+  // TRUTH_CLAIM_TYPES human-attribution guard are untouched.
+  if (NON_PROMOTABLE.has(row.type)) {
+    logEvent(db, 'evidence_claim_promotion_blocked', {
+      target_node_id: nodeId,
+      attempted_from: fromStatus,
+      attempted_to: toStatus,
+      attempted_by: AGENT_IDENTITIES.has(String(byUser || '').toLowerCase())
+        ? String(byUser).toLowerCase()
+        : 'user',
+      created_by: 'system',
+    });
+    return { ok: false, reason: 'evidence_claim_non_promotable' };
+  }
+  if (row.review_status !== fromStatus) {
+    return { ok: false, reason: 'state_mismatch', currentStatus: row.review_status };
+  }
+  // Phase 194-06 Task 2 (PSB-08/09/12): the optimistic lost-update reconcile
+  // guard, the FINER sibling of the state_mismatch check above. The coarse check
+  // catches a status flip; this catches a same-status content drift on the CAS
+  // token (last_modified_at). It arms ONLY when the caller supplies
+  // options.readVersion AND a live co-session shares the room (the presence
+  // fast-path -- a single-session turn resolves listLiveCoSessions to empty and
+  // pays zero cost, the load-bearing PSB-12 property). On drift (current token >
+  // readVersion) it returns WITHOUT overwriting so the caller raises a RECONCILE
+  // (F.9) instead of silently clobbering the co-session's write. Fail OPEN: any
+  // guard error degrades to the normal write. Additive: no readVersion -> no check
+  // (byte-identical to every existing caller).
+  if (options.readVersion !== undefined && options.readVersion !== null) {
+    try {
+      const presence = require('../session-presence.cjs');
+      const live = presence.listLiveCoSessions({
+        roomDir: options.roomDir,
+        room: options.room,
+        home: options.home,
+        sessionId: options.sessionId,
+      });
+      if (Array.isArray(live) && live.length > 0) {
+        const guard = require('./reconcile-guard.cjs');
+        const verdict = guard.checkLostUpdate(db, nodeId, options.readVersion);
+        if (verdict && verdict.conflict === true) {
+          return {
+            ok: false,
+            reason: 'lost_update',
+            reconcile: {
+              nodeId: nodeId,
+              held: toStatus,
+              readVersion: options.readVersion,
+              currentVersion: verdict.currentVersion,
+            },
+          };
+        }
+      }
+    } catch (_e) {
+      // Fail OPEN: a guard/presence failure never blocks a write.
+    }
+  }
+  const setsConfirmed = (toStatus === 'confirmed' || toStatus === 'validated');
+  // Phase 348 (SUPER-02). setsSuperseded is a SEPARATE predicate from
+  // setsConfirmed, added ONLY to the guard condition below, never by widening
+  // setsConfirmed itself. This closes a PRE-EXISTING hole; it does not
+  // introduce a new rule -- the comment three lines below used to say
+  // superseded is never gated, and that statement was false. It is corrected
+  // in place here. The reason setsSuperseded is a separate predicate rather
+  // than a widened setsConfirmed is that setsConfirmed ALSO selects the
+  // confirmed_by / confirmed_at UPDATE branch below: widening it would make a
+  // supersession take that branch and silently skip the bitemporal close
+  // (invalidated_at / valid_to never written), producing exactly the
+  // non-traceable close this phase exists to forbid (WD-348-5,
+  // docs/SUPERSESSION-CONTRACT.md). The one live caller affected is
+  // lib/core/close-loop-writer.cjs:478, which supplies no byUser and
+  // therefore defaults to 'system' (supersession.cjs:90), and which has
+  // produced zero SUPERSEDES edges in 47 live rooms (WD-348-6, accepted
+  // consequence, ratified at the task 1 navigator checkpoint).
+  const setsSuperseded = (toStatus === 'superseded');
+  // Human-attribution guard (Canon Part 9 v1.5 / D-02, widened Phase 348
+  // SUPER-02). A confirm, validate, OR supersede of a truth-claim node by an
+  // agent identity is REJECTED before any mutation. The carve-out exempts
+  // system-bookkeeping node types (memory_event / audit / focus): the guard
+  // keys on the node's type column, so only TRUTH_CLAIM_TYPES are gated.
+  // Reject and stale are never gated -- an agent MAY reject or stale a node;
+  // superseded IS gated as of Phase 348, because superseding a
+  // human-confirmed truth claim is itself a truth-state assertion about the
+  // venture's world. The existing byUser default to system stays
+  // byte-compatible for every non-guarded path.
+  if ((setsConfirmed || setsSuperseded)
+      && TRUTH_CLAIM_TYPES.has(row.type)
+      && AGENT_IDENTITIES.has(String(byUser || '').toLowerCase())) {
+    return { ok: false, reason: 'agent_attribution_forbidden' };
+  }
+  const nowMs = nowFn();
+  // Phase 369 (D-18): owns idiom so this writer composes inside withRoomTx (Pitfall 7).
+  const owns = db.isTransaction !== true;
+  if (owns) db.exec('BEGIN');
+  try {
+    // Phase 160-04 R7 last_modified_at write discipline: every node-WRITE path
+    // ALSO sets last_modified_at to the reference now (the options.now seam),
+    // disambiguating a true modify-stamp from last_seen_at (which conflates
+    // read + write). A node READ never runs this UPDATE, so reading never
+    // bumps last_modified_at. Both branches below are write paths.
+    if (setsConfirmed) {
+      db.prepare('UPDATE nodes SET review_status = ?, confirmed_by = ?, confirmed_at = ?, last_seen_at = ?, last_modified_at = ? WHERE id = ?')
+        .run(toStatus, byUser || 'system', nowMs, nowMs, nowMs, nodeId);
+    } else if (wantsBitemporalClose) {
+      // R8 non-lossy close: set the bitemporal axes in the SAME chokepoint UPDATE.
+      db.prepare('UPDATE nodes SET review_status = ?, last_seen_at = ?, last_modified_at = ?, invalidated_at = ?, valid_to = ? WHERE id = ?')
+        .run(toStatus, nowMs, nowMs, closeInvalidatedAt, closeValidTo, nodeId);
+    } else {
+      db.prepare('UPDATE nodes SET review_status = ?, last_seen_at = ?, last_modified_at = ? WHERE id = ?')
+        .run(toStatus, nowMs, nowMs, nodeId);
+    }
+    const eventType = EVENT_FOR_TRANSITION[key];
+    // The memory_event audit node's created_by column carries a CHECK constraint
+    // (IN 'user','larry','import','brain','system'), so a human navigator identity
+    // (jonathan / navigator / founder) cannot be stored there directly. Map any
+    // non-agent, non-system human byUser to the canonical 'user' marker for the
+    // audit row's created_by column, while preserving the LITERAL human identity in
+    // the unconstrained confirmed_by payload field (and on the truth-claim node's
+    // own confirmed_by column above). System-bookkeeping and agent reject/stale
+    // paths keep their byUser-or-system value byte-compatible.
+    const literalBy = byUser || 'system';
+    const auditCreatedBy = AGENT_IDENTITIES.has(String(literalBy).toLowerCase()) || literalBy === 'system'
+      ? literalBy
+      : 'user';
+    const evRes = logEvent(db, eventType, {
+      target_node_id: nodeId,
+      previous_status: fromStatus,
+      new_status: toStatus,
+      reason: typeof reason === 'string' ? reason : null,
+      created_by: auditCreatedBy,
+      confirmed_by: literalBy,
+      source_path: 'transition:' + key,
+    });
+    if (!evRes.ok) {
+      // Composed (not owns): throw so the outer owner rolls back the status
+      // UPDATE too; a bare return here would leave it half-applied.
+      if (!owns) throw new Error('event_log_failed:' + evRes.reason);
+      db.exec('ROLLBACK');
+      return { ok: false, reason: 'event_log_failed:' + evRes.reason };
+    }
+    if (owns) db.exec('COMMIT');
+    // Phase 194-06 Task 2: heartbeat this session's presence on a successful
+    // chokepoint write so a co-session's liveness window (the fast-path gate)
+    // stays fresh. Best-effort; only when the caller threads presence context.
+    if (options.sessionId && (options.roomDir || options.room)) {
+      try {
+        require('../session-presence.cjs').heartbeat({
+          sessionId: options.sessionId,
+          roomDir: options.roomDir,
+          room: options.room,
+          home: options.home,
+        });
+      } catch (_e) { /* fire-and-forget */ }
+    }
+    return { ok: true, eventId: evRes.eventId };
+  } catch (err) {
+    if (!owns) throw err; // the outer owner rolls back
+    try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
+    return { ok: false, reason: err.message };
+  }
+}
+
+module.exports = { promoteNodeStatus, TRANSITIONS, EVENT_FOR_TRANSITION, AGENT_IDENTITIES, TRUTH_CLAIM_TYPES, NON_PROMOTABLE };

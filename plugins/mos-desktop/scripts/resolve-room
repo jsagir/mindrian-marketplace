@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# resolve-room -- Universal room path resolver (keystone script)
+# Returns the absolute path of the active room on stdout.
+#
+# Resolution order (4 strategies):
+#   0.  Central registry: $ROOMS_HOME/.rooms/registry.json -> active room path
+#   0b. Directory scan: $ROOMS_HOME/<basename of WORK_DIR> exists
+#   1.  Workspace registry: $WORK_DIR/.rooms/registry.json (backward compat)
+#   2.  Legacy fallback: room/ or rooms/ directory (deprecation warning)
+#   3.  No room: exit 1
+#
+# Arguments:
+#   $1 -- workspace directory (defaults to $PWD)
+#   --adopt -- if legacy room/ exists with no registry, create one
+#   --strict -- distinguish a confirmed registry hit (Strategy 0/0b/1, or a
+#               Strategy-2 fallback combined with --adopt) from a bare
+#               Strategy-2 legacy fallback with no registry and no adoption.
+#               Without --strict, Strategy 2 always exits 0 with the legacy
+#               path on stdout (unchanged, backward-compatible default -- this
+#               is what every existing caller still gets). With --strict, a
+#               bare Strategy-2 hit (no --adopt) prints "FALLBACK:<path>" on
+#               stdout and exits 2 instead, so a caller that needs to know
+#               "is this a REAL resolved/registered room, or just the stale
+#               single-room fallback" can no longer mistake the latter for
+#               the former (intern-w1-rooms-new-silent-fail.md, Fix
+#               Direction 1: the fallback must be distinguishable).
+#
+# Environment:
+#   MINDRIAN_ROOMS_HOME -- override ~/MindrianRooms as central rooms location
+#
+# Performance: must complete in under 200ms (single python3 call where possible)
+
+set -euo pipefail
+
+WORK_DIR=""
+ADOPT=false
+STRICT=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --adopt) ADOPT=true ;;
+    --strict) STRICT=true ;;
+    *) [ -z "$WORK_DIR" ] && WORK_DIR="$arg" ;;
+  esac
+done
+
+WORK_DIR="${WORK_DIR:-$PWD}"
+ROOMS_HOME="${MINDRIAN_ROOMS_HOME:-$HOME/MindrianRooms}"
+
+# --- Strategy 0: Central registry ---
+CENTRAL_REGISTRY="${ROOMS_HOME}/.rooms/registry.json"
+if [ -f "$CENTRAL_REGISTRY" ]; then
+  ROOM_PATH=$(python3 -c "
+import json, sys, os
+# RCA windows-python-interp-and-shim: paths arrive via sys.argv, never
+# interpolated into this source (a Windows backslash path would otherwise be
+# re-parsed as a Python escape sequence and SyntaxError before this runs).
+try:
+    with open(sys.argv[1]) as f:
+        reg = json.load(f)
+    active = reg.get('active', '')
+    if not active or active not in reg.get('rooms', {}):
+        sys.exit(1)
+    rel_path = reg['rooms'][active]['path']
+    abs_path = os.path.normpath(os.path.join(sys.argv[2], rel_path))
+    if os.path.isdir(abs_path):
+        print(abs_path)
+    else:
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+" "$CENTRAL_REGISTRY" "$ROOMS_HOME" 2>/dev/null) || ROOM_PATH=""
+
+  if [ -n "$ROOM_PATH" ]; then
+    echo "$ROOM_PATH"
+    exit 0
+  fi
+fi
+
+# --- Strategy 0b: Directory scan (ROOMS_HOME exists, no registry) ---
+if [ -d "$ROOMS_HOME" ]; then
+  WS_BASENAME=$(basename "$WORK_DIR")
+  if [ -d "$ROOMS_HOME/$WS_BASENAME" ]; then
+    echo "$ROOMS_HOME/$WS_BASENAME"
+    exit 0
+  fi
+fi
+
+# --- Strategy 1: Workspace registry (backward compat) ---
+REGISTRY_DIR="${WORK_DIR}/.rooms"
+REGISTRY_FILE="${REGISTRY_DIR}/registry.json"
+if [ -f "$REGISTRY_FILE" ]; then
+  ROOM_PATH=$(python3 -c "
+import json, sys, os
+# RCA windows-python-interp-and-shim: paths arrive via sys.argv (see Strategy 0).
+try:
+    with open(sys.argv[1]) as f:
+        reg = json.load(f)
+    active = reg.get('active', '')
+    if not active or active not in reg.get('rooms', {}):
+        sys.exit(1)
+    rel_path = reg['rooms'][active]['path']
+    abs_path = os.path.normpath(os.path.join(sys.argv[2], rel_path))
+    if os.path.isdir(abs_path):
+        print(abs_path)
+    else:
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+" "$REGISTRY_FILE" "$WORK_DIR" 2>/dev/null) || ROOM_PATH=""
+
+  if [ -n "$ROOM_PATH" ]; then
+    echo "$ROOM_PATH"
+    exit 0
+  fi
+  echo "[MindrianOS] Registry found but no active room is set." >&2
+  echo "  Why: Registry at ${REGISTRY_FILE} has no active room or the room directory is missing" >&2
+  echo "  Fix: Run /mos:rooms to list and activate a room" >&2
+  exit 1
+fi
+
+# --- Strategy 2: Legacy fallback -- room/ or rooms/ directory ---
+LEGACY_DIR=""
+if [ -d "${WORK_DIR}/room" ]; then
+  LEGACY_DIR="${WORK_DIR}/room"
+elif [ -d "${WORK_DIR}/rooms" ]; then
+  LEGACY_DIR="${WORK_DIR}/rooms"
+fi
+
+if [ -n "$LEGACY_DIR" ]; then
+  # Deprecation warning with 12-hour TTL dedup
+  WARN_FILE="${TMPDIR:-/tmp}/.mindrian-legacy-warned"
+  if [ ! -f "$WARN_FILE" ] || [ -z "$(find "$WARN_FILE" -mmin -720 -print 2>/dev/null)" ]; then
+    echo "[MindrianOS] Room found at legacy path -- run /mos:setup to migrate to ~/MindrianRooms/" >&2
+    touch "$WARN_FILE"
+  fi
+
+  if $ADOPT; then
+    # Create registry adopting the legacy room
+    mkdir -p "$REGISTRY_DIR"
+
+    # Extract venture info from STATE.md if available
+    python3 -c "
+import json, os, sys, datetime
+# RCA windows-python-interp-and-shim: paths arrive via sys.argv, never
+# interpolated into this source text.
+state_file = os.path.join(sys.argv[1], 'STATE.md')
+venture_name = 'My Venture'
+venture_stage = 'Pre-Opportunity'
+if os.path.isfile(state_file):
+    with open(state_file) as f:
+        for line in f:
+            if line.startswith('project_name:'):
+                venture_name = line.split(':', 1)[1].strip()
+            elif line.startswith('venture_stage:'):
+                venture_stage = line.split(':', 1)[1].strip()
+now = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+reg = {
+    'version': 1,
+    'active': 'default',
+    'rooms': {
+        'default': {
+            'path': 'room',
+            'created': now,
+            'last_opened': now,
+            'status': 'active',
+            'venture_name': venture_name,
+            'venture_stage': venture_stage
+        }
+    }
+}
+reg_file = sys.argv[2]
+tmp = reg_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_file)
+" "$LEGACY_DIR" "$REGISTRY_FILE" 2>/dev/null
+  fi
+
+  LEGACY_ABS="$(cd "$LEGACY_DIR" && pwd)"
+
+  if $STRICT && ! $ADOPT; then
+    # A bare Strategy-2 hit: no registry, no adoption -- this is the stale
+    # single-room fallback, not a confirmed active room. A --strict caller
+    # must not be able to mistake this for success. Marker on stdout +
+    # distinct exit code (2, never 0/1) so it cannot alias either
+    # "confirmed resolution" (0) or "no room found" (1).
+    echo "FALLBACK:${LEGACY_ABS}"
+    echo "[MindrianOS] --strict: legacy fallback is not a confirmed registered room -- pass --adopt to register it, or omit --strict to use it as-is." >&2
+    exit 2
+  fi
+
+  # Return absolute path (unchanged default behavior; --adopt registered the
+  # legacy room above, or --strict was not requested)
+  echo "$LEGACY_ABS"
+  exit 0
+fi
+
+# --- Strategy 3: No room found ---
+# Human-readable error to stderr so callers can display it
+echo "[MindrianOS] No Data Room found." >&2
+echo "  Why: No room directory exists in ${ROOMS_HOME}/ or ${WORK_DIR}/" >&2
+echo "  Fix: Run /mos:new-project to create your first Data Room" >&2
+exit 1

@@ -1,0 +1,744 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# verify-release: Pre-release verification for MindrianOS plugin
+# Tests everything that can break for users: validation, visuals, onboarding, colors, marketplace sync.
+# Run this BEFORE every release. Fails loud on any issue.
+#
+# Usage: bash scripts/verify-release
+# Exit code 0 = all clear, non-zero = DO NOT RELEASE
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MARKETPLACE_DIR="$HOME/mindrian-marketplace"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+PASS=0
+FAIL=0
+WARN=0
+
+pass() { PASS=$((PASS + 1)); echo -e "  ${GREEN}✓${NC} $1"; }
+fail() { FAIL=$((FAIL + 1)); echo -e "  ${RED}✗${NC} $1"; }
+warn() { WARN=$((WARN + 1)); echo -e "  ${YELLOW}⚠${NC} $1"; }
+
+echo -e "${CYAN}${BOLD}=== MindrianOS Pre-Release Verification ===${NC}"
+echo ""
+
+# ============================================================
+# 1. PLUGIN VALIDATION (Claude Code's own validator)
+# ============================================================
+echo -e "${BOLD}1. Plugin Validation${NC}"
+
+VALIDATION=$(claude plugin validate "$PLUGIN_ROOT" 2>&1 || true)
+if echo "$VALIDATION" | grep -q "Validation passed"; then
+  pass "Plugin validation passed (0 errors)"
+else
+  fail "Plugin validation FAILED:"
+  echo "$VALIDATION" | grep -E "error|Error" | head -5
+fi
+
+# ============================================================
+# 2. MARKETPLACE VALIDATION
+# ============================================================
+echo -e "\n${BOLD}2. Marketplace Validation${NC}"
+
+if [ -d "$MARKETPLACE_DIR" ]; then
+  MVAL=$(claude plugin validate "$MARKETPLACE_DIR" 2>&1 || true)
+  if echo "$MVAL" | grep -q "Validation failed"; then
+    fail "Marketplace validation FAILED"
+  else
+    pass "Marketplace validation passed"
+  fi
+else
+  warn "Marketplace directory not found at $MARKETPLACE_DIR"
+fi
+
+# ============================================================
+# 3. VERSION SYNC (plugin.json == marketplace.json)
+# ============================================================
+echo -e "\n${BOLD}3. Version Sync${NC}"
+
+PLUGIN_VER=$(python3 -c "import json; print(json.load(open('$PLUGIN_ROOT/.claude-plugin/plugin.json'))['version'])" 2>/dev/null || echo "MISSING")
+
+if [ -f "$MARKETPLACE_DIR/.claude-plugin/marketplace.json" ]; then
+  MARKET_VER=$(python3 -c "import json; print(next((p for p in json.load(open('$MARKETPLACE_DIR/.claude-plugin/marketplace.json'))['plugins'] if p.get('name') == 'mos'), {}).get('version', 'MISSING'))" 2>/dev/null || echo "MISSING")
+  if [ "$PLUGIN_VER" = "$MARKET_VER" ]; then
+    pass "Versions match: plugin=$PLUGIN_VER marketplace=$MARKET_VER"
+  else
+    # Two-commit steady state (release.sh Step 7.5 design): after a release the
+    # catalog stays at the released vN while plugin.json carries the NEXT
+    # pre-release placeholder (inc(vN)). That mismatch is HEALTHY, not a drift.
+    #
+    # Found + fixed 2026-07-31 (v1.15.0 Gate-0 finalize -> v1.16.0-beta.1 start):
+    # semver.inc(vN, 'prerelease', 'beta') always yields '.beta.0' for a bare
+    # stable vN, but release.sh's own finalize step (Step 7.5) hardcodes
+    # '.beta.1' as the next placeholder -- confirmed live via its own commit
+    # message ("chore: bump to v1.15.4-beta.1"). An EXACT-counter comparison
+    # against semver.inc's independent computation false-fails on every
+    # finalize's real output. The check's actual intent (per the comment
+    # above) is "same base version, one patch ahead, carrying ANY prerelease
+    # tag" -- not "matches this one library call's specific counter value".
+    # Compare bases with the prerelease suffix stripped instead.
+    PLUGIN_BASE=$(echo "$PLUGIN_VER" | cut -d- -f1)
+    EXPECTED_BASE=$(node -e "try{console.log(require('semver').inc(process.argv[1],'patch'))}catch(e){console.log('ERR')}" "$MARKET_VER" 2>/dev/null || echo "ERR")
+    if [ "$PLUGIN_BASE" = "$EXPECTED_BASE" ] && echo "$PLUGIN_VER" | grep -q -- "-beta\."; then
+      pass "Two-commit steady state: marketplace=$MARKET_VER (released), plugin=$PLUGIN_VER (next placeholder)"
+    else
+      fail "Version MISMATCH: plugin=$PLUGIN_VER marketplace=$MARKET_VER (neither equal nor the documented next-placeholder state -- expected base $EXPECTED_BASE with a -beta.N suffix)"
+    fi
+  fi
+else
+  warn "Marketplace.json not found"
+fi
+
+# ============================================================
+# 4. COMMAND COUNT + CRITICAL COMMANDS
+# ============================================================
+echo -e "\n${BOLD}4. Commands${NC}"
+
+CMD_COUNT=$(ls "$PLUGIN_ROOT/commands/"*.md 2>/dev/null | wc -l)
+if [ "$CMD_COUNT" -ge 60 ]; then
+  pass "Command count: $CMD_COUNT (>= 60)"
+else
+  fail "Command count: $CMD_COUNT (expected >= 60)"
+fi
+
+CRITICAL_CMDS=(new-project onboard help setup status room splash update diagnose act export present dashboard wiki visualize)
+for cmd in "${CRITICAL_CMDS[@]}"; do
+  if [ -f "$PLUGIN_ROOT/commands/$cmd.md" ]; then
+    # Verify frontmatter has name field
+    if head -5 "$PLUGIN_ROOT/commands/$cmd.md" | grep -q "name: $cmd"; then
+      : # ok
+    else
+      fail "commands/$cmd.md missing 'name: $cmd' in frontmatter"
+    fi
+  else
+    fail "CRITICAL command missing: commands/$cmd.md"
+  fi
+done
+pass "All ${#CRITICAL_CMDS[@]} critical commands present with valid frontmatter"
+
+# ============================================================
+# 5. AGENTS (all must have frontmatter)
+# ============================================================
+echo -e "\n${BOLD}5. Agents${NC}"
+
+AGENT_COUNT=$(ls "$PLUGIN_ROOT/agents/"*.md 2>/dev/null | wc -l)
+AGENTS_NO_FM=0
+for agent in "$PLUGIN_ROOT/agents/"*.md; do
+  if ! head -1 "$agent" | grep -q "^---"; then
+    AGENTS_NO_FM=$((AGENTS_NO_FM + 1))
+    fail "Agent missing frontmatter: $(basename "$agent")"
+  fi
+done
+if [ "$AGENTS_NO_FM" -eq 0 ]; then
+  pass "All $AGENT_COUNT agents have valid frontmatter"
+fi
+
+# ============================================================
+# 6. ALLOWED-TOOLS VALIDATION (the Amnon bug)
+# ============================================================
+echo -e "\n${BOLD}6. Allowed-Tools Integrity${NC}"
+
+BAD_TOOLS=0
+for file in "$PLUGIN_ROOT/commands/"*.md "$PLUGIN_ROOT/agents/"*.md; do
+  # Extract ONLY the YAML frontmatter (between --- markers), then check allowed-tools
+  FRONTMATTER=$(sed -n '1,/^---$/p' "$file" 2>/dev/null | tail -n +2 | sed '$d')
+  if echo "$FRONTMATTER" | grep -A 50 "^allowed-tools:" 2>/dev/null | grep -E "^\s*-.*\(or |^\s*-.*fallback:|^\s*-.*\). If " > /dev/null 2>&1; then
+    BAD_TOOLS=$((BAD_TOOLS + 1))
+    fail "Invalid allowed-tools in $(basename "$file") (inline comments in frontmatter)"
+  fi
+done
+if [ "$BAD_TOOLS" -eq 0 ]; then
+  pass "All allowed-tools entries are plain strings (no inline comments)"
+fi
+
+# ============================================================
+# 7. VISUAL ELEMENTS
+# ============================================================
+echo -e "\n${BOLD}7. Visual Elements${NC}"
+
+# Banner script exists and produces ANSI output
+if [ -x "$PLUGIN_ROOT/scripts/banner" ]; then
+  BANNER_OUT=$(bash "$PLUGIN_ROOT/scripts/banner" "$PLUGIN_VER" 2>&1)
+  if echo "$BANNER_OUT" | grep -q "\[48;2;"; then
+    pass "Banner renders with ANSI 24-bit color codes"
+  else
+    fail "Banner output missing ANSI color codes"
+  fi
+  if echo "$BANNER_OUT" | grep -q "$PLUGIN_VER"; then
+    pass "Banner shows version $PLUGIN_VER"
+  else
+    fail "Banner does not show current version"
+  fi
+else
+  fail "scripts/banner not found or not executable"
+fi
+
+# Help command has ANSI color definitions
+# Note (2026-05-19): Phase 121.5-07 ("bulletproof ASCII /mos:help renderer") moved
+# the De Stijl ANSI palette from commands/help.md to scripts/help-renderer.cjs --
+# the markdown command file now delegates rendering to the renderer module. This
+# check follows the move.
+HELP_RENDERER="$PLUGIN_ROOT/scripts/help-renderer.cjs"
+if [ -f "$HELP_RENDERER" ] && grep -q '38;2;166;61;47' "$HELP_RENDERER" 2>/dev/null; then
+  pass "/mos:help has De Stijl ANSI color codes (red, blue, yellow, green, amethyst, teal) -- in scripts/help-renderer.cjs"
+else
+  fail "/mos:help renderer missing ANSI color code definitions (looked in scripts/help-renderer.cjs)"
+fi
+
+# Help has all 6 color blocks defined
+HELP_COLORS=0
+for hex in "166;61;47" "30;58;110" "107;78;139" "200;164;60" "45;107;74" "42;107;94"; do
+  if grep -q "$hex" "$HELP_RENDERER" 2>/dev/null; then
+    HELP_COLORS=$((HELP_COLORS + 1))
+  fi
+done
+if [ "$HELP_COLORS" -eq 6 ]; then
+  pass "/mos:help defines all 6 De Stijl color categories (in scripts/help-renderer.cjs)"
+else
+  fail "/mos:help only has $HELP_COLORS/6 color definitions (looked in scripts/help-renderer.cjs)"
+fi
+
+# visual-ops.cjs exists (dependency for status line)
+if [ -f "$PLUGIN_ROOT/lib/core/visual-ops.cjs" ]; then
+  pass "visual-ops.cjs exists (status line dependency)"
+else
+  fail "visual-ops.cjs MISSING (status line will break)"
+fi
+
+# ============================================================
+# 7b. COMMAND REGISTRATION PRECONDITIONS
+# ============================================================
+# Quick task 260705-jeq: the static precondition sweep catches the authoring
+# mistakes that make Claude Code SILENTLY skip a command file (broken frontmatter
+# fence, a tab in the YAML block, an illegal name, a case-insensitive collision).
+# A FAIL here blocks the release the same way it blocks a commit -- one sweep,
+# lib/core/command-registration-check.cjs, shared with the pre-commit hook.
+echo -e "\n${BOLD}7b. Command Registration Preconditions${NC}"
+
+REG_OUT=$(node "$PLUGIN_ROOT/lib/core/command-registration-check.cjs" 2>&1) && REG_CODE=0 || REG_CODE=$?
+if [ "$REG_CODE" -ne 0 ]; then
+  fail "Command-registration precondition sweep FAILED (a command would silently not register):"
+  echo "$REG_OUT" | grep '^FAIL' | head -10
+else
+  REG_WARNS=$(echo "$REG_OUT" | grep -c '^WARN' || true)
+  if [ "$REG_WARNS" -gt 0 ]; then
+    warn "Command-registration preconditions clean; $REG_WARNS render-quality warning(s) (over-long / missing description)"
+  else
+    pass "Command-registration preconditions clean (every command will register)"
+  fi
+fi
+
+# ============================================================
+# 8. ONBOARDING FLOW
+# ============================================================
+echo -e "\n${BOLD}8. Onboarding${NC}"
+
+# Onboard command exists and has the right structure
+if [ -f "$PLUGIN_ROOT/commands/onboard.md" ]; then
+  if grep -q "name: onboard" "$PLUGIN_ROOT/commands/onboard.md"; then
+    pass "/mos:onboard exists with valid frontmatter"
+  else
+    fail "/mos:onboard has wrong frontmatter"
+  fi
+else
+  fail "/mos:onboard MISSING"
+fi
+
+# New-project command exists
+if [ -f "$PLUGIN_ROOT/commands/new-project.md" ]; then
+  pass "/mos:new-project exists"
+else
+  fail "/mos:new-project MISSING"
+fi
+
+# Session-start hook mentions onboarding detection
+if grep -q "mindrian-onboarded\|onboard\|first.time\|NEW_USER" "$PLUGIN_ROOT/scripts/session-start" 2>/dev/null; then
+  pass "session-start detects new users for onboarding"
+else
+  warn "session-start may not detect new users"
+fi
+
+# ============================================================
+# 9. HOOKS + SETTINGS
+# ============================================================
+echo -e "\n${BOLD}9. Hooks + Settings${NC}"
+
+# hooks.json is valid JSON
+if python3 -c "import json; json.load(open('$PLUGIN_ROOT/hooks/hooks.json'))" 2>/dev/null; then
+  pass "hooks.json is valid JSON"
+else
+  fail "hooks.json is INVALID JSON"
+fi
+
+# settings.json has statusLine
+if grep -q "statusLine" "$PLUGIN_ROOT/settings.json" 2>/dev/null; then
+  pass "settings.json has statusLine configuration"
+else
+  fail "settings.json MISSING statusLine (no status bar for users)"
+fi
+
+# settings.json has larry-extended as default agent
+if grep -q "larry-extended" "$PLUGIN_ROOT/settings.json" 2>/dev/null; then
+  pass "settings.json defaults to larry-extended agent"
+else
+  fail "settings.json missing larry-extended default"
+fi
+
+# context-monitor script exists and is executable
+if [ -x "$PLUGIN_ROOT/scripts/context-monitor" ]; then
+  pass "context-monitor script exists (status line)"
+else
+  fail "context-monitor MISSING or not executable"
+fi
+
+# ============================================================
+# 10. SKILLS
+# ============================================================
+echo -e "\n${BOLD}10. Skills${NC}"
+
+REQUIRED_SKILLS=(larry-personality pws-methodology ui-system room-passive room-proactive context-engine brain-connector)
+for skill in "${REQUIRED_SKILLS[@]}"; do
+  if [ -f "$PLUGIN_ROOT/skills/$skill/SKILL.md" ]; then
+    : # ok
+  else
+    fail "Skill MISSING: skills/$skill/SKILL.md"
+  fi
+done
+pass "All ${#REQUIRED_SKILLS[@]} required skills present"
+
+# ============================================================
+# 10b. SKILL MIRRORS
+# ============================================================
+# Quick task 260705-sy9: every command is mirrored into skills/ as the Windows
+# registration workaround (260705-ob7). A stale mirror ships a wrong command
+# body to affected machines, so drift blocks the release. The check also
+# verifies the SKIP_LIST skill (trending-to-absurd) is present and still
+# genuinely divergent from its command.
+echo -e "\n${BOLD}10b. Skill Mirrors${NC}"
+
+MIRROR_OUT=$(node "$PLUGIN_ROOT/scripts/build-skill-mirrors.cjs" --check 2>&1) && MIRROR_CODE=0 || MIRROR_CODE=$?
+if [ "$MIRROR_CODE" -ne 0 ]; then
+  fail "Skill-mirror check FAILED (stale/missing mirror or broken skip-list skill):"
+  echo "$MIRROR_OUT" | head -10
+else
+  pass "Skill mirrors in sync with commands/ (build-skill-mirrors --check)"
+fi
+
+# ============================================================
+# 10c. PLUGIN PATH ANCHORING
+# ============================================================
+# Phase 271: a bare plugin-relative path in command, skill, agent or pipeline
+# markdown (Read `references/foo.md`) resolves against the SESSION'S CURRENT
+# WORKING DIRECTORY, not the plugin install directory, so it works by pure
+# coincidence in this dev repo (whose root happens to contain references/) and
+# fails in every real Data Room a user installs into, on all three surfaces.
+# The anchored form is ${CLAUDE_PLUGIN_ROOT}/references/... for commands,
+# agents and pipelines, and the fail-closed
+# ${MINDRIAN_OS_ROOT:-${CLAUDE_PLUGIN_ROOT:?...}}/ wrapper for hand-authored
+# skills, which a foreign Agent-Skills host can load with no plugin root set.
+#
+# This gate exists because the originating RCA,
+# .planning/debug/resolved/file-meeting-missing-reference-files.md, fixed
+# exactly ONE file (commands/file-meeting.md) and named the structural,
+# repo-wide guard as missing work in its own Non-Code Follow-ups section. A
+# one-file fix with no gate is how this class came back: the SAME disease was
+# already fixed once for `bash scripts/<name>` call sites
+# (.planning/debug/resolved/intern-w1-rooms-skill-script-path.md) and the
+# references/ pattern survived that sweep untouched, because both fixes were
+# scoped by grep pattern instead of by resolution mechanism. A sweep cleans the
+# tree once; only a release gate keeps it clean.
+#
+# Fail-closed on purpose. The gate is the phase's own oracle, and an advisory
+# WARN here would let 30-plus unanchored citations ship in a release while the
+# board still reads green.
+echo -e "\n${BOLD}10c. Plugin Path Anchoring${NC}"
+
+ANCHOR_OUT=$(node "$PLUGIN_ROOT/scripts/check-plugin-path-anchoring.cjs" --check 2>&1) && ANCHOR_CODE=0 || ANCHOR_CODE=$?
+if [ "$ANCHOR_CODE" -ne 0 ]; then
+  fail "Plugin path anchoring FAILED (bare references/ citations resolve against user cwd, not the plugin install dir):"
+  echo "$ANCHOR_OUT" | tail -12
+  echo "  Known open blocker as of Phase 271 close: 30 sites across 16 commands are ALREADY FIXED"
+  echo "  in the working tree but cannot be committed until Phase 267.3 lands (they lack the"
+  echo "  interactive_first_reward declaration the mva-rule-linter requires), plus"
+  echo "  commands/doctor.md:262. See .planning/phases/271-*/deferred-items.md (DEFERRED-271-D1)."
+else
+  pass "Every plugin-relative references/ citation is anchored (check-plugin-path-anchoring --check)"
+fi
+
+# ============================================================
+# 10d. FIRST-REWARD SURFACE DECLARATIONS
+# ============================================================
+# Phase 267.3 (ruling D-A, GUARD-04). The reward-before-investment guard reads
+# `interactive_first_reward` out of commands/*.md frontmatter. A bash hook has
+# no frontmatter block, so scripts/session-start -- which emits the very first
+# prose any user ever sees -- had nowhere to declare anything and sat outside
+# the guard entirely (GAP G-1). The declaration now lives in the sibling
+# registry data/first-reward-surfaces.json, validated by the SAME closed
+# vocabulary the frontmatter path uses.
+#
+# This gate makes the registry load-bearing. Without it the registry is a text
+# file: a record could name a deleted surface, carry a value outside the
+# vocabulary, duplicate an id, or lose its `why`, and a release would still cut
+# clean. --surfaces fails closed on every one of those (exit 0 clean, 1
+# violation, 2 ungateable), and its companion tripwire
+# tests/test-267.3-session-start-declaration.cjs additionally proves each
+# record's `anchor` still points at a live literal inside the file it names.
+#
+# WHAT IS DELIBERATELY NOT WIRED HERE, and why, so a later reader does not
+# "fix" the omission: the whole-tree commands/ audit (the CLI's default mode,
+# `node scripts/check-reward-before-investment.cjs` with no flag). It reads 67
+# missing today and it is SUPPOSED to. Wiring it now would turn every release
+# red for work this plan does not do, which produces a bypass habit rather than
+# a gate. Ruling D-C part 3 assigns that promotion to plan 267.3-08, after
+# plans 04, 06 and 07 land the 67 declarations and it genuinely reads zero.
+# Wire the gate, do not relax it, and do not turn it on before the work that
+# makes it green is done (the 271-05 discipline).
+echo -e "\n${BOLD}10d. First-Reward Surface Declarations${NC}"
+
+SURFACES_OUT=$(node "$PLUGIN_ROOT/scripts/check-reward-before-investment.cjs" --surfaces "$PLUGIN_ROOT" 2>&1) && SURFACES_CODE=0 || SURFACES_CODE=$?
+if [ "$SURFACES_CODE" -ne 0 ]; then
+  fail "First-reward surface declarations FAILED (a declared surface is missing, invalid, or points at a file that no longer exists):"
+  echo "$SURFACES_OUT" | tail -20
+  echo "  Fix the offending record in data/first-reward-surfaces.json, or restore the surface it names."
+  echo "  Legal values are the REWARD_TYPES closed vocabulary; a new term is a canon amendment,"
+  echo "  never a registry-local invention. See docs/reward-before-investment-rule.md."
+else
+  SURFACES_COUNT=$(echo "$SURFACES_OUT" | sed -n 's/^mva-rule-linter: scanning \([0-9]*\) declared surfaces$/\1/p' | head -1)
+  pass "All ${SURFACES_COUNT:-0} declared first-reward surfaces are valid (check-reward-before-investment --surfaces)"
+fi
+
+# ============================================================
+# 10e. WHOLE-TREE FIRST-REWARD DECLARATIONS
+# ============================================================
+# Phase 267.3 (ruling D-C part 3, GUARD-08). Gate 10d above only proves the
+# SIBLING REGISTRY (data/first-reward-surfaces.json) is internally valid; it
+# says nothing about the 113 commands/*.md files themselves. The commit-time
+# hook only ever sees STAGED commands/*.md (scripts/hooks/pre-commit-room-
+# minto-guard.sh:300), so a file that is never staged again after the rule
+# shipped stays invisible forever -- this is exactly the debt-ratchet
+# DEFERRED-271-D1 measured: 67 of 113 commands went undeclared for three
+# months because no commit happened to touch them. A staged-scoped gate
+# cannot measure a repo-wide gap; only a whole-tree audit can.
+#
+# This gate runs the CLI's own full-audit default mode (no flag, no
+# --staged, no --surfaces) against the real commands/ directory and fails
+# the release closed on any missing or invalid declaration. It was left
+# deliberately unwired until now (see gate 10d's own comment above) because
+# wiring it before the 67 declarations landed would have turned every
+# release red for work still in flight, which produces a bypass habit
+# rather than a gate (the 271-05 discipline: wire the gate, do not relax
+# it, and do not turn it on before the work that makes it green is done).
+# Plans 267.3-04, 06 and 07 landed all 67 declarations; the audit now reads
+# zero missing and zero invalid over all 113 files, so this promotion is
+# safe. Do not relax, allowlist or soften this gate, and do not remove
+# gate 10d above -- the two reward gates are complementary, not redundant:
+# 10d proves the registry is valid, 10e proves the commands/ tree is valid.
+echo -e "\n${BOLD}10e. Whole-Tree First-Reward Declarations${NC}"
+
+FULL_AUDIT_OUT=$(node "$PLUGIN_ROOT/scripts/check-reward-before-investment.cjs" "$PLUGIN_ROOT/commands" 2>&1) && FULL_AUDIT_CODE=0 || FULL_AUDIT_CODE=$?
+if [ "$FULL_AUDIT_CODE" -ne 0 ]; then
+  fail "Whole-tree first-reward audit FAILED (a commands/*.md file is missing or carries an invalid interactive_first_reward):"
+  echo "$FULL_AUDIT_OUT" | tail -20
+  echo "  Fix: declare interactive_first_reward in the frontmatter of each missing/invalid command."
+  echo "  See docs/reward-before-investment-rule.md."
+else
+  FULL_AUDIT_COMPLIANT=$(echo "$FULL_AUDIT_OUT" | sed -n 's/^  compliant: \([0-9]*\)$/\1/p' | head -1)
+  pass "All ${FULL_AUDIT_COMPLIANT:-0} commands/*.md carry a valid interactive_first_reward declaration (check-reward-before-investment, full audit)"
+fi
+
+# ============================================================
+# 10f. PLUGIN SCRIPT-INVOCATION ANCHORING
+# ============================================================
+# Phase 274, the sibling of gate 10c. A bare `bash scripts/<name>` or
+# `node scripts/<name>` line in command, skill, agent or pipeline markdown
+# resolves against the SESSION'S CURRENT WORKING DIRECTORY, exactly the same
+# defect class 10c already gates for references/ citations, but this one
+# dies LOUDLY at runtime: exit 127 from bash, MODULE_NOT_FOUND from node, in
+# the user's face mid-command, unlike the citation class's silent degraded
+# read. See .planning/phases/274-bare-scripts-invocation-anchoring-the-
+# adjacent-class-phase-2/ for the full research and sweep record: this is
+# the FOURTH pass at one disease class in this repo (intern-w1's
+# bash-scripts-in-skills fix, the file-meeting RCA's references-only fix,
+# Phase 271's references-repo-wide sweep, and this phase's scripts-repo-wide
+# sweep), each of the first three scoped by grep pattern instead of
+# resolution mechanism, which is why each left the sibling pattern standing.
+#
+# Two tiers, two verdicts, on purpose (D-01). A Read citation and a Bash
+# invocation fail differently and need different recovery text, so folding
+# them into one exit code would make the failure output unreadable.
+#
+# Fail-closed, zero-tolerance, no grandfather clause: Phase 274 cleared all
+# known sites (verified live, sites=156 anchored=154 allowlisted=2
+# violations=0) before this gate was wired, so there is nothing to
+# grandfather. Wire the gate, do not relax it (the 271-05 discipline).
+echo -e "\n${BOLD}10f. Plugin Script-Invocation Anchoring${NC}"
+
+SCRIPTANCHOR_OUT=$(node "$PLUGIN_ROOT/scripts/check-plugin-path-anchoring.cjs" --check-scripts 2>&1) && SCRIPTANCHOR_CODE=0 || SCRIPTANCHOR_CODE=$?
+if [ "$SCRIPTANCHOR_CODE" -ne 0 ]; then
+  fail "Script-invocation anchoring FAILED (bare scripts/ invocations resolve against user cwd, not the plugin install dir):"
+  echo "$SCRIPTANCHOR_OUT" | tail -12
+  echo "  Recovery: prefix with \"\${CLAUDE_PLUGIN_ROOT}/\" (commands, agents, pipelines) or the"
+  echo "  fail-closed \"\${MINDRIAN_OS_ROOT:-\${CLAUDE_PLUGIN_ROOT:?...}}/\" form (hand-authored skills),"
+  echo "  then regenerate mirrors with build-skill-mirrors.cjs, or add a reasoned ALLOWLIST entry."
+else
+  pass "Every plugin-relative scripts/ invocation is anchored or allowlisted (check-plugin-path-anchoring --check-scripts)"
+fi
+
+# ============================================================
+# 11. SCRIPTS EXECUTABLE
+# ============================================================
+echo -e "\n${BOLD}11. Script Permissions${NC}"
+
+CRITICAL_SCRIPTS=(banner session-start context-monitor check-update self-update resolve-room)
+NOT_EXEC=0
+for script in "${CRITICAL_SCRIPTS[@]}"; do
+  if [ -f "$PLUGIN_ROOT/scripts/$script" ] && [ ! -x "$PLUGIN_ROOT/scripts/$script" ]; then
+    NOT_EXEC=$((NOT_EXEC + 1))
+    fail "scripts/$script exists but is NOT executable"
+  fi
+done
+if [ "$NOT_EXEC" -eq 0 ]; then
+  pass "All critical scripts are executable"
+fi
+
+# ============================================================
+# 12. GIT STATE
+# ============================================================
+echo -e "\n${BOLD}12. Git State${NC}"
+
+cd "$PLUGIN_ROOT"
+# Plan 123-06 release-flight hot-patch (2026-05-13): `grep -v "^??"` exits 1 when
+# the working tree has only untracked files (no tracked uncommitted changes); under
+# `set -e` that kills the script silently. Wrap with `|| true` so a clean repo is
+# correctly counted as 0.
+UNCOMMITTED=$(git status --porcelain 2>/dev/null | { grep -v "^??" || true; } | wc -l)
+if [ "$UNCOMMITTED" -eq 0 ]; then
+  pass "No uncommitted changes in plugin repo"
+else
+  warn "$UNCOMMITTED uncommitted changes in plugin repo"
+fi
+
+if [ -d "$MARKETPLACE_DIR" ]; then
+  cd "$MARKETPLACE_DIR"
+  UNCOMMITTED_M=$(git status --porcelain 2>/dev/null | { grep -v "^??" || true; } | wc -l)
+  if [ "$UNCOMMITTED_M" -eq 0 ]; then
+    pass "No uncommitted changes in marketplace repo"
+  else
+    warn "$UNCOMMITTED_M uncommitted changes in marketplace repo"
+  fi
+fi
+
+# ============================================================
+# 13. CHANGELOG HAS CURRENT VERSION
+# ============================================================
+echo -e "\n${BOLD}13. Changelog${NC}"
+
+if [ -f "$PLUGIN_ROOT/CHANGELOG.md" ]; then
+  if grep -q "\[$PLUGIN_VER\]" "$PLUGIN_ROOT/CHANGELOG.md"; then
+    pass "CHANGELOG.md has entry for v$PLUGIN_VER"
+  else
+    warn "CHANGELOG.md has no entry for v$PLUGIN_VER"
+  fi
+else
+  fail "CHANGELOG.md MISSING"
+fi
+
+# ============================================================
+# 14. MCP CONFIG
+# ============================================================
+echo -e "\n${BOLD}14. MCP Config${NC}"
+
+if [ -f "$PLUGIN_ROOT/.mcp.json" ]; then
+  if python3 -c "import json; json.load(open('$PLUGIN_ROOT/.mcp.json'))" 2>/dev/null; then
+    pass ".mcp.json is valid JSON"
+  else
+    fail ".mcp.json is INVALID JSON"
+  fi
+  if grep -q "mindrian-brain" "$PLUGIN_ROOT/.mcp.json"; then
+    pass ".mcp.json has Brain MCP server configured"
+  else
+    warn ".mcp.json missing Brain MCP server"
+  fi
+else
+  fail ".mcp.json MISSING"
+fi
+
+# ============================================================
+# 15. WINDOWS-UNSAFE RENAME PRIMITIVE
+# ============================================================
+# RCA windows-os-rename-registry-wedge (2026-07-23): Python's os.rename() is
+# NOT POSIX rename(2) on Windows -- it raises FileExistsError [WinError 183]
+# when the destination exists, instead of overwriting. Every atomic-write
+# tmp-swap in scripts/ (Python heredocs in bash) must use os.replace()
+# instead. This bit the room-registry family silently for weeks on a real
+# Windows install (first write always succeeds -> looks healthy; every write
+# after that wedges) precisely because this repo's own test suite runs only
+# under WSL/Linux, where os.rename() already overwrites happily and never
+# surfaces the gap. There is no legitimate use of a bare os.rename( for an
+# atomic write anywhere in this repo -- ban it outright, same shape as the
+# check-shape-declaration.cjs gate.
+echo -e "\n${BOLD}15. Windows-Unsafe Rename Primitive${NC}"
+
+RENAME_HITS=$(grep -rn "os\.rename(" "$PLUGIN_ROOT/scripts/" 2>/dev/null | grep -v "\.pyc$" | grep -v "^$PLUGIN_ROOT/scripts/verify-release:" || true)
+if [ -z "$RENAME_HITS" ]; then
+  pass "No bare os.rename( in scripts/ (os.replace is the only overwrite-safe primitive on Windows)"
+else
+  fail "Found bare os.rename( in scripts/ -- Windows-unsafe (raises FileExistsError if dst exists; use os.replace instead). Sites:
+$RENAME_HITS"
+fi
+
+# ============================================================
+# 16. STOP HOOK hookSpecificOutput SCHEMA GATE
+# ============================================================
+# RCA stop-hook-invalid-hookspecificoutput-schema (2026-07-23, 4th occurrence of
+# this defect class): Claude Code's Stop-hook output schema does not define a
+# Stop variant of hookSpecificOutput at all (the union covers only PreToolUse,
+# UserPromptSubmit, PostToolUse); including the key on a Stop envelope rejects
+# the WHOLE envelope (additionalProperties: false), replacing a hook's calm
+# systemMessage/reason text with a raw "Hook JSON output validation failed"
+# dump on every single turn. Fixed once (scripts/on-stop, 2026-04-15) and
+# reintroduced twice more before this gate existed -- same "fix it once, ban
+# the anti-pattern repo-wide" reasoning as the os.rename gate above.
+# scripts/check-hook-schema-compatibility.cjs enumerates every script Claude
+# Code registers as a Stop hook straight off hooks/hooks.json's Stop array
+# (never hand-guessed), follows one level of subprocess invocation, and greps
+# for the literal forbidden pattern.
+echo -e "\n${BOLD}16. Stop Hook hookSpecificOutput Schema Gate${NC}"
+
+STOP_SCHEMA_OUT=$(node "$PLUGIN_ROOT/scripts/check-hook-schema-compatibility.cjs" 2>&1) && STOP_SCHEMA_CODE=0 || STOP_SCHEMA_CODE=$?
+if [ "$STOP_SCHEMA_CODE" -eq 0 ]; then
+  pass "No Stop-hook-reachable script emits a Stop-shaped hookSpecificOutput"
+else
+  fail "Stop-hook schema gate FAILED (see .planning/debug/resolved/stop-hook-invalid-hookspecificoutput-schema.md):"
+  echo "$STOP_SCHEMA_OUT"
+fi
+
+# ============================================================
+# 17. KUZU REINTRODUCTION GATE
+# ============================================================
+# The local per-room graph moved off KuzuDB to node:sqlite on 2026-06-14 (see
+# the correction banner at the top of docs/MOAT-MANDATE.md). Until Phase 242,
+# that file's PR checklist still asked reviewers to judge the point by eye
+# against a database this repo no longer has, which is an unfalsifiable
+# question, not a control. This gate replaces that prose with a deterministic
+# scan: dependency-manifest keys in package.json and package-lock.json (so a
+# transitive reintroduction that never touches package.json is still caught)
+# plus live require/import statements across every .cjs/.js/.mjs file.
+# Historical migration comments, the buildGraphFromKuzu back-compat alias, and
+# the build-kuzu subcommand label are exempt by design, which is why the scan
+# is scoped to statements and manifest keys rather than the bare string kuzu.
+echo -e "\n${BOLD}17. Kuzu Reintroduction Gate${NC}"
+
+KUZU_GATE_OUT=$(node "$PLUGIN_ROOT/scripts/check-kuzu-reintroduction.cjs" 2>&1) && KUZU_GATE_CODE=0 || KUZU_GATE_CODE=$?
+if [ "$KUZU_GATE_CODE" -eq 0 ]; then
+  pass "No live kuzu dependency or require/import re-entered the tree"
+else
+  fail "Kuzu reintroduction gate FAILED (the retired KuzuDB engine is back in the dependency surface):"
+  echo "$KUZU_GATE_OUT"
+fi
+
+# ============================================================
+# 18. GATE LEDGER SEAM GATE
+# ============================================================
+# Phase 238 (GATE-01, D-08): a gate kind minted by some call site in this
+# repo (lib/mcp/tools/gate.cjs, lib/mcp/tools/chain.cjs) must have a
+# reachable ratifier, or the gate that kind raises can never be cleared --
+# the dead-seam shape lib/core/seam-liveness.cjs (Phase 235) was built to
+# catch. That helper had zero production consumers until this gate existed;
+# a seam-liveness call living only inside a test file is the exact "wired
+# at one end, inert at the other" shape this milestone exists to close.
+# scripts/check-gate-seam.cjs drives the real mint call sites, reads the
+# shared ledger's own declared vocabulary back, and checks it against the
+# frozen ratifiable-kinds list via checkMintRatifierLiveness -- exit 1 on a
+# dead seam OR an empty claim set (D-13 vacuity), exit 2 on a scanner
+# failure, never a silent 0.
+echo -e "\n${BOLD}18. Gate Ledger Seam Gate${NC}"
+
+GATE_SEAM_OUT=$(node "$PLUGIN_ROOT/scripts/check-gate-seam.cjs" 2>&1) && GATE_SEAM_CODE=0 || GATE_SEAM_CODE=$?
+if [ "$GATE_SEAM_CODE" -eq 0 ]; then
+  pass "Every minted gate kind has a reachable ratifier (mint-to-ratifier seam live)"
+else
+  fail "Gate ledger seam gate FAILED (a minted gate kind has no reachable ratifier, or the check itself could not run):"
+  echo "$GATE_SEAM_OUT"
+fi
+
+# ============================================================
+# 19. BRAIN TOOL LIVENESS GATE
+# ============================================================
+# Phase 239 (BRAIN-01, threat T-239-T1): Claude Code evaluates a hook
+# matcher per tool-call event and NEVER validates it against a live tool
+# registry -- a matcher naming a tool that no longer exists does not warn
+# and does not error, it silently stops firing, forever. Before Phase 239
+# this repo's two Part-8 hook matchers read "mcp__brain_.*" while the live
+# registered names were mcp__plugin_<plugin>_<server>__<tool>, so the Canon
+# Part 8 egress guard and the PII sanitizer had both been dead for the
+# entire period the plugin shipped through the marketplace. The official
+# Claude Code plugins reference states plainly that a matcher written
+# against the bare server key never fires. This gate checks two claim
+# sources -- hook matchers (each must match at least one live name; an
+# empty claim set reads as vacuously live per lib/core/seam-liveness.cjs's
+# own contract and is therefore treated as a FAILURE here, not a pass) and
+# agent allowed-tools exact names -- against a real stdio tools/list
+# handshake, never a hand-typed list. Requirement BRAIN-01, threat T1.
+#
+# NOTE ON SECTION NUMBERING: Phase 238 (GATE-01) landed section 18 "Gate
+# Ledger Seam Gate" first. This section is numbered 19, the next free
+# integer, per this plan's collision-resolution rule (whichever phase
+# executes second renumbers; section 18 is untouched).
+echo -e "\n${BOLD}19. Brain Tool Liveness Gate${NC}"
+
+BRAIN_LIVENESS_OUT=$(node "$PLUGIN_ROOT/scripts/check-brain-tool-liveness.cjs" 2>&1) && BRAIN_LIVENESS_CODE=0 || BRAIN_LIVENESS_CODE=$?
+if [ "$BRAIN_LIVENESS_CODE" -eq 0 ]; then
+  pass "Every Brain hook matcher and agent allowed-tools entry names a live MCP tool"
+elif [ "$BRAIN_LIVENESS_CODE" -eq 1 ]; then
+  fail "Brain tool liveness gate FAILED (a hook matcher or agent allowed-tools entry names a Brain tool that does not exist):"
+  echo "$BRAIN_LIVENESS_OUT"
+else
+  fail "Brain tool liveness gate could not run (probe failure):"
+  echo "$BRAIN_LIVENESS_OUT"
+fi
+
+# ============================================================
+# PACKAGE-LOCK SYNC (vendored-node_modules lockstep)
+# ============================================================
+# Debug session mcp-servers-cache-missing-node-modules: release.sh Step 6.7
+# vendors production node_modules built via `npm ci --omit=dev`, which REQUIRES
+# package-lock.json to be in sync with package.json. A stale lock means the
+# release aborts at Step 6.7 -- catch it here, earlier, with a clear message.
+echo ""
+echo -e "${BOLD}Package-lock sync (vendored-deps lockstep)${NC}"
+if [ -f "$PLUGIN_ROOT/package-lock.json" ]; then
+  if ( cd "$PLUGIN_ROOT" && npm ci --dry-run --omit=dev --no-audit --no-fund >/dev/null 2>&1 ); then
+    pass "package-lock.json is in sync with package.json (npm ci can run)"
+  else
+    fail "package-lock.json is OUT OF SYNC with package.json -- run 'npm install' to resync the lock, commit it (the vendored node_modules tree is built from this lock and must never drift from it)"
+  fi
+else
+  fail "package-lock.json MISSING -- required for the vendored-node_modules release lockstep"
+fi
+
+# ============================================================
+# SUMMARY
+# ============================================================
+echo ""
+echo -e "${BOLD}═══════════════════════════════════════════════${NC}"
+TOTAL=$((PASS + FAIL + WARN))
+echo -e "  ${GREEN}✓ $PASS passed${NC}  ${RED}✗ $FAIL failed${NC}  ${YELLOW}⚠ $WARN warnings${NC}  ($TOTAL checks)"
+
+if [ "$FAIL" -gt 0 ]; then
+  echo -e "\n  ${RED}${BOLD}DO NOT RELEASE. Fix $FAIL failures first.${NC}"
+  echo -e "${BOLD}═══════════════════════════════════════════════${NC}"
+  exit 1
+else
+  echo -e "\n  ${GREEN}${BOLD}CLEAR TO RELEASE v$PLUGIN_VER${NC}"
+  echo -e "${BOLD}═══════════════════════════════════════════════${NC}"
+  exit 0
+fi

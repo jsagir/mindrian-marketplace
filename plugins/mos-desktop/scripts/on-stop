@@ -1,0 +1,617 @@
+#!/usr/bin/env bash
+# on-stop: Stop hook handler for MindrianOS
+# Computes STATE.md from filesystem truth and persists it to room/STATE.md
+#
+# Phase 88-06 extends on-stop with the per-section memory triple close-out:
+#   1. Census (never drain) the minto-debouncer queue via its read-only
+#      peek() accessor. Phase 241-02 (F-0, MINTO-01) retired the old
+#      unconditional olderThanMs=0 vacuum here; the live consumer is the
+#      Phase 88-05 drain block inside scripts/intent-classifier, which
+#      drains on the NEXT UserPromptSubmit, not here.
+#   2. Recompile ROOM.md references for every active section.
+#   3. Walk sections and call folder-memory.readTriple() to capture the
+#      full triple signal.
+#   4. Write .mindrian/session-snapshot.json (consumed by session-start
+#      in Phase 88-07).
+#   5. Write .mindrian/minto-stale.json for any sections whose reasoning
+#      is stale.
+# Total Phase 88 budget ~1500ms (census + recompile-in-parallel +
+# snapshot under 500ms), leaving slack under the 3000ms hook timeout.
+# STATE.md write path (Phase 84 contract) is preserved byte-for-byte.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Quick task 260612-pkb: conversation intake plumbing. Capture the Stop hook
+# stdin JSON ONCE and extract transcript_path, exporting it so the
+# memory-lifecycle.cjs stop subprocess (line ~199) can ingest the real
+# conversation turns into the active room's room.db. stdin can only be read
+# once, so this MUST run before anything else consumes stdin. Defensive on
+# every step (|| true under set -euo pipefail): a manual run with no stdin
+# must not hang and must not error. LOCAL-only (Canon Part 8): this only reads
+# a local transcript path; no network, no Brain.
+HOOK_STDIN="$(cat 2>/dev/null || true)"
+if [ -n "$HOOK_STDIN" ]; then
+  TRANSCRIPT_PATH="$(printf '%s' "$HOOK_STDIN" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.transcript_path||'')}catch(_){process.stdout.write('')}})" 2>/dev/null || true)"
+  if [ -n "$TRANSCRIPT_PATH" ]; then
+    export MINDRIAN_TRANSCRIPT_PATH="$TRANSCRIPT_PATH"
+    if [ "${MINDRIAN_MEMORY_DEBUG:-}" = "1" ]; then
+      printf '[on-stop] MINDRIAN_TRANSCRIPT_PATH=%s\n' "$MINDRIAN_TRANSCRIPT_PATH" >&2
+    fi
+  fi
+fi
+
+# Phase 198-09 (SPEC-5, D-05/D-06) -- thin Stop adapter under the flag.
+# BEGIN-MCP-FIRST-STOP-THIN-ADAPTER
+# MINDRIAN_MCP_FIRST naming 'cli' or 'all': wake the shared daemon, query the
+# server-side stop_gate_check tool (lib/mcp/tools/stop-gate.cjs ->
+# lib/mcp/stop-gate-handler.cjs -- D-05: only migrates after gate-dedup +
+# relevance existed, 198-09 Task 1), render its verdict, and let the daemon
+# own the ENTIRE business close-out below (the STATE.md persist + the
+# memory-lifecycle/minto-debouncer/folder-memory invocations run SERVER-SIDE
+# under this branch -- D-06: this branch's own text carries ZERO of those
+# business-module tokens). Flag OFF (unset/empty, the default) falls through
+# UNTOUCHED to the legacy body below, byte-identical (SPEC-7).
+if [ -n "${MINDRIAN_MCP_FIRST:-}" ]; then
+  SESSION_ID_FOR_STOP=""
+  if [ -n "$HOOK_STDIN" ]; then
+    SESSION_ID_FOR_STOP="$(printf '%s' "$HOOK_STDIN" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.session_id||'')}catch(_){process.stdout.write('')}})" 2>/dev/null || true)"
+  fi
+  set +e
+  THIN_STOP_OUT="$(SESSION_ID_FOR_STOP="$SESSION_ID_FOR_STOP" TRANSCRIPT_PATH_FOR_STOP="${MINDRIAN_TRANSCRIPT_PATH:-}" timeout 8 node -e "
+    const path = require('node:path');
+    const root = '${PLUGIN_ROOT}';
+    (async () => {
+      try {
+        const { isMcpFirst } = require(path.join(root, 'lib/mcp/mcp-first-flag.cjs'));
+        if (!isMcpFirst('cli')) { process.exit(9); }
+        const { wakeDaemon, queryDaemon } = require(path.join(root, 'lib/mcp/adapter-client.cjs'));
+        await wakeDaemon();
+        const result = await queryDaemon('stop_gate_check', {
+          session_id: process.env.SESSION_ID_FOR_STOP || '',
+          transcript_path: process.env.TRANSCRIPT_PATH_FOR_STOP || '',
+        });
+        const text = result && result.content && result.content[0] && result.content[0].text;
+        process.stdout.write(text || '{}');
+        process.exit(0);
+      } catch (_e) {
+        process.exit(1);
+      }
+    })();
+  " 2>/dev/null)"
+  THIN_STOP_EXIT=$?
+  set -e
+  if [ "${THIN_STOP_EXIT}" -eq 0 ] && [ -n "${THIN_STOP_OUT}" ]; then
+    printf '%s' "${THIN_STOP_OUT}" | node -e "
+      let d='';
+      process.stdin.on('data', c => d += c).on('end', () => {
+        try {
+          const r = JSON.parse(d);
+          if (r && r.fire === true) {
+            // stop-hook-invalid-hookspecificoutput-schema (2026-07-23): this branch
+            // is a REGRESSION of the SAME fix already applied lower in this file's
+            // legacy success-output branch (search 'Stop hooks DO NOT support
+            // hookSpecificOutput' below) -- Stop has no hookSpecificOutput variant
+            // in Claude Code's schema, so including that key rejects the whole
+            // envelope and replaces this systemMessage with a raw validation-error
+            // dump. The rendered-zones body this branch used to carry via
+            // hookSpecificOutput.additionalContext is DROPPED, not relocated:
+            // additionalContext has no valid Stop-hook channel and reason/
+            // systemMessage must stay calm, human-facing text (CR-06 in
+            // check-card-fire.cjs), never internal render payloads. See
+            // .planning/debug/resolved/stop-hook-invalid-hookspecificoutput-schema.md.
+            const out = {
+              decision: 'block',
+              reason: 'stop-gate-relevant-unanswered',
+              continue: false,
+              systemMessage: 'A pending decision needs your input.',
+            };
+            process.stdout.write(JSON.stringify(out) + '\n');
+          } else {
+            const sections = (r && r.business && typeof r.business.sections === 'number') ? r.business.sections : null;
+            let msg = (sections !== null) ? ('session synced via mindrian-core, ' + sections + ' sections scanned') : 'session synced via mindrian-core';
+            // Phase 241-05 (F-1, MINTO-01 Tri-Polar parity): fold the shared
+            // mindrian-core Stop path's guardian finding in, same
+            // space-pipe-space separator the legacy path below uses, so a
+            // CLI session running under MINDRIAN_MCP_FIRST reads identically
+            // to the default legacy path.
+            const guardianSm = (r && r.business && typeof r.business.guardian_sm === 'string' && r.business.guardian_sm.length > 0) ? r.business.guardian_sm : null;
+            if (guardianSm) { msg = msg + ' | ' + guardianSm; }
+            process.stdout.write(JSON.stringify({ continue: true, systemMessage: msg }) + '\n');
+          }
+        } catch (_e) {
+          process.stdout.write(JSON.stringify({ continue: true }) + '\n');
+        }
+      });
+    "
+    exit 0
+  fi
+  # Thin path found trouble (daemon unreachable, or the authoritative
+  # isMcpFirst('cli') check resolved false for this flag value/surface) --
+  # forgiving contract: fall through to the legacy body below rather than
+  # fail the hook (a Stop hook must never block a session on daemon trouble).
+fi
+# END-MCP-FIRST-STOP-THIN-ADAPTER
+
+# Determine working directory
+WORK_DIR="${PWD}"
+ROOM_DIR=$("${SCRIPT_DIR}/resolve-room" "$WORK_DIR") || ROOM_DIR=""
+
+if [ -d "$ROOM_DIR" ]; then
+  # Room exists -- compute state and write STATE.md
+  state_content=$("${SCRIPT_DIR}/compute-state" "$ROOM_DIR" 2>/dev/null || echo "# Data Room State\n\nError computing state.")
+  # Phase 240.1 Plan 03 (CTXL-01): route the persist through
+  # scripts/state-write.cjs (which calls lib/core/state-version.cjs::persistState)
+  # instead of a bare redirect, so the gsd_state_version/status stamp survives
+  # regeneration at this hook-driven write site too. Never blocking: the
+  # bridge always exits 0 and the advisory stderr line is intentionally left
+  # un-redirected (not sent to /dev/null) so it stays visible.
+  printf '%s\n' "$state_content" | node "${SCRIPT_DIR}/state-write.cjs" "$ROOM_DIR" || true
+
+  # Track session end
+  bash "${SCRIPT_DIR}/track-analytics" session-stop 2>/dev/null &
+
+  # --- Student Progress Tracking (CTX-06) ---
+  # Detect archetype and write learning progress for students
+  USER_ARCHETYPE=$(node "${PLUGIN_ROOT}/lib/core/user-archetype.cjs" "$ROOM_DIR" 2>/dev/null | node -e "process.stdin.on('data',d=>{try{console.log(JSON.parse(d).archetype)}catch(_){console.log('default')}})" 2>/dev/null || echo "default")
+
+  if [ "$USER_ARCHETYPE" = "student" ]; then
+    CONTEXT_DIR="${ROOM_DIR}/.context"
+    mkdir -p "$CONTEXT_DIR" 2>/dev/null || true
+
+    # Count completed tasks (markdown files in room sections with "completed" or "done" markers)
+    COMPLETED_TASKS=0
+    TOTAL_TASKS=22  # PWS workbook has 22 tasks across 5 stages
+    for task_file in "${ROOM_DIR}"/*/task-*.md "${ROOM_DIR}"/*/deliverable-*.md; do
+      [ -f "$task_file" ] || continue
+      COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+    done
+
+    # Also count any files with completion markers
+    MARKED_COMPLETE=$(grep -rl "status:\s*complete" "${ROOM_DIR}" --include="*.md" 2>/dev/null | wc -l || echo "0")
+    MARKED_COMPLETE=$(echo "$MARKED_COMPLETE" | tr -d ' ')
+    if [ "$MARKED_COMPLETE" -gt "$COMPLETED_TASKS" ]; then
+      COMPLETED_TASKS="$MARKED_COMPLETE"
+    fi
+
+    # Count room sections as proxy for progress stages
+    SECTION_COUNT=$(find "$ROOM_DIR" -maxdepth 1 -type d ! -name '.*' ! -name '_*' ! -path "$ROOM_DIR" 2>/dev/null | wc -l || echo "0")
+    SECTION_COUNT=$(echo "$SECTION_COUNT" | tr -d ' ')
+
+    # Detect last methodology used
+    LAST_METHOD="none"
+    RECENT_FILE=$(find "$ROOM_DIR" -name "*.md" ! -name "STATE.md" ! -name "ROOM.md" ! -name "USER.md" ! -path "*/.context/*" -newer "${CONTEXT_DIR}/learning-progress.md" 2>/dev/null | head -1 || echo "")
+    if [ -n "$RECENT_FILE" ] && [ -f "$RECENT_FILE" ]; then
+      METHOD_MATCH=$(grep -m1 "methodology:" "$RECENT_FILE" 2>/dev/null | sed 's/methodology:\s*//' | tr -d '\r' || echo "")
+      if [ -n "$METHOD_MATCH" ]; then
+        LAST_METHOD="$METHOD_MATCH"
+      fi
+    fi
+
+    SESSION_DATE=$(date -u +"%Y-%m-%d")
+    SESSION_TIME=$(date -u +"%H:%M:%S")
+
+    cat > "${CONTEXT_DIR}/learning-progress.md" <<PROGRESSEOF
+# Learning Progress
+
+You completed ${COMPLETED_TASKS} of ${TOTAL_TASKS} tasks.
+
+## Progress Summary
+
+- **Tasks completed:** ${COMPLETED_TASKS}/${TOTAL_TASKS}
+- **Sections active:** ${SECTION_COUNT}
+- **Last methodology:** ${LAST_METHOD}
+- **Last session:** ${SESSION_DATE} ${SESSION_TIME} UTC
+
+## Session History
+
+- ${SESSION_DATE}: Session ended with ${COMPLETED_TASKS} tasks complete, ${SECTION_COUNT} active sections
+PROGRESSEOF
+
+    # Append to history (keep last 10 entries)
+    HISTORY_FILE="${CONTEXT_DIR}/learning-history.log"
+    echo "${SESSION_DATE} ${SESSION_TIME} tasks=${COMPLETED_TASKS} sections=${SECTION_COUNT} method=${LAST_METHOD}" >> "$HISTORY_FILE" 2>/dev/null || true
+    # Trim to last 10
+    if [ -f "$HISTORY_FILE" ]; then
+      tail -10 "$HISTORY_FILE" > "${HISTORY_FILE}.tmp" 2>/dev/null && mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE" 2>/dev/null || true
+    fi
+  fi
+
+  # --- KAIROS Prep: Write session summary to room/.context/last-session.md ---
+  CONTEXT_DIR="${ROOM_DIR}/.context"
+  if [ -d "$CONTEXT_DIR" ]; then
+    SESSION_DATE=$(date -u +"%Y-%m-%d")
+    SESSION_TIME=$(date -u +"%H:%M:%S")
+
+    # Extract venture stage from STATE.md
+    VENTURE_STAGE=$(grep -i "Stage:" "${ROOM_DIR}/STATE.md" 2>/dev/null | head -1 | sed 's/.*Stage:\s*//' | tr -d '\r' || echo "Unknown")
+
+    # Count artifacts (markdown files excluding STATE.md, ROOM.md, USER.md)
+    ARTIFACT_COUNT=$(find "$ROOM_DIR" -name "*.md" \
+      ! -name "STATE.md" ! -name "ROOM.md" ! -name "USER.md" \
+      ! -path "*/.context/*" ! -path "*/.reasoning/*" \
+      -newer "${CONTEXT_DIR}/last-session.md" 2>/dev/null | wc -l || echo "0")
+    ARTIFACT_COUNT=$(echo "$ARTIFACT_COUNT" | tr -d ' ')
+
+    # Count signals from proactive intelligence
+    SIGNAL_COUNT=0
+    if [ -f "${ROOM_DIR}/.proactive-intelligence.json" ]; then
+      SIGNAL_COUNT=$(node -e "
+        try {
+          const d = require('fs').readFileSync('${ROOM_DIR}/.proactive-intelligence.json','utf8');
+          const j = JSON.parse(d);
+          console.log(Array.isArray(j.signals) ? j.signals.length : 0);
+        } catch(_) { console.log(0); }
+      " 2>/dev/null || echo "0")
+    fi
+
+    # Detect active methodology from recent artifacts
+    LAST_METHODOLOGY=$(find "$ROOM_DIR" -name "*.md" \
+      ! -name "STATE.md" ! -name "ROOM.md" ! -name "USER.md" \
+      ! -path "*/.context/*" ! -path "*/.reasoning/*" \
+      -newer "${CONTEXT_DIR}/last-session.md" 2>/dev/null \
+      | head -1 \
+      | xargs grep -l "^methodology:" 2>/dev/null \
+      | head -1 \
+      | xargs grep "^methodology:" 2>/dev/null \
+      | sed 's/methodology:\s*//' | tr -d '\r' || echo "none detected")
+
+    # Extract MINTO governing thoughts from .reasoning directories
+    MINTO_THOUGHTS=""
+    for section_dir in "${ROOM_DIR}"/*/; do
+      section_name=$(basename "$section_dir")
+      reasoning_file="${ROOM_DIR}/.reasoning/${section_name}/REASONING.md"
+      if [ -f "$reasoning_file" ]; then
+        governing=$(grep -A1 "governing.thought" "$reasoning_file" 2>/dev/null | tail -1 | sed 's/^[[:space:]]*//' || echo "")
+        if [ -n "$governing" ] && [ "$governing" != "---" ]; then
+          MINTO_THOUGHTS="${MINTO_THOUGHTS}\n- **${section_name}:** ${governing}"
+        fi
+      fi
+    done
+    if [ -z "$MINTO_THOUGHTS" ]; then
+      MINTO_THOUGHTS="\n- No REASONING.md files established yet"
+    fi
+
+    # Write session log
+    cat > "${CONTEXT_DIR}/last-session.md" <<SESSIONEOF
+# Last Session Log
+
+## Session Metadata
+
+- **Date:** ${SESSION_DATE}
+- **Time:** ${SESSION_TIME} UTC
+- **Active Room:** ${ROOM_DIR}
+- **Venture Stage:** ${VENTURE_STAGE}
+
+## Artifacts Filed
+
+- **Count:** ${ARTIFACT_COUNT} new/modified since last session
+
+## Signals Detected
+
+- **Total Signals:** ${SIGNAL_COUNT}
+
+## Active Methodology
+
+- **Last Framework Used:** ${LAST_METHODOLOGY}
+
+## MINTO Governing Thoughts
+${MINTO_THOUGHTS}
+
+## Pending Verifications
+
+- Check STATE.md for current section grades and gaps
+
+## Session Notes
+
+Session ended ${SESSION_DATE} at ${SESSION_TIME} UTC.
+SESSIONEOF
+  fi
+fi
+
+# Phase 84-03: memory-lifecycle stop hook. Writes session-summary fragment,
+# closes the active-room session row, writes a voice_log row (84-07 writer)
+# from session fragments, and unlinks the .mindrian/current-session.json
+# pointer. Graceful no-op when no active room. Strictly additive to on-stop's
+# existing STATE.md and analytics flow.
+if command -v node >/dev/null 2>&1 && [ -f "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" ]; then
+  node "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" stop >/dev/null 2>&1 || true
+fi
+
+# Phase 84-07 reader: surface a one-line session summary built from the
+# voice_log row just written by the writer above. Advisory: any failure
+# (missing node, missing row, parse error, missing room db) leaves
+# VOICE_SUMMARY_LINE empty and the hook output unchanged.
+VOICE_SUMMARY_LINE=""
+if command -v node >/dev/null 2>&1 && [ -f "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" ]; then
+  VOICE_TAIL_JSON=$(node "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" read-voice-tail "" 2>/dev/null || echo "null")
+  if [ -n "$VOICE_TAIL_JSON" ] && [ "$VOICE_TAIL_JSON" != "null" ]; then
+    VOICE_SUMMARY_LINE=$(VOICE_TAIL_JSON="$VOICE_TAIL_JSON" node -e "
+      try {
+        const j = JSON.parse(process.env.VOICE_TAIL_JSON || 'null');
+        if (!j) { process.exit(0); }
+        const cmd = (j.command || 'session').toString();
+        const cited = Array.isArray(j.artifacts_cited) ? j.artifacts_cited.length : 0;
+        const flagged = Array.isArray(j.contradictions_flagged) ? j.contradictions_flagged.length : 0;
+        const ts = (j.timestamp || '').toString().slice(0, 19).replace('T', ' ');
+        const ans = (j.answer_summary || '').toString().replace(/\s+/g, ' ').slice(0, 120);
+        const head = 'SESSION SUMMARY: ' + cmd + ' | ' + cited + ' artifacts | ' + flagged + ' contradictions | ' + ts + 'Z';
+        process.stdout.write(ans ? (head + ' | ' + ans) : head);
+      } catch (_) { /* advisory: stay silent */ }
+    " 2>/dev/null || echo "")
+  fi
+fi
+
+# --- Phase 88-06: triple snapshot (Wave 2, session close-out) ---
+# Drains the minto-debouncer queue, recompiles ROOM.md references for
+# every active section, captures per-section triple via readTriple, and
+# writes .mindrian/session-snapshot.json + .mindrian/minto-stale.json.
+# Bounded to ~1500ms drain + parallel recompiles + sub-500ms snapshot so
+# the 3000ms Stop-hook budget absorbs slack. Every step soft-fails (|| true)
+# so a Phase 88 failure cannot break the Stop-hook exit-0 contract. The
+# Phase 84 STATE.md write above is preserved byte-for-byte.
+GUARDIAN_SM=""
+GUARDIAN_TIMEOUT_S="${MINDRIAN_GUARDIAN_ONSTOP_TIMEOUT_S:-3}"
+MINTO_QUEUE_PENDING=0
+if [ -n "${ROOM_DIR}" ] && [ -d "${ROOM_DIR}" ] && [ -d "${ROOM_DIR}/.mindrian" ]; then
+  PHASE88_START_MS=$(node -e "process.stdout.write(String(Date.now()))" 2>/dev/null || echo 0)
+
+  # 1. Census (never drain) the debouncer queue. Phase 241-02 (F-0, MINTO-01):
+  # this site used to run an unconditional zero-age-floor vacuum, which
+  # discarded every pending regen intent before the live Phase 88-05
+  # consumer ever got a turn. That consumer is real and already wired: the
+  # drain block inside scripts/intent-classifier (the extensionless bash
+  # wrapper registered for UserPromptSubmit in hooks/hooks.json), which
+  # drains at olderThanMs=30000 on every user turn and spawns
+  # vault-section-minto-generator.cjs --write for each drained section.
+  # See .planning/debug/resolved/minto-debounce-consumer-dead-end.md,
+  # which corrects the earlier grep-against-the-wrong-file conclusion that
+  # this consumer did not exist. peek() is read-only: it reports how many
+  # entries are pending without emptying the queue, so an entry enqueued
+  # near session stop survives to the next prompt where the real consumer
+  # can act on it, and the queue-health validator's 500/1000 thresholds
+  # stay structurally reachable instead of being starved by this drain.
+  MINTO_QUEUE_PENDING=$(ROOM_DIR_ENV="${ROOM_DIR}" SCRIPT_DIR_ENV="${SCRIPT_DIR}" node -e "
+    try {
+      const path = require('path');
+      const dbnc = require(path.join(process.env.SCRIPT_DIR_ENV, 'minto-debouncer.cjs'));
+      const snap = dbnc.peek(process.env.ROOM_DIR_ENV);
+      process.stdout.write(String((snap && Array.isArray(snap.entries)) ? snap.entries.length : 0));
+    } catch (_e) {
+      process.stdout.write('0');
+    }
+  " 2>/dev/null || echo 0)
+
+  # 2. Recompile ROOM.md references for every top-level section in parallel.
+  # Each recompile has its own 400ms timeout; the outer wait caps total at
+  # ~800ms wall-clock even for 20-section rooms. mtime-conflict skips are
+  # expected (recompiler exits 0 with stderr warning in that case).
+  for SECTION_DIR in "${ROOM_DIR}"/*/; do
+    [ -d "$SECTION_DIR" ] || continue
+    [ -f "${SECTION_DIR}ROOM.md" ] || continue
+    ( timeout 0.4 node "${SCRIPT_DIR}/recompile-room-references.cjs" "${SECTION_DIR%/}" >/dev/null 2>&1 || true ) &
+  done
+  # Wait at most ~1s for recompiles to finish, then move on. Background
+  # recompiles that exceed the budget are orphaned -- they finish when they
+  # finish but the hook does not wait on them.
+  ( sleep 1 && kill $(jobs -p) 2>/dev/null || true ) &
+  WAIT_KILL_PID=$!
+  wait $(jobs -p) 2>/dev/null || true
+  kill "$WAIT_KILL_PID" 2>/dev/null || true
+
+  # 3-5. Walk sections, readTriple per section, write snapshot + stale JSON.
+  # Single Node invocation amortizes cold-start cost. Atomic tmp+rename
+  # so a crash mid-write leaves the previous snapshot intact. Every failure
+  # path funnels through || true so the outer hook exits 0 regardless.
+  ROOM_DIR_ENV="${ROOM_DIR}" PLUGIN_ROOT_ENV="${PLUGIN_ROOT}" node -e '
+    "use strict";
+    const fs = require("fs");
+    const path = require("path");
+    const roomDir = process.env.ROOM_DIR_ENV;
+    const pluginRoot = process.env.PLUGIN_ROOT_ENV;
+    let fm;
+    try {
+      fm = require(path.join(pluginRoot, "lib", "core", "folder-memory.cjs"));
+    } catch (_e) {
+      process.exit(0);
+    }
+    const sections = {};
+    const stale = [];
+    let entries = [];
+    try {
+      entries = fs.readdirSync(roomDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && d.name[0] !== ".");
+    } catch (_e) {
+      entries = [];
+    }
+    for (const d of entries) {
+      const sp = path.join(roomDir, d.name);
+      // Skip sections that have no ROOM.md (not an active section, per
+      // ICM Layer 0 decision 15 in CLAUDE.md).
+      try {
+        if (!fs.existsSync(path.join(sp, "ROOM.md"))) continue;
+      } catch (_e) { continue; }
+      let triple;
+      try {
+        triple = fm.readTriple(sp);
+      } catch (e) {
+        stale.push({
+          section: d.name,
+          reason: "readtriple_failed",
+          error: String(e && e.message || e),
+          last_generated_at: null,
+        });
+        continue;
+      }
+      sections[d.name] = triple;
+      if (triple && triple.reasoning && triple.reasoning.is_stale) {
+        stale.push({
+          section: d.name,
+          reason: triple.reasoning.stale_reason || "unknown",
+          last_generated_at: triple.reasoning.last_generated_at || null,
+        });
+      }
+    }
+    const snapshotAt = new Date().toISOString();
+    const snapshot = {
+      version: 1,
+      session_id: process.env.CLAUDE_SESSION_ID || ("sess-" + Date.now()),
+      snapshot_at: snapshotAt,
+      active_room: roomDir,
+      sections: sections,
+    };
+    const snapPath = path.join(roomDir, ".mindrian", "session-snapshot.json");
+    try {
+      const tmp = snapPath + ".tmp." + process.pid;
+      fs.writeFileSync(tmp, JSON.stringify(snapshot, null, 2));
+      fs.renameSync(tmp, snapPath);
+    } catch (_e) { /* soft-fail */ }
+    if (stale.length > 0) {
+      const stalePath = path.join(roomDir, ".mindrian", "minto-stale.json");
+      try {
+        const tmp2 = stalePath + ".tmp." + process.pid;
+        fs.writeFileSync(tmp2, JSON.stringify({
+          version: 1,
+          at: snapshotAt,
+          sections: stale,
+        }, null, 2));
+        fs.renameSync(tmp2, stalePath);
+      } catch (_e) { /* soft-fail */ }
+    }
+  ' >/dev/null 2>&1 || true
+
+  # Best-effort observability: elapsed-ms trace into a room-local log. Bounded
+  # appends so the file stays small; no rotation needed in v1.
+  PHASE88_END_MS=$(node -e "process.stdout.write(String(Date.now()))" 2>/dev/null || echo 0)
+  PHASE88_ELAPSED=$((PHASE88_END_MS - PHASE88_START_MS))
+  printf '%s on-stop-phase88 elapsed_ms=%s\n' \
+    "$(date -u +%FT%TZ)" "$PHASE88_ELAPSED" \
+    >> "${ROOM_DIR}/.mindrian/session-close.log" 2>/dev/null || true
+
+  # --- Phase 88-13 guardian: on-stop invariant verification + stale ghost pruning
+  # Runs every registered validator (minto-invariants + snapshot-integrity +
+  # queue-health + stale-lifecycle) AFTER the 88-06 drain + snapshot lands,
+  # writes .mindrian/invariant-report.json atomically, and CONSUMES
+  # stale-lifecycle ghost warnings to prune stale.json in-place. Phase 241-01
+  # (F-1, MINTO-01): a 3s outer ceiling is a last-resort safety net; the
+  # guardian owns its own soft walk budget internally (runOnStop's
+  # ONSTOP_WALK_BUDGET_MS), so the write and prune always get their turn
+  # even on a slow room. The guardian's systemMessage is captured and folded
+  # into this hook's final output below (GUARDIAN_SM), instead of being
+  # discarded. Advisory (never exits non-zero). See 88-13-SUMMARY.md and
+  # 241-01-SUMMARY.md.
+  GUARDIAN_OUT=$(timeout "${GUARDIAN_TIMEOUT_S}" node "${PLUGIN_ROOT}/scripts/feynman-minto-guardian.cjs" on-stop "${ROOM_DIR}" 2>/dev/null || true)
+  GUARDIAN_SM=$(GUARDIAN_OUT="${GUARDIAN_OUT}" node -e "
+    const raw = process.env.GUARDIAN_OUT || '';
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length === 0) { process.exit(0); }
+    try {
+      const parsed = JSON.parse(lines[lines.length - 1]);
+      if (parsed && typeof parsed.systemMessage === 'string' && parsed.systemMessage.length > 0) {
+        process.stdout.write(parsed.systemMessage);
+      }
+    } catch (_e) { /* not JSON: leave GUARDIAN_SM empty */ }
+  " 2>/dev/null || true)
+  # --- end Phase 88-13 guardian on-stop ---
+fi
+# --- end Phase 88-06 ---
+
+# 88.1-03: systemMessage retrofit. Extend the existing stop-hook
+# systemMessage emission with a tight one-line drain/health summary so the
+# user sees the hook acted even when no voice-log tail is available. Uses
+# Canon Part 2 glyph vocabulary for the aggregate post-drain health score.
+# LOCAL-only (Canon Part 8): never references Brain endpoints.
+STOP_SUMMARY_LINE=""
+if [ -n "${ROOM_DIR:-}" ] && [ -d "${ROOM_DIR}" ]; then
+  ROOM_SLUG=$(basename "${ROOM_DIR}" 2>/dev/null || echo "unknown")
+  STOP_SM=$(env ROOM_DIR_ENV="${ROOM_DIR}" PLUGIN_ROOT_ENV="${PLUGIN_ROOT}" node -e '
+    "use strict";
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const roomDir = process.env.ROOM_DIR_ENV;
+      const pluginRoot = process.env.PLUGIN_ROOT_ENV;
+      const fmt = require(path.join(pluginRoot, "lib", "memory", "triple-context-formatter.cjs"));
+      // Prefer the freshly-written session-snapshot.json (captured above).
+      // Fallback to live read if snapshot missing or empty.
+      let sections = {};
+      try {
+        const snapPath = path.join(roomDir, ".mindrian", "session-snapshot.json");
+        if (fs.existsSync(snapPath)) {
+          const parsed = JSON.parse(fs.readFileSync(snapPath, "utf8"));
+          if (parsed && parsed.sections && typeof parsed.sections === "object") {
+            sections = parsed.sections;
+          }
+        }
+      } catch (_e) { /* fall through */ }
+      const scores = [];
+      let sectionCount = 0;
+      for (const name of Object.keys(sections)) {
+        sectionCount += 1;
+        const t = sections[name];
+        if (t && t.reasoning && typeof t.reasoning.reasoning_health_score === "number") {
+          scores.push(t.reasoning.reasoning_health_score);
+        }
+      }
+      let median = null;
+      if (scores.length > 0) {
+        const sorted = scores.slice().sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        median = sorted.length % 2 === 0
+          ? (sorted[mid - 1] + sorted[mid]) / 2
+          : sorted[mid];
+      }
+      const glyph = fmt.classifyHealth(median);
+      process.stdout.write(sectionCount + "|" + glyph);
+    } catch (_e) { process.stdout.write("0|--"); }
+  ' 2>/dev/null || echo "0|--")
+  SECTION_COUNT="${STOP_SM%|*}"
+  HEALTH_GLYPH="${STOP_SM##*|}"
+  STOP_SUMMARY_LINE="session snapshot saved, ${SECTION_COUNT} sections scanned, ${MINTO_QUEUE_PENDING} regen pending, health ${HEALTH_GLYPH}"
+fi
+
+# Output success JSON. If the voice-log reader produced a summary line,
+# attach it via systemMessage (the Stop-hook field that surfaces text to
+# Claude on the next turn). Stop hooks DO NOT support hookSpecificOutput
+# at all - that field is restricted to PreToolUse, UserPromptSubmit, and
+# PostToolUse per the Claude Code 2.1.x hook schema. Earlier versions of
+# this code emitted hookSpecificOutput.additionalContext which produced
+# a validation error on every stop ("Hook JSON output validation failed
+# - (root): Invalid input"). Witnessed live on Windows 2026-04-15 in
+# v1.10.9, fixed for v1.10.10. systemMessage is the correct field per
+# the schema and produces no validation noise.
+# 88.1-03: prefer STOP_SUMMARY_LINE (drain + health); fall back to voice-tail
+# only when no room is active. Both paths emit a systemMessage so stop is
+# never silent on success.
+FINAL_SM=""
+if [ -n "$STOP_SUMMARY_LINE" ] && [ -n "$VOICE_SUMMARY_LINE" ]; then
+  FINAL_SM="${STOP_SUMMARY_LINE} | ${VOICE_SUMMARY_LINE}"
+elif [ -n "$STOP_SUMMARY_LINE" ]; then
+  FINAL_SM="$STOP_SUMMARY_LINE"
+elif [ -n "$VOICE_SUMMARY_LINE" ]; then
+  FINAL_SM="$VOICE_SUMMARY_LINE"
+else
+  FINAL_SM="session ended: no active room"
+fi
+
+# Phase 241-01 (F-1, MINTO-01): fold the guardian's on-stop finding into the
+# ONE JSON line Claude Code actually reads. Without this fold, a fixed
+# discard-redirect alone is not enough - this hook builds FINAL_SM entirely
+# from STOP_SUMMARY_LINE/VOICE_SUMMARY_LINE above and never looked at what
+# the guardian subprocess printed to its own stdout.
+if [ -n "$GUARDIAN_SM" ]; then
+  FINAL_SM="${FINAL_SM} | ${GUARDIAN_SM}"
+fi
+
+SYSTEM_MESSAGE="$FINAL_SM" node -e "
+  const msg = process.env.SYSTEM_MESSAGE || '';
+  const out = {
+    continue: true,
+    systemMessage: msg
+  };
+  process.stdout.write(JSON.stringify(out) + '\n');
+" 2>/dev/null || printf '{"continue": true}\n'
+
+exit 0

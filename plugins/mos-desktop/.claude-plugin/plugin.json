@@ -1,0 +1,21 @@
+{
+  "name": "mos",
+  "description": "MindrianOS -- Your AI innovation co-founder. Larry thinks with you through PWS methodology, builds your Data Room as you explore, and chains frameworks intelligently. Install and go.",
+  "version": "2.0.0-beta.57",
+  "author": {
+    "name": "Jonathan Sagir",
+    "url": "https://mindrian-os.com"
+  },
+  "homepage": "https://mindrian-os.com",
+  "repository": "https://github.com/jsagir/mindrian-os-plugin",
+  "license": "BSL-1.1",
+  "keywords": [
+    "innovation",
+    "pws",
+    "venture",
+    "methodology",
+    "data-room",
+    "thinking-partner",
+    "larry"
+  ]
+}

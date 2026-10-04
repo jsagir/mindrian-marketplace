@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+"""render-pdf: Generate De Stijl PDFs from Data Room content.
+
+Collects room markdown artifacts, renders through Jinja2 templates
+with WeasyPrint, adds TOC bookmarks via PyMuPDF, and outputs to
+room/exports/.
+
+Usage:
+    python3 scripts/render-pdf <doc-type> [--room DIR] [--output PATH] [--no-open]
+
+Document types: thesis, summary, report, profile
+"""
+
+import argparse
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import markdown2
+import yaml
+from jinja2 import Environment, FileSystemLoader
+from weasyprint import CSS, HTML
+from weasyprint.text.fonts import FontConfiguration
+
+# ── Constants ────────────────────────────────────────────────────────
+
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
+TEMPLATES_DIR = PLUGIN_DIR / "templates"
+
+SECTIONS = [
+    "problem-definition",
+    "market-analysis",
+    "solution-design",
+    "business-model",
+    "competitive-analysis",
+    "team-execution",
+    "legal-ip",
+    "financial-model",
+]
+
+SECTION_COLORS = {
+    "problem-definition": "#A63D2F",
+    "market-analysis": "#C8A43C",
+    "solution-design": "#5C5A56",
+    "business-model": "#2D6B4A",
+    "competitive-analysis": "#B5602A",
+    "team-execution": "#1E3A6E",
+    "legal-ip": "#6B4E8B",
+    "financial-model": "#2A6B5E",
+}
+
+SECTION_LABELS = {
+    "problem-definition": "Problem Definition",
+    "market-analysis": "Market Analysis",
+    "solution-design": "Solution Design",
+    "business-model": "Business Model",
+    "competitive-analysis": "Competitive Analysis",
+    "team-execution": "Team & Execution",
+    "legal-ip": "Legal & IP",
+    "financial-model": "Financial Model",
+}
+
+DOC_TYPES = {
+    "thesis": "investment-thesis.html",
+    "summary": "executive-summary.html",
+    "report": "due-diligence.html",
+    "profile": "profile.html",
+    "meeting-report": "meeting-report.html",
+}
+
+DOC_TITLES = {
+    "thesis": "Investment Thesis",
+    "summary": "Executive Summary",
+    "report": "Due Diligence Report",
+    "profile": "PWS Profile",
+    "meeting-report": "Meeting Intelligence Report",
+}
+
+SKIP_FILES = {"ROOM.md", "STATE.md"}
+
+
+# ── Functions ────────────────────────────────────────────────────────
+
+
+def collect_room_data(room_dir: Path, doc_type: str) -> dict:
+    """Walk room sections, parse markdown artifacts, return structured data."""
+    sections = {}
+
+    for section_name in SECTIONS:
+        section_dir = room_dir / section_name
+        if not section_dir.is_dir():
+            continue
+
+        entries = []
+        for md_file in sorted(section_dir.glob("*.md")):
+            if md_file.name in SKIP_FILES or md_file.name.startswith("_"):
+                continue
+
+            text = md_file.read_text(encoding="utf-8")
+            result = markdown2.markdown(
+                text, extras=["metadata", "fenced-code-blocks", "tables"]
+            )
+            metadata = result.metadata if result.metadata else {}
+            title = metadata.get("title", md_file.stem.replace("-", " ").title())
+
+            entries.append(
+                {
+                    "filename": md_file.name,
+                    "metadata": metadata,
+                    "html": str(result),
+                    "title": title,
+                }
+            )
+
+        if entries:
+            sections[section_name] = entries
+
+    venture_name = _infer_venture_name(room_dir)
+
+    return {
+        "sections": sections,
+        "metadata": {
+            "generated": datetime.now().strftime("%Y-%m-%d"),
+            "venture_name": venture_name,
+            "doc_type": doc_type,
+        },
+    }
+
+
+def _infer_venture_name(room_dir: Path) -> str:
+    """Extract venture name from room/STATE.md if it exists."""
+    state_file = room_dir / "STATE.md"
+    if state_file.exists():
+        try:
+            text = state_file.read_text(encoding="utf-8")
+            # Try YAML frontmatter
+            if text.startswith("---"):
+                parts = text.split("---", 2)
+                if len(parts) >= 3:
+                    fm = yaml.safe_load(parts[1])
+                    if isinstance(fm, dict):
+                        name = fm.get("venture_name") or fm.get("project_name")
+                        if name:
+                            return str(name)
+            # Try plain key: value line
+            for line in text.splitlines():
+                for key in ("venture_name:", "project_name:"):
+                    if line.strip().lower().startswith(key):
+                        return line.split(":", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return "Untitled Venture"
+
+
+def collect_meeting_data(room_dir: Path) -> dict:
+    """Scan room/meetings/ directories, gather meeting intelligence for report."""
+    meetings_dir = room_dir / "meetings"
+    meetings = []
+    all_speakers = {}
+    total_decisions = 0
+    total_action_items = 0
+    contradictions = []
+    convergence_themes = []
+    open_items = []
+
+    if meetings_dir.is_dir():
+        for meeting_dir in sorted(meetings_dir.iterdir()):
+            if not meeting_dir.is_dir():
+                continue
+
+            # Read metadata.yaml
+            meta_file = meeting_dir / "metadata.yaml"
+            meta = {}
+            if meta_file.exists():
+                try:
+                    meta = yaml.safe_load(meta_file.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    pass
+
+            meeting_name = meta.get("meeting_name", meeting_dir.name)
+            meeting_date = meta.get("meeting_date", "")
+            speakers_data = meta.get("speakers", [])
+            decisions_count = meta.get("decisions_count", 0) or 0
+            action_items_count = meta.get("action_items_count", 0) or 0
+
+            total_decisions += decisions_count
+            total_action_items += action_items_count
+
+            # Track speakers globally
+            speakers = []
+            for sp in speakers_data:
+                name = sp.get("name", "Unknown")
+                role = sp.get("role", "unknown")
+                all_speakers[name] = role
+                speakers.append({"name": name, "role": role})
+
+            # Read summary.md
+            summary_html = ""
+            summary_file = meeting_dir / "summary.md"
+            if summary_file.exists():
+                try:
+                    text = summary_file.read_text(encoding="utf-8")
+                    result = markdown2.markdown(
+                        text, extras=["fenced-code-blocks", "tables"]
+                    )
+                    summary_html = str(result)
+                except Exception:
+                    pass
+
+            # Read decisions.md for decision text
+            decisions = []
+            decisions_file = meeting_dir / "decisions.md"
+            if decisions_file.exists():
+                try:
+                    dec_text = decisions_file.read_text(encoding="utf-8")
+                    for line in dec_text.splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.")):
+                            decisions.append(stripped.split(".", 1)[1].strip().lstrip("*").strip())
+                except Exception:
+                    pass
+
+            # Read action-items.md for open items
+            ai_file = meeting_dir / "action-items.md"
+            if ai_file.exists():
+                try:
+                    ai_text = ai_file.read_text(encoding="utf-8")
+                    for line in ai_text.splitlines():
+                        if "| " in line and "open" in line.lower():
+                            parts = [p.strip() for p in line.split("|") if p.strip()]
+                            if len(parts) >= 4:
+                                open_items.append({
+                                    "owner": parts[0],
+                                    "task": parts[1],
+                                    "source_meeting": meeting_name,
+                                })
+                except Exception:
+                    pass
+
+            # Scan filed-to/ for filing indicators
+            filings = []
+            filed_to_dir = meeting_dir / "filed-to"
+            if filed_to_dir.is_dir():
+                for ref_file in sorted(filed_to_dir.glob("*.md")):
+                    try:
+                        ref_text = ref_file.read_text(encoding="utf-8")
+                        filed_path = ""
+                        artifact_title = ref_file.stem.replace("-", " ").title()
+                        for rline in ref_text.splitlines():
+                            if rline.startswith("Filed to:"):
+                                filed_path = rline.split(":", 1)[1].strip()
+                        # Determine section from filed path
+                        section_name = ""
+                        if filed_path:
+                            parts = filed_path.replace("room/", "").split("/")
+                            if parts:
+                                section_name = parts[0]
+                        section_color = SECTION_COLORS.get(section_name, "#5C5A56")
+                        section_label = SECTION_LABELS.get(section_name, section_name)
+                        filings.append({
+                            "section_color": section_color,
+                            "section_label": section_label,
+                            "artifact_title": artifact_title,
+                        })
+                    except Exception:
+                        pass
+
+            meetings.append({
+                "name": meeting_name,
+                "date": str(meeting_date),
+                "speakers": speakers,
+                "decisions": decisions,
+                "action_items_count": action_items_count,
+                "action_items": [],  # individual items if extracted
+                "filings": filings,
+                "summary_html": summary_html,
+            })
+
+            # Collect topics for convergence
+            for topic in meta.get("topics", []):
+                convergence_themes.append(topic)
+
+    # Read MEETINGS-INTELLIGENCE.md for contradictions/convergence
+    intel_file = room_dir / "MEETINGS-INTELLIGENCE.md"
+    if intel_file.exists():
+        try:
+            intel_text = intel_file.read_text(encoding="utf-8")
+            in_contradictions = False
+            for line in intel_text.splitlines():
+                if "contradiction" in line.lower() and line.startswith("#"):
+                    in_contradictions = True
+                    continue
+                elif line.startswith("#"):
+                    in_contradictions = False
+                if in_contradictions and line.strip().startswith("-"):
+                    contradictions.append({
+                        "description": line.strip().lstrip("-").strip(),
+                        "source_meeting": "cross-meeting analysis",
+                    })
+        except Exception:
+            pass
+
+    # Read team/TEAM-STATE.md for speaker roles (supplement)
+    team_state = room_dir / "team" / "TEAM-STATE.md"
+    if team_state.exists():
+        try:
+            ts_text = team_state.read_text(encoding="utf-8")
+            if ts_text.startswith("---"):
+                parts = ts_text.split("---", 2)
+                if len(parts) >= 3:
+                    ts_meta = yaml.safe_load(parts[1])
+                    if isinstance(ts_meta, dict):
+                        for member in ts_meta.get("members", []):
+                            name = member.get("name", "")
+                            role = member.get("primary_role", member.get("role", ""))
+                            if name and name not in all_speakers:
+                                all_speakers[name] = role
+        except Exception:
+            pass
+
+    # Build date range
+    dates = [m["date"] for m in meetings if m["date"]]
+    date_range = ""
+    if dates:
+        date_range = f"{dates[0]} to {dates[-1]}" if len(dates) > 1 else dates[0]
+
+    # Count convergence (topics appearing 3+)
+    from collections import Counter
+    topic_counts = Counter(convergence_themes)
+    convergent = [t for t, c in topic_counts.items() if c >= 3]
+
+    # Build executive summary (data-driven)
+    executive = {
+        "meeting_count": len(meetings),
+        "speaker_count": len(all_speakers),
+        "decision_count": total_decisions,
+        "action_item_count": total_action_items,
+        "date_range": date_range,
+        "narrative": (
+            f"{len(meetings)} meetings spanning {date_range or 'current period'} "
+            f"with {len(all_speakers)} unique speakers. "
+            f"{total_decisions} decisions recorded, "
+            f"{total_action_items} action items tracked."
+        ),
+    }
+
+    # Build logical claim (data-driven patterns)
+    claim_paragraphs = []
+    if convergent:
+        claim_paragraphs.append(
+            f"Across {len(meetings)} meetings, clear convergence has emerged around: "
+            + ", ".join(convergent) + "."
+        )
+    if total_decisions > 0:
+        claim_paragraphs.append(
+            f"The team has made {total_decisions} explicit decisions, "
+            f"showing active direction-setting across the venture."
+        )
+    if contradictions:
+        claim_paragraphs.append(
+            f"{len(contradictions)} contradiction(s) remain open, "
+            f"indicating areas where alignment is still forming."
+        )
+    if not claim_paragraphs:
+        claim_paragraphs.append(
+            "Meeting intelligence is accumulating. "
+            "Patterns will become clearer as more meetings are filed."
+        )
+
+    # Accent colors for meeting card rotation
+    accent_colors = list(SECTION_COLORS.values())
+
+    venture_name = _infer_venture_name(room_dir)
+
+    return {
+        "executive": executive,
+        "claim": {
+            "paragraphs": claim_paragraphs,
+            "convergence_themes": convergent,
+        },
+        "meetings": meetings,
+        "contradictions": contradictions,
+        "open_items": open_items,
+        "colors": accent_colors,
+        "metadata": {
+            "generated": datetime.now().strftime("%Y-%m-%d"),
+            "venture_name": venture_name,
+            "doc_type": "meeting-report",
+        },
+    }
+
+
+def render_document(doc_type: str, room_data: dict, output_path: Path) -> None:
+    """Render Jinja2 template to PDF via WeasyPrint."""
+    template_name = DOC_TYPES[doc_type]
+    template_file = TEMPLATES_DIR / template_name
+    if not template_file.exists():
+        available = ", ".join(
+            k for k, v in DOC_TYPES.items() if (TEMPLATES_DIR / v).exists()
+        )
+        print(
+            f"Template not found: {template_name}\n"
+            f"Available document types: {available}"
+        )
+        sys.exit(1)
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+    template = env.get_template(template_name)
+
+    if doc_type == "meeting-report":
+        html_string = template.render(
+            executive=room_data["executive"],
+            claim=room_data["claim"],
+            meetings=room_data["meetings"],
+            contradictions=room_data["contradictions"],
+            open_items=room_data["open_items"],
+            colors=room_data.get("colors", list(SECTION_COLORS.values())),
+            metadata=room_data["metadata"],
+            doc_title=DOC_TITLES.get(doc_type, doc_type.title()),
+        )
+    else:
+        html_string = template.render(
+            sections=room_data["sections"],
+            metadata=room_data["metadata"],
+            colors=SECTION_COLORS,
+            labels=SECTION_LABELS,
+            section_order=SECTIONS,
+            doc_title=DOC_TITLES.get(doc_type, doc_type.title()),
+        )
+
+    font_config = FontConfiguration()
+    css = CSS(
+        filename=str(TEMPLATES_DIR / "destijl-base.css"),
+        base_url=str(PLUGIN_DIR),
+        font_config=font_config,
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        HTML(string=html_string, base_url=str(PLUGIN_DIR)).write_pdf(
+            target=str(output_path),
+            stylesheets=[css],
+            font_config=font_config,
+        )
+    except Exception as e:
+        print(f"PDF generation failed: {e}")
+        print("Tip: Check that font files exist in assets/fonts/")
+        sys.exit(1)
+
+
+def add_toc_bookmarks(pdf_path: Path, sections: dict) -> None:
+    """Add PDF bookmarks for each populated section (thesis, report only)."""
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(str(pdf_path))
+    toc = []
+
+    for section_name in SECTIONS:
+        if section_name not in sections or not sections[section_name]:
+            continue
+
+        label = SECTION_LABELS[section_name]
+        # Search each page for the section label text
+        found_page = 1  # default to first content page if not found
+        for page_num in range(doc.page_count):
+            page = doc[page_num]
+            results = page.search_for(label)
+            if results:
+                found_page = page_num + 1  # 1-based for TOC
+                break
+
+        toc.append([1, label, found_page])
+
+    if toc:
+        doc.set_toc(toc)
+        doc.save(str(pdf_path), incremental=True, encryption=0)
+
+    doc.close()
+
+
+def open_pdf(path: Path) -> None:
+    """Open generated PDF with platform-appropriate viewer."""
+    try:
+        import platform
+
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.run(["open", str(path)])
+        elif system == "Linux":
+            # Check for WSL
+            try:
+                version_info = Path("/proc/version").read_text()
+                if "microsoft" in version_info.lower():
+                    subprocess.run(
+                        ["cmd.exe", "/c", "start", "", str(path)],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+            except Exception:
+                pass
+            subprocess.run(["xdg-open", str(path)], stderr=subprocess.DEVNULL)
+        elif system == "Windows":
+            subprocess.run(["start", str(path)], shell=True)
+    except Exception:
+        pass  # Don't crash if opener fails
+
+
+# ── CLI ──────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate De Stijl PDFs from Data Room content"
+    )
+    parser.add_argument(
+        "doc_type",
+        choices=list(DOC_TYPES.keys()),
+        help="Document type: thesis, summary, report, profile",
+    )
+    parser.add_argument(
+        "--room",
+        type=Path,
+        default=Path("./room"),
+        help="Path to room directory (default: ./room)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output PDF path (default: room/exports/{type}-{date}.pdf)",
+    )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Skip opening PDF after generation",
+    )
+
+    args = parser.parse_args()
+
+    # Validate room directory
+    if not args.room.is_dir():
+        print("No Data Room found. Run /mindrian-os:new-project first.")
+        sys.exit(1)
+
+    # Collect room data
+    if args.doc_type == "meeting-report":
+        room_data = collect_meeting_data(args.room)
+        if not room_data["meetings"]:
+            print("No meetings found. File some meetings first with /mindrian-os:file-meeting.")
+            sys.exit(1)
+    else:
+        room_data = collect_room_data(args.room, args.doc_type)
+        if not room_data["sections"]:
+            print("Data Room is empty. Run some methodologies first.")
+            sys.exit(1)
+
+    # Set output path
+    if args.output:
+        output_path = args.output
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        output_path = args.room / "exports" / f"{args.doc_type}-{date_str}.pdf"
+
+    # Render PDF
+    render_document(args.doc_type, room_data, output_path)
+
+    # Add TOC bookmarks for multi-section docs
+    if args.doc_type in ("thesis", "report"):
+        add_toc_bookmarks(output_path, room_data["sections"])
+
+    # Report success
+    section_count = len(room_data["sections"])
+    empty_sections = [s for s in SECTIONS if s not in room_data["sections"]]
+    print(f"Generated: {output_path} ({section_count} sections)")
+
+    if empty_sections:
+        names = ", ".join(SECTION_LABELS[s] for s in empty_sections)
+        print(f"Empty sections (not included): {names}")
+
+    # Open PDF
+    if not args.no_open:
+        open_pdf(output_path)
+
+
+if __name__ == "__main__":
+    main()

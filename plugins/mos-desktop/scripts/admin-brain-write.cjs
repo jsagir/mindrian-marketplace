@@ -1,0 +1,442 @@
+#!/usr/bin/env node
+/*
+ * Copyright (c) 2026 Mindrian. BSL 1.1.
+ * Phase 89.1 Plan 04 -- one-shot Brain-write wrapper for the v1.11.0
+ * milestone canon edge: USES_TECHNIQUE from rss-phase-1 to
+ * tech-domain-analysis. Reads MINDRIAN_BRAIN_KEY from env (admin gate
+ * enforced by commands/admin.md Step 1).
+ *
+ * MODES:
+ *   --dry-run            pre-check + show MERGE Cypher; do NOT mutate
+ *   --execute            pre-check + USES_TECHNIQUE MERGE + audit append
+ *   --execute --canonize-source
+ *                        pre-check + ProcessStep MERGE (if missing) +
+ *                        USES_TECHNIQUE MERGE + audit append for both writes
+ *
+ * The --canonize-source flag was added in Phase 89.1-04 Task 3 continuation
+ * (Option A path). When the pre-check finds the source ProcessStep
+ * `rss-phase-1` missing AND the target Technique present AND --canonize-source
+ * is supplied, the script first fires a prepend-MERGE that creates the
+ * ProcessStep node (id, name, created_by, created_at). The two writes are
+ * sequential (atomic per-write) but the second only fires if the first
+ * verification confirms the parent landed. Both writes are methodology
+ * canon evolution per Canon Part 8: zero user content; only frozen labels,
+ * frozen IDs, frozen edge label, generic name string, and provenance scalars.
+ *
+ * Exit codes:
+ *   0  -> success (all writes succeeded; results printed)
+ *   2  -> pre-write check failed (one or both target nodes missing AND
+ *         --canonize-source not supplied OR target Technique missing)
+ *   1  -> write call failed (Brain unreachable, plan-gated, or Cypher error)
+ *
+ * Audit log destination: ~/.mindrian/admin-brain-write.jsonl (one JSON line per write).
+ * Canon Part 8: every wire payload uses only methodology-canon labels + frozen
+ * IDs + frozen edge labels + provenance scalars; zero user data.
+ */
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+// Resolve plugin root from this script's location (scripts/ is a sibling of lib/).
+const PLUGIN_ROOT = path.resolve(__dirname, '..');
+const brainClient = require(path.join(PLUGIN_ROOT, 'lib', 'core', 'brain-client.cjs'));
+
+// Admin-write path: the remote Brain MCP gates `brain_write` behind a
+// plan='admin' API key. The user-facing MINDRIAN_BRAIN_KEY is plan='env'
+// (read-only by default). For methodology-canon writes the admin gate is
+// bypassed by writing directly through the Neo4j driver against the same
+// Aura instance Brain MCP fronts. Credentials live in plugin-root .env
+// (NEO4J_URI + NEO4J_USER + NEO4J_PASSWORD); .env is permission-checked.
+//
+// READS still flow through brain-client (no admin needed). The direct
+// driver is ONLY used for the two MERGE writes (source canonization +
+// USES_TECHNIQUE edge). Canon Part 8 is preserved either way: same
+// frozen labels + frozen IDs + frozen edge label + provenance scalars
+// reach the database; the only thing that changes is the transport.
+function loadEnvFile(envPath) {
+  try {
+    if (!fs.existsSync(envPath)) return {};
+    const content = fs.readFileSync(envPath, 'utf8');
+    const out = {};
+    content.split('\n').forEach(function (line) {
+      const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (m) out[m[1]] = m[2].trim();
+    });
+    return out;
+  } catch (err) {
+    return {};
+  }
+}
+
+function getNeo4jCreds() {
+  const fileEnv = loadEnvFile(path.join(PLUGIN_ROOT, '.env'));
+  return {
+    uri:      process.env.NEO4J_URI      || fileEnv.NEO4J_URI      || null,
+    user:     process.env.NEO4J_USER     || fileEnv.NEO4J_USER     || null,
+    password: process.env.NEO4J_PASSWORD || fileEnv.NEO4J_PASSWORD || null,
+  };
+}
+
+function loadNeo4jDriver() {
+  // Driver lives in mcp-server-brain/node_modules; plugin root has no direct
+  // dependency on neo4j-driver, by design (mcp-server-brain is the only
+  // component talking to Neo4j directly in production).
+  const driverPath = path.join(PLUGIN_ROOT, 'mcp-server-brain', 'node_modules', 'neo4j-driver');
+  return require(driverPath);
+}
+
+// FROZEN canonical node IDs (CONTEXT.md USES_TECHNIQUE workflow):
+const SOURCE_NODE = { label: 'ProcessStep', id: 'rss-phase-1' };
+const TARGET_NODE = { label: 'Technique',   id: 'tech-domain-analysis' };
+const EDGE_TYPE   = 'USES_TECHNIQUE';
+
+// Provenance for the prepend MERGE that canonizes ProcessStep rss-phase-1
+// when --canonize-source is supplied. Generic name string + version handle +
+// ISO timestamp. No user content; Canon Part 8 preserved.
+const SOURCE_NODE_NAME       = 'Phase 1: Domain Analysis';
+const SOURCE_NODE_CREATED_BY = 'v1.11.0-89.1-04';
+
+// Pre-write read: confirm BOTH nodes exist. Identifiers are hardcoded
+// string literals; no user-controlled interpolation.
+const PRE_WRITE_CYPHER =
+  'MATCH (p:ProcessStep {id: "rss-phase-1"}), (t:Technique {id: "tech-domain-analysis"}) ' +
+  'RETURN count(p) AS p_count, count(t) AS t_count';
+
+// Per-node existence probes (used to disambiguate Cartesian-product zero
+// AND to verify ProcessStep create after the prepend-MERGE).
+const SOURCE_PROBE_CYPHER =
+  'MATCH (p:ProcessStep {id: "rss-phase-1"}) RETURN count(p) AS c';
+const TARGET_PROBE_CYPHER =
+  'MATCH (t:Technique {id: "tech-domain-analysis"}) RETURN count(t) AS c';
+
+// Build the source-canonization MERGE with the supplied ISO timestamp.
+// Identifiers + property names are static literals; only the timestamp
+// scalar is parameterized at runtime, and that scalar is generated by
+// Node's Date#toISOString (zero user input).
+function buildSourceMergeCypher(isoTs) {
+  return (
+    'MERGE (p:ProcessStep {id: "rss-phase-1"}) ' +
+    'ON CREATE SET p.name = "' + SOURCE_NODE_NAME + '", ' +
+    'p.created_by = "' + SOURCE_NODE_CREATED_BY + '", ' +
+    'p.created_at = "' + isoTs + '" ' +
+    'RETURN count(*) AS process_step_created'
+  );
+}
+
+// MERGE: idempotent. Re-running yields 0 new edges if already present.
+// Returns count of edges in the resulting MATCH.
+const MERGE_CYPHER =
+  'MATCH (p:ProcessStep {id: "rss-phase-1"}), (t:Technique {id: "tech-domain-analysis"}) ' +
+  'MERGE (p)-[r:USES_TECHNIQUE]->(t) ' +
+  'RETURN count(r) AS edges_after';
+
+// Post-write final-edge verification (read-only).
+const POST_WRITE_CYPHER =
+  'MATCH (p:ProcessStep {id: "rss-phase-1"})-[r:USES_TECHNIQUE]->(t:Technique {id: "tech-domain-analysis"}) ' +
+  'RETURN count(r) AS final_edge_count';
+
+// Rollback Cyphers (NOT executed; captured for evidence doc):
+const ROLLBACK_EDGE_CYPHER =
+  'MATCH (p:ProcessStep {id: "rss-phase-1"})-[r:USES_TECHNIQUE]->(t:Technique {id: "tech-domain-analysis"}) ' +
+  'DELETE r ' +
+  'RETURN count(r) AS edges_deleted';
+const ROLLBACK_SOURCE_CYPHER =
+  'MATCH (p:ProcessStep {id: "rss-phase-1"}) ' +
+  'WHERE p.created_by = "' + SOURCE_NODE_CREATED_BY + '" ' +
+  'DETACH DELETE p ' +
+  'RETURN count(p) AS process_steps_deleted';
+
+function getAuditPath() {
+  return path.join(os.homedir(), '.mindrian', 'admin-brain-write.jsonl');
+}
+
+function appendAudit(entry) {
+  try {
+    const auditPath = getAuditPath();
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n';
+    fs.appendFileSync(auditPath, line);
+  } catch (err) {
+    process.stderr.write('admin-brain-write: audit append failed: ' + String(err && err.message) + '\n');
+  }
+}
+
+// Neo4j Bolt driver returns Integers as { low: number, high: number }.
+// Convert any of (number | { low, high } | other) to plain JS number.
+function toNumber(value) {
+  if (value == null) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'object' && typeof value.low === 'number') {
+    // For typical row counts, high is 0 and low is the value. We accept the
+    // narrowing because Cypher count() never exceeds Number.MAX_SAFE_INTEGER
+    // for any sane methodology graph.
+    return value.low + (value.high || 0) * 0x100000000;
+  }
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+function extractCount(record, primaryKey, fallbackIndex) {
+  // brain-client.query returns the parsed Neo4j JSON content directly:
+  //   - Most common: an Array<{ <fieldName>: <value> }> (records array).
+  //   - Sometimes wrapped in { records: [...] } (older shape).
+  //   - Field values may be plain numbers or Neo4j Integer { low, high }.
+  if (record == null) return 0;
+  if (record[primaryKey] != null) return toNumber(record[primaryKey]);
+  if (record[fallbackIndex] != null) return toNumber(record[fallbackIndex]);
+  // Last-resort: scan values for a numeric or Neo4j Integer.
+  const vals = Object.values(record);
+  for (const v of vals) {
+    const n = toNumber(v);
+    if (typeof v === 'number' || (v && typeof v === 'object' && 'low' in v)) return n;
+  }
+  return 0;
+}
+
+// Normalize brain-client.query output into a plain records array.
+// Accepts: Array<record>  |  { records: Array<record> }  |  null
+function normalizeRecords(result) {
+  if (result == null) return null;
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result.records)) return result.records;
+  return null;
+}
+
+// Direct-driver write helper. Returns { ok: bool, fields: { <name>: number, ... }, error?: string }
+// where each field value is normalized to a plain JS number (toNumber). Used
+// for both source-canonization MERGE and USES_TECHNIQUE edge MERGE.
+async function directDriverWrite(neo4j, driver, cypher) {
+  const session = driver.session({ defaultAccessMode: neo4j.session.WRITE });
+  try {
+    const result = await session.run(cypher);
+    const counters = result.summary && result.summary.counters
+      ? result.summary.counters.updates()
+      : null;
+    const fields = {};
+    if (result.records && result.records.length > 0) {
+      const r = result.records[0];
+      r.keys.forEach(function (k) {
+        const v = r.get(k);
+        if (v && typeof v === 'object' && typeof v.toNumber === 'function') {
+          fields[k] = v.toNumber();
+        } else if (typeof v === 'number') {
+          fields[k] = v;
+        } else if (v && typeof v === 'object' && typeof v.low === 'number') {
+          fields[k] = toNumber(v);
+        } else {
+          fields[k] = v;
+        }
+      });
+    }
+    return { ok: true, fields: fields, counters: counters };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message) };
+  } finally {
+    await session.close();
+  }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const dryRun = args.includes('--dry-run');
+  const execute = args.includes('--execute');
+  const canonizeSource = args.includes('--canonize-source');
+  if (!dryRun && !execute) {
+    process.stderr.write('Usage: admin-brain-write.cjs --dry-run | --execute [--canonize-source]\n');
+    process.exit(2);
+  }
+
+  if (!brainClient.isAvailable()) {
+    process.stderr.write('admin-brain-write: MINDRIAN_BRAIN_KEY not set; Brain unreachable\n');
+    appendAudit({ outcome: 'aborted', reason: 'brain_unavailable', edge: EDGE_TYPE });
+    process.exit(1);
+  }
+
+  // Stage 1: pre-write read. Confirm both target nodes exist (joint Cartesian).
+  process.stdout.write('Stage 1 (pre-check): ' + PRE_WRITE_CYPHER + '\n');
+  const pre = await brainClient.query(PRE_WRITE_CYPHER);
+  const preRecords = normalizeRecords(pre);
+  if (!preRecords || preRecords.length === 0) {
+    process.stderr.write('admin-brain-write: pre-check returned no records (Brain or query error)\n');
+    appendAudit({ outcome: 'aborted', reason: 'pre_check_no_records', edge: EDGE_TYPE });
+    process.exit(2);
+  }
+  const rec = preRecords[0];
+  const pCountJoint = extractCount(rec, 'p_count', 0);
+  const tCountJoint = extractCount(rec, 't_count', 1);
+  process.stdout.write('  joint source ' + SOURCE_NODE.id + ' count=' + pCountJoint + '\n');
+  process.stdout.write('  joint target ' + TARGET_NODE.id + ' count=' + tCountJoint + '\n');
+
+  // Cartesian zero on either side leaves us blind to which node is missing.
+  // Run per-node probes to disambiguate.
+  process.stdout.write('Stage 1b (per-node probes):\n');
+  process.stdout.write('  ' + SOURCE_PROBE_CYPHER + '\n');
+  const srcProbe = await brainClient.query(SOURCE_PROBE_CYPHER);
+  const srcRecs = normalizeRecords(srcProbe);
+  const sourceCount = (srcRecs && srcRecs[0]) ? extractCount(srcRecs[0], 'c', 0) : 0;
+  process.stdout.write('    -> source exists count=' + sourceCount + '\n');
+  process.stdout.write('  ' + TARGET_PROBE_CYPHER + '\n');
+  const tgtProbe = await brainClient.query(TARGET_PROBE_CYPHER);
+  const tgtRecs = normalizeRecords(tgtProbe);
+  const targetCount = (tgtRecs && tgtRecs[0]) ? extractCount(tgtRecs[0], 'c', 0) : 0;
+  process.stdout.write('    -> target exists count=' + targetCount + '\n');
+
+  // Target Technique MUST exist; we never canonize a Technique here.
+  if (targetCount < 1) {
+    process.stderr.write('admin-brain-write: target Technique tech-domain-analysis missing; cannot proceed\n');
+    appendAudit({
+      outcome: 'aborted', reason: 'target_node_missing',
+      source_count: sourceCount, target_count: targetCount, edge: EDGE_TYPE,
+    });
+    process.exit(2);
+  }
+
+  // Source ProcessStep handling: present -> proceed; missing AND
+  // --canonize-source -> prepend-MERGE; missing AND no flag -> abort.
+  if (sourceCount < 1 && !canonizeSource) {
+    process.stderr.write('admin-brain-write: source ProcessStep rss-phase-1 missing; pass --canonize-source to canonize the parent first\n');
+    appendAudit({
+      outcome: 'aborted', reason: 'source_node_missing_no_canonize_flag',
+      source_count: sourceCount, target_count: targetCount, edge: EDGE_TYPE,
+    });
+    process.exit(2);
+  }
+
+  // Stage 2: dry-run vs execute.
+  if (dryRun) {
+    process.stdout.write('Stage 2 (dry-run): no mutations.\n');
+    if (sourceCount < 1 && canonizeSource) {
+      const isoTs = new Date().toISOString();
+      process.stdout.write('  Would execute (1/2 source canonization): ' + buildSourceMergeCypher(isoTs) + '\n');
+    }
+    process.stdout.write('  Would execute (USES_TECHNIQUE edge): ' + MERGE_CYPHER + '\n');
+    process.stdout.write('  Verification (post): ' + POST_WRITE_CYPHER + '\n');
+    process.stdout.write('  Rollback edge (not executed): ' + ROLLBACK_EDGE_CYPHER + '\n');
+    if (sourceCount < 1 && canonizeSource) {
+      process.stdout.write('  Rollback source (not executed): ' + ROLLBACK_SOURCE_CYPHER + '\n');
+    }
+    appendAudit({
+      outcome: 'dry_run', edge: EDGE_TYPE,
+      canonize_source_requested: canonizeSource,
+      source_present: sourceCount >= 1, target_present: targetCount >= 1,
+      cypher_edge: MERGE_CYPHER,
+    });
+    process.exit(0);
+  }
+
+  // EXECUTE path: writes go through the direct Neo4j driver because the
+  // remote Brain MCP gates `brain_write` behind a plan='admin' API key
+  // that the user-tier MINDRIAN_BRAIN_KEY does not carry. The .env in
+  // plugin root has Aura URI + credentials. Reads keep using brain-client.
+  const creds = getNeo4jCreds();
+  if (!creds.uri || !creds.user || !creds.password) {
+    process.stderr.write('admin-brain-write: NEO4J_URI/USER/PASSWORD missing from env or .env; admin-write requires direct driver creds\n');
+    appendAudit({ outcome: 'aborted', reason: 'neo4j_creds_missing', edge: EDGE_TYPE });
+    process.exit(1);
+  }
+  let neo4j;
+  try {
+    neo4j = loadNeo4jDriver();
+  } catch (err) {
+    process.stderr.write('admin-brain-write: neo4j-driver not loadable: ' + String(err && err.message) + '\n');
+    appendAudit({ outcome: 'aborted', reason: 'neo4j_driver_load_failed', err: String(err && err.message) });
+    process.exit(1);
+  }
+  const driver = neo4j.driver(creds.uri, neo4j.auth.basic(creds.user, creds.password));
+
+  let processStepCreated = null;
+  let edgesAfter = 0;
+  let finalEdgeCount = 0;
+
+  try {
+    // Stage 2a (Option A only): canonize the source ProcessStep first.
+    if (sourceCount < 1 && canonizeSource) {
+      const isoTs = new Date().toISOString();
+      const sourceMergeCypher = buildSourceMergeCypher(isoTs);
+      process.stdout.write('Stage 2a (canonize source via direct driver): ' + sourceMergeCypher + '\n');
+      const srcWrite = await directDriverWrite(neo4j, driver, sourceMergeCypher);
+      if (!srcWrite.ok) {
+        process.stderr.write('admin-brain-write: source MERGE failed: ' + srcWrite.error + '\n');
+        appendAudit({ outcome: 'failed', reason: 'source_merge_error', err: srcWrite.error, source: SOURCE_NODE.id });
+        process.exit(1);
+      }
+      processStepCreated = (srcWrite.fields && srcWrite.fields.process_step_created != null)
+        ? srcWrite.fields.process_step_created : 0;
+      process.stdout.write('  process_step_created=' + processStepCreated + '\n');
+      if (srcWrite.counters) {
+        process.stdout.write('  counters=' + JSON.stringify(srcWrite.counters) + '\n');
+      }
+
+      // Verify the source ProcessStep actually landed before firing the edge MERGE.
+      const verify = await brainClient.query(SOURCE_PROBE_CYPHER);
+      const verifyRecs = normalizeRecords(verify);
+      const verifiedCount = (verifyRecs && verifyRecs[0]) ? extractCount(verifyRecs[0], 'c', 0) : 0;
+      process.stdout.write('  verified source count=' + verifiedCount + '\n');
+      if (verifiedCount < 1) {
+        process.stderr.write('admin-brain-write: source MERGE post-verification failed; aborting before edge MERGE\n');
+        appendAudit({
+          outcome: 'failed', reason: 'source_merge_not_verified',
+          source: SOURCE_NODE.id, process_step_created: processStepCreated,
+        });
+        process.exit(1);
+      }
+      appendAudit({
+        outcome: 'success_source',
+        source: SOURCE_NODE.id, source_name: SOURCE_NODE_NAME,
+        created_by: SOURCE_NODE_CREATED_BY, created_at: isoTs,
+        process_step_created: processStepCreated, verified_count: verifiedCount,
+        counters: srcWrite.counters || null,
+        cypher: sourceMergeCypher, rollback_cypher: ROLLBACK_SOURCE_CYPHER,
+      });
+    }
+
+    // Stage 2b: USES_TECHNIQUE edge MERGE via direct driver.
+    process.stdout.write('Stage 2b (edge MERGE via direct driver): ' + MERGE_CYPHER + '\n');
+    const merge = await directDriverWrite(neo4j, driver, MERGE_CYPHER);
+    if (!merge.ok) {
+      process.stderr.write('admin-brain-write: edge MERGE failed: ' + merge.error + '\n');
+      appendAudit({ outcome: 'failed', reason: 'merge_error', err: merge.error, edge: EDGE_TYPE });
+      process.exit(1);
+    }
+    edgesAfter = (merge.fields && merge.fields.edges_after != null) ? merge.fields.edges_after : 0;
+    process.stdout.write('  edges_after=' + edgesAfter + '\n');
+    if (merge.counters) {
+      process.stdout.write('  counters=' + JSON.stringify(merge.counters) + '\n');
+    }
+
+    // Stage 3: post-write verification (final_edge_count) via brain-client (read-only).
+    process.stdout.write('Stage 3 (post-verify): ' + POST_WRITE_CYPHER + '\n');
+    const post = await brainClient.query(POST_WRITE_CYPHER);
+    const postRecs = normalizeRecords(post);
+    finalEdgeCount = (postRecs && postRecs[0]) ? extractCount(postRecs[0], 'final_edge_count', 0) : 0;
+    process.stdout.write('  final_edge_count=' + finalEdgeCount + '\n');
+
+    appendAudit({
+      outcome: 'success',
+      edge: EDGE_TYPE,
+      source: SOURCE_NODE.id,
+      target: TARGET_NODE.id,
+      edges_after: edgesAfter,
+      final_edge_count: finalEdgeCount,
+      canonize_source_requested: canonizeSource,
+      process_step_created: processStepCreated,
+      counters: merge.counters || null,
+      cypher: MERGE_CYPHER,
+      rollback_cypher: ROLLBACK_EDGE_CYPHER,
+    });
+  } finally {
+    await driver.close();
+  }
+  process.exit(0);
+}
+
+main().catch(function (err) {
+  process.stderr.write('admin-brain-write: unexpected: ' + String(err && err.message) + '\n');
+  appendAudit({ outcome: 'failed', reason: 'unexpected_throw', err: String(err && err.message) });
+  process.exit(1);
+});

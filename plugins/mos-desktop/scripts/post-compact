@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+# post-compact: PostCompact hook handler for MindrianOS
+# Restores saved room context as additionalContext after autocompact.
+# Reads the temp file written by pre-compact and injects it into Claude's
+# context so the session continues with room awareness.
+# Must complete in under 2 seconds.
+
+set -euo pipefail
+
+# Cross-platform file modification time (epoch seconds)
+portable_stat_mtime() {
+  local file="$1"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f %m "$file" 2>/dev/null || echo 0
+  else
+    stat -c %Y "$file" 2>/dev/null || echo 0
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Phase 95-04: PostCompact envelope + side-channel helpers.
+#
+# Allowed top-level keys per Claude Code 2.x PostCompact schema:
+#   continue, stopReason, suppressOutput, systemMessage
+# PostCompact does NOT accept hookSpecificOutput (per 95-RESEARCH.md
+# Section 2 + authoritative docs verified 2026-04-29). Pre-fix the script
+# emitted `{hookSpecificOutput: {hookEventName: "SessionStart", ...}}`
+# which violates the per-event allowed key set on TWO counts (hSO not
+# accepted; hookEventName "SessionStart" wrong even if it were).
+#
+# The full restored context that used to be carried as additionalContext
+# relocates to <roomDir>/.mindrian/last-post-compact.md (atomic mktemp +
+# mv -f, mirroring Plan 95-02's cascade side-channel writer). This is
+# WRITE-ONLY in Phase 95; the CONSUMER lands in Phase 95.5 as
+# `scripts/restore-post-compact-context.cjs`. This function now prepends
+# a D-04 YAML frontmatter stamp so the consumer can enforce cross-room
+# boundary.
+# ---------------------------------------------------------------------------
+
+# Emit a Claude Code 2.x compliant PostCompact envelope. Empty input ->
+# silent. Non-empty -> single JSON line with systemMessage only.
+emit_post_compact_envelope() {
+  local msg="$1"
+  if [ -z "$msg" ]; then return 0; fi
+  jq -nc --arg m "$msg" '{
+    systemMessage: $m,
+    suppressOutput: false
+  }'
+}
+
+# Write the full restored context to <roomDir>/.mindrian/last-post-compact.md
+# atomically. Soft-fail at every step. Markdown plain-text (NOT JSON) since
+# the future consumer will inject the block as additionalContext or read it
+# verbatim. Same atomic pattern as Plan 95-02 cascade side-channel writer.
+#
+# Phase 95.5 D-04 back-port: prepend YAML frontmatter stamp before the existing
+# context body. Atomic mktemp + mv -f preserved. The stamp carries source_room_path
+# + source_room_slug + written_at + schema_version so the SessionStart consumer
+# (scripts/restore-post-compact-context.cjs) can enforce cross-room boundary
+# (Canon Part 8). macOS date lacks `%3N` so chain falls back to second-precision
+# ISO if needed.
+write_post_compact_side_channel() {
+  local room_dir="$1"
+  local restored_context="$2"
+
+  [ -z "$room_dir" ] && return 0
+  [ -z "$restored_context" ] && return 0
+
+  local side_dir="$room_dir/.mindrian"
+  mkdir -p "$side_dir" 2>/dev/null || return 0
+
+  local room_slug
+  room_slug=$(basename "$room_dir" 2>/dev/null || echo "unknown")
+  local written_at
+  written_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null) || \
+    written_at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    written_at="unknown"
+
+  local tmp
+  tmp=$(mktemp "$side_dir/.last-post-compact.md.XXXXXX" 2>/dev/null) || return 0
+  {
+    printf -- '---\n'
+    printf 'source_room_path: %s\n' "$room_dir"
+    printf 'source_room_slug: %s\n' "$room_slug"
+    printf 'written_at: %s\n' "$written_at"
+    printf 'schema_version: 1\n'
+    printf -- '---\n\n'
+    printf '%s\n' "$restored_context"
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  mv -f "$tmp" "$side_dir/last-post-compact.md" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+}
+
+SAVE_DIR="$HOME/.mindrian/bridge"
+mkdir -p "$SAVE_DIR"
+SAVE_FILE="$SAVE_DIR/pre-compact-state.json"
+
+if [ ! -f "$SAVE_FILE" ]; then
+  # No saved state -- fall back to fresh session-start behavior
+  exec bash "${SCRIPT_DIR}/session-start"
+fi
+
+# Check staleness (> 10 min = stale, probably from a previous session)
+SAVE_AGE=$(( $(date +%s) - $(portable_stat_mtime "$SAVE_FILE") ))
+if [ "$SAVE_AGE" -gt 600 ]; then
+  rm -f "$SAVE_FILE"
+  exec bash "${SCRIPT_DIR}/session-start"
+fi
+
+# Extract saved context
+ROOM_DIR=$(grep '^ROOM_DIR=' "$SAVE_FILE" | cut -d= -f2-)
+VENTURE_STAGE=$(grep '^VENTURE_STAGE=' "$SAVE_FILE" | cut -d= -f2-)
+TOTAL_ENTRIES=$(grep '^TOTAL_ENTRIES=' "$SAVE_FILE" | cut -d= -f2-)
+
+# Extract STATE.md content
+state_content=$(sed -n '/^---STATE_MD_START---$/,/^---STATE_MD_END---$/p' "$SAVE_FILE" | sed '1d;$d')
+
+# Extract last artifacts
+last_artifacts=$(sed -n '/^---LAST_ARTIFACTS_START---$/,/^---LAST_ARTIFACTS_END---$/p' "$SAVE_FILE" | sed '1d;$d')
+
+# Extract MINTO confidence
+minto_confidence=$(sed -n '/^---MINTO_CONFIDENCE_START---$/,/^---MINTO_CONFIDENCE_END---$/p' "$SAVE_FILE" | sed '1d;$d')
+
+# Extract pipeline state
+pipeline_state=$(sed -n '/^---PIPELINE_STATE_START---$/,/^---PIPELINE_STATE_END---$/p' "$SAVE_FILE" | sed '1d;$d')
+
+# Extract user context
+user_context=$(sed -n '/^---USER_CONTEXT_START---$/,/^---USER_CONTEXT_END---$/p' "$SAVE_FILE" | sed '1d;$d')
+
+# Read plugin version via platform.cjs (plan 85-06, WIN-FIX-B-02 sweep).
+# python3 is a Microsoft Store alias stub on Windows and produces "vunknown".
+PLUGIN_VERSION=$(node -e "try{process.stdout.write(require('$PLUGIN_ROOT/lib/core/platform.cjs').readPluginJsonVersion('$PLUGIN_ROOT'))}catch(e){process.stdout.write('unknown')}" 2>/dev/null || echo "unknown")
+
+# Build restored context
+context="[MindrianOS Post-Compact Recovery] v${PLUGIN_VERSION}\n\nContext was autocompacted. Here is your restored room state:\n"
+
+if [ -n "$VENTURE_STAGE" ]; then
+  context="${context}\nVenture Stage: ${VENTURE_STAGE}"
+fi
+
+if [ -n "$TOTAL_ENTRIES" ]; then
+  context="${context}\nTotal Entries: ${TOTAL_ENTRIES}"
+fi
+
+if [ -n "$state_content" ]; then
+  context="${context}\n\n## Room State (pre-compact snapshot)\n${state_content}"
+fi
+
+if [ -n "$last_artifacts" ]; then
+  context="${context}\n\n## Last 5 Artifacts Modified\n${last_artifacts}"
+fi
+
+if [ -n "$minto_confidence" ]; then
+  context="${context}\n\n## MINTO Confidence by Section\n${minto_confidence}"
+fi
+
+if [ -n "$pipeline_state" ]; then
+  context="${context}\n\n## Active Pipeline State\n${pipeline_state}"
+fi
+
+if [ -n "$user_context" ]; then
+  context="${context}\n\n## User Context\n${user_context}"
+fi
+
+# Check for pending verifications in room
+if [ -d "$ROOM_DIR" ]; then
+  pending_verifications=""
+  for reasoning in "$ROOM_DIR"/*/REASONING.md; do
+    [ -f "$reasoning" ] || continue
+    section=$(dirname "$reasoning" | xargs basename)
+    stale_marker=$(grep -i 'status: *stale\|status: *needs-review' "$reasoning" 2>/dev/null | head -1 || true)
+    if [ -n "$stale_marker" ]; then
+      pending_verifications="${pending_verifications}\n- ${section}/REASONING.md needs review"
+    fi
+  done
+  if [ -n "$pending_verifications" ]; then
+    context="${context}\n\n## Pending Verifications${pending_verifications}"
+  fi
+fi
+
+context="${context}\n\nYou are Larry. The session was autocompacted. Continue helping the user with their venture. Reference the restored state above to maintain continuity."
+
+# ---------------------------------------------------------------------------
+# Phase 88-09: TRIPLE_CONTEXT re-injection after compaction
+#
+# After Claude compresses conversation context, re-inject the per-section
+# memory triple block (ROOM identity + STATE summary + MINTO reasoning)
+# so Larry wakes up with the same awareness he had at session-start.
+#
+# Read path (three-tier graceful degradation):
+#   1. Try .mindrian/pre-compact-snapshot.json (88-08 producer, kind:"pre-
+#      compact") as the primary source -- this is the freshest triple
+#      snapshot captured inside the 2000ms PreCompact budget before
+#      Claude wiped context.
+#   2. Fallback: walk sections via lib/core/folder-memory.readTriple()
+#      when the snapshot is missing, malformed, or empty. Logs
+#      "snapshot missing: fell back to live read" to stderr.
+#   3. Empty result -> emit nothing (block absent from output; no crash).
+#
+# Uses the SAME formatter as 88-07 session-start (lib/memory/triple-
+# context-formatter.cjs) so the emitted block is byte-identical to
+# session-start's Phase 88-07 output given the same inputs. This is the
+# single-formatter rule: consumers (session-start / post-compact) must
+# not duplicate rendering logic. The near-duplicate Node payload is
+# tolerated because extracting a shared scripts/emit-triple-context.cjs
+# adds process-spawn overhead to already-tight hook budgets; Test 9 in
+# lib/memory/post-compact-reinjection.test.cjs enforces byte-identity as
+# the regression guard.
+#
+# Soft-fail contract: every boundary funnels through `|| echo ""` + the
+# 2>/dev/null redirect. The worst case is that the TRIPLE_CONTEXT block
+# is absent from the re-injection -- the legacy Phase 83 context is
+# still emitted, so Larry still has venture_stage / STATE.md / last
+# artifacts. Post-compact NEVER crashes the PostCompact hook.
+#
+# Budget: the PostCompact hook timeout is 3000ms (hooks.json line 35).
+# Phase 88-09 reuses the same formatter that caps at DEFAULT_BUDGET_
+# TOKENS=5000 (see 88-07). Test 7 asserts wall-clock < 2500ms for a
+# 20-section snapshot read + format.
+# ---------------------------------------------------------------------------
+if [ -n "${ROOM_DIR}" ] && [ -d "${ROOM_DIR}" ] && [ -d "${ROOM_DIR}/.mindrian" ]; then
+  TRIPLE_CONTEXT=$(env ROOM_DIR_ENV="${ROOM_DIR}" PLUGIN_ROOT_ENV="${PLUGIN_ROOT}" node -e '
+    "use strict";
+    var fs = require("fs");
+    var path = require("path");
+    var roomDir = process.env.ROOM_DIR_ENV;
+    var pluginRoot = process.env.PLUGIN_ROOT_ENV;
+    try {
+      var fm = require(path.join(pluginRoot, "lib", "core", "folder-memory.cjs"));
+      var fmt = require(path.join(pluginRoot, "lib", "memory", "triple-context-formatter.cjs"));
+      // 1. Try snapshot-first (88-08 pre-compact-snapshot.json). Falls
+      // through to live readTriple walk if snapshot missing or malformed.
+      var sections = {};
+      var usedSnapshot = false;
+      try {
+        var snapPath = path.join(roomDir, ".mindrian", "pre-compact-snapshot.json");
+        if (fs.existsSync(snapPath)) {
+          var raw = fs.readFileSync(snapPath, "utf8");
+          var parsed = JSON.parse(raw);
+          if (parsed && parsed.sections && typeof parsed.sections === "object") {
+            sections = parsed.sections;
+            usedSnapshot = Object.keys(sections).length > 0;
+          }
+        }
+      } catch (_e) {
+        // malformed snapshot; fall through to live walk below
+        process.stderr.write("post-compact: snapshot malformed, falling back\n");
+      }
+      // 2. Fallback: walk sections via folder-memory.readTriple. Triggered
+      // when snapshot is absent, unparseable, or empty.
+      if (!usedSnapshot) {
+        process.stderr.write("post-compact: snapshot missing: fell back to live read\n");
+        var entries = [];
+        try {
+          entries = fs.readdirSync(roomDir, { withFileTypes: true })
+            .filter(function (d) { return d.isDirectory() && d.name[0] !== "."; });
+        } catch (_e) { entries = []; }
+        sections = {};
+        for (var i = 0; i < entries.length; i += 1) {
+          var d = entries[i];
+          var sp = path.join(roomDir, d.name);
+          try {
+            if (!fs.existsSync(path.join(sp, "ROOM.md"))) continue;
+            sections[d.name] = fm.readTriple(sp);
+          } catch (_e) { /* skip this section */ }
+        }
+      }
+      // 3. Read optional pending-tier1-regen.json (88-05 producer).
+      var pendingTier1 = null;
+      try {
+        var ptp = path.join(roomDir, ".mindrian", "pending-tier1-regen.json");
+        if (fs.existsSync(ptp)) {
+          var pj = JSON.parse(fs.readFileSync(ptp, "utf8"));
+          pendingTier1 = Array.isArray(pj) ? pj : (pj && pj.pending) || [];
+        }
+      } catch (_e) { pendingTier1 = null; }
+      // 4. Read optional minto-stale.json (88-06 producer).
+      var staleReport = null;
+      try {
+        var msp = path.join(roomDir, ".mindrian", "minto-stale.json");
+        if (fs.existsSync(msp)) {
+          var sj = JSON.parse(fs.readFileSync(msp, "utf8"));
+          staleReport = Array.isArray(sj) ? sj : (sj && sj.sections) || [];
+        }
+      } catch (_e) { staleReport = null; }
+      // 5. Format via the SAME formatter session-start uses (byte-identity
+      // invariant enforced by Test 9 in post-compact-reinjection.test.cjs).
+      var block = fmt.formatTripleContext({
+        sections: sections,
+        pendingTier1: pendingTier1,
+        staleReport: staleReport,
+      });
+      process.stdout.write(block || "");
+    } catch (_e) { /* soft-fail: emit nothing */ }
+  ' || echo "")
+  if [ -n "${TRIPLE_CONTEXT}" ]; then
+    context="${context}
+
+${TRIPLE_CONTEXT}"
+  fi
+fi
+# --- end Phase 88-09 ---
+
+# Phase 251-01 (CACHE-02a): compaction rewrites history, so the prior turn's
+# NAVIGATION DECISION block may be gone from the summarized context -- delete
+# the per-session nav-block-hash sidecars (scripts/intent-classifier.cjs's
+# navBlockHashPath) so the first post-compact turn always re-emits the full
+# block rather than suppressing to the one-line marker. Glob-delete with
+# a guarded fallback: post-compact MUST NEVER crash.
+if [ -n "${ROOM_DIR:-}" ] && [ -d "${ROOM_DIR}/.mindrian/decision-traces" ]; then
+  rm -f "${ROOM_DIR}"/.mindrian/decision-traces/*.nav-block-hash.json 2>/dev/null || true
+fi
+
+# Clean up temp file after successful restore
+rm -f "$SAVE_FILE"
+
+# Escape for JSON
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+escaped_context=$(escape_for_json "$context")
+
+# Phase 84-03: memory-lifecycle post-compact hook. Opens a NEW session row
+# (compact is a context discontinuity), overwrites the pointer file, and
+# writes a role='post-compact' marker fragment so the boundary is
+# discoverable in the fragments table. Graceful no-op when no active room.
+# Note: this path runs only when pre-compact-state.json exists; the
+# no-save-file branch execs session-start which has its own memory wiring.
+if command -v node >/dev/null 2>&1 && [ -f "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" ]; then
+  node "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" post-compact >/dev/null 2>&1 || true
+fi
+
+# 88.1-03: systemMessage retrofit. Count the sections restored from the
+# pre-compact snapshot (fallback to 0 if the snapshot is missing or the TRIPLE
+# block produced nothing). LOCAL-only (Canon Part 8).
+POST_SECTION_COUNT=0
+if [ -n "${ROOM_DIR:-}" ] && [ -f "${ROOM_DIR}/.mindrian/pre-compact-snapshot.json" ]; then
+  POST_SECTION_COUNT=$(node -e '
+    try {
+      const fs = require("fs");
+      const p = process.argv[1];
+      const j = JSON.parse(fs.readFileSync(p, "utf8"));
+      const n = j && j.sections ? Object.keys(j.sections).length : 0;
+      process.stdout.write(String(n));
+    } catch (_e) { process.stdout.write("0"); }
+  ' "${ROOM_DIR}/.mindrian/pre-compact-snapshot.json" 2>/dev/null || echo 0)
+fi
+ROOM_SLUG_POSTC=$(basename "${ROOM_DIR:-unknown}" 2>/dev/null || echo "unknown")
+POSTC_SYSMSG="restored TRIPLE_CONTEXT for ${ROOM_SLUG_POSTC} (${POST_SECTION_COUNT} sections from pre-compact snapshot)"
+escaped_postc_sysmsg=$(escape_for_json "$POSTC_SYSMSG")
+
+# Phase 95-04: PostCompact does NOT accept hookSpecificOutput per the
+# Claude Code 2.x schema. Stdout carries only a brief systemMessage; the
+# full restored context lands in the side-channel file for forward
+# compatibility. The CONSUMER (next session-start reading this file) is
+# NOT YET WIRED in Phase 95 - deferred to Phase 95.5 or 96. Plan 95-05
+# CHANGELOG explicitly discloses the half-wired status per
+# release-process.md transparency.
+write_post_compact_side_channel "$ROOM_DIR" "$context"
+
+# Phase 95-01 audit: this Cursor branch (CURSOR_PLUGIN_ROOT-gated) is
+# invalid for Claude Code 2.x but valid for Cursor's hook system. The
+# divergence is intentional. See .planning/phases/95-bash-hook-envelope-and-cascade-side-channel/95-01-AUDIT.md row #4.
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  # Cursor branch: kept for compatibility (gated by CURSOR_PLUGIN_ROOT).
+  # Cursor's hook system tolerates additional_context; it is invalid for
+  # Claude Code 2.x but never fires inside Claude Code.
+  printf '{\n  "additional_context": "%s",\n  "systemMessage": "%s"\n}\n' "$escaped_context" "$escaped_postc_sysmsg"
+else
+  # Claude path: schema-compliant PostCompact envelope (systemMessage only).
+  emit_post_compact_envelope "$POSTC_SYSMSG"
+fi
+
+exit 0

@@ -1,0 +1,202 @@
+<div align="center">
+  <img src="https://mindrian-os.com/logo_dark.svg" alt="MindrianOS" width="200" />
+
+  # MindrianOS
+
+  **Talk to Larry. The room writes itself.**
+
+  A thinking partner that sits above your AI. You talk through a problem worth solving. Larry finds the real problem before you solve the wrong one, brings the right method at the moment you need it, pushes back when your confidence outruns your evidence, and turns the conversation into a structured room that remembers every decision and catches what you missed.
+
+  Concretely: you install a plugin into Claude, you talk to it like you normally would, it consults a methodology graph built from accumulated academic teaching experience, and it files the conversation into a folder on your own machine that is still there next time you open it.
+
+  Powered by PWS (Problems Worth Solving), an innovation methodology built and tested through accumulated academic teaching experience and pedagogical rigor.
+  Engineered by Jonathan Sagir.
+
+  [![Version](https://img.shields.io/badge/version-2.0.0--beta.53-1E3A6E)](CHANGELOG.md)
+  [![License](https://img.shields.io/badge/license-BSL_1.1-C8A43C)](LICENSE)
+  [![Works on](https://img.shields.io/badge/CLI_+_Desktop_+_Cowork-2D6B4A)](#three-surfaces)
+
+  [Website](https://mindrian-os.com) &middot;
+  [Marketplace](https://github.com/jsagir/mindrian-marketplace) &middot;
+  [Brain Access](https://mindrian-os.com/brain-access)
+</div>
+
+---
+
+## You have a problem worth solving. You are probably solving the wrong one first.
+
+That is the job MindrianOS is hired for. Not "take my notes" and not "chat with an AI." You bring a real problem, a venture, a research question, a decision you cannot get right alone, and Larry's first move is almost always a question that reframes it, because the version of the problem you walked in with is rarely the one worth solving. Finding the right method, catching what you missed, and remembering what you decided all follow from getting that first reframe right.
+
+---
+
+## The loop, in 30 seconds
+
+This is the whole mental model. You do not need more than this to use MindrianOS well.
+
+1. **You talk.** Whatever is in your room right now, the venture, the decision, the meeting you just filed, becomes context.
+2. **Your context triggers a question to the Brain**, running today on Theo, the methodology graph: 28,131 nodes, 53,313 relationships and 457 frameworks built from accumulated academic teaching expertise, holding WHEN to use WHICH method and in WHAT sequence.
+3. **Larry joins the answer to your situation.** Not a lecture pulled from a textbook. Your problem, run through real methodology.
+4. **You ratify what matters.** Approve it, reject it with a reason, or defer it. Your call becomes part of the room.
+5. **The room remembers.** Next time, it is already there, checking today's input against it.
+
+When the graph genuinely has nothing structured for what you asked, Larry says so plainly instead of making something up, and queues the gap for enrichment. He never improvises methodology. See "What an honest refusal looks like" below: that is not an error message, it is the whole point.
+
+## New in 2.0.0-beta.53
+
+- **A claim only counts as confirmed once it was checked against a source.** Every claim card says what it was checked against before you click. Approve something that was only checked by asking a model and the room holds it as "needs evidence" until you add a source. Ask `/mos:status --checks` for the plain-words picture of the whole room.
+- **Your room can have a never-do list.** Name the steps that must never run on their own. Unattended runs stop at them before anything goes out, and you can add a new one right from the halt with "Reject and never do this".
+- **Research is one planned, gated runner.** `/mos:research` shows you every search before it is sent, runs only after you approve, and files findings only when you say yes. A failed search can never read as "nothing found". Five more commands (`/mos:map-unknowns`, `/mos:root-cause`, `/mos:think-hats`, `/mos:diffusion`, `/mos:whitespace`) can plan their own research.
+- **`/mos:eureka` now plans before it searches.** It recalls a short list of cross-domain pairs from your own graph, skips pairs the room already connects, and files an approved one as a proposed opportunity. The old runner stays behind `/mos:eureka --legacy`.
+- **The room warns you when its checks are thin.** Two quiet signals, each with the one thing to do next. See the [CHANGELOG](CHANGELOG.md) for the full list and the honest known gaps.
+
+---
+
+## Install
+
+One command. Full walkthrough at [the install guide](https://mindrian-os.com/docs/install).
+
+```bash
+npx @mindrian_os/cli
+```
+
+Already inside Claude Code? These two do the same job:
+
+```bash
+claude plugin marketplace add jsagir/mindrian-marketplace
+claude plugin install mos@mindrian-marketplace
+```
+
+Restart Claude Code and Larry starts talking. Your install registers its own Brain identity quietly in the background while you talk: no key to paste, no account to create first. If you already have a Brain key, it wins and nothing changes.
+
+Two things worth knowing before you start:
+
+- Use Claude Pro or Max on your own personal account. A company-managed (SSO or Okta) Claude plan blocks the in-app upgrade prompt; a personal account does not.
+- On Windows, the Node.js installer offers an optional "Tools for Native Modules" checkbox. Leave it unchecked. MindrianOS ships no native modules, and checking it triggers a long, unrelated Visual Studio Build Tools install.
+
+Claude Code will ask you to approve each shell command as it runs, 10+ prompts is normal. Pick "always allow" the first time you see one you are happy with, and the rest will not re-prompt.
+
+Once you are in, the first thing to try is `/mos:ignite`: it starts or resumes a room, and from there Larry takes it from you.
+
+Update or repair an install anytime:
+
+```bash
+mindrian-os update           # marketplace + plugin update
+mindrian-os doctor --all     # diagnose drift, suggest fixes
+```
+
+---
+
+## What talking to Larry feels like
+
+Most of the time it feels like a sharp colleague who happens to know 457 frameworks and has read your whole project. You ask, Larry answers through the loop above, and a graph-grounded answer carries a source line so you know where it came from, including a readiness score (how complete the graph's material on this topic is, out of 4):
+
+> ■ BRAIN: Jobs to Be Done · framework · readiness 4/4
+
+A conversation turn, Larry thinking out loud with you rather than consulting the graph, carries no source line. The absence is the signal: no line means it is talk, not method.
+
+Sometimes the graph does not have what you need yet, and that is not hidden from you. Here is a real refusal, verbatim:
+
+> The graph doesn't have Jobs to Be Done structured yet (readiness 2/4; missing: examples, edge-cases). I've queued it for enrichment. I can share what the graph does hold on this, marked as partial, or we work without it.
+
+That is a feature, not an outage. A tool that quietly guesses when it does not know is worse than one that tells you and keeps a list. A keyless or unreachable session gets the same treatment: an honest refusal and a visible path forward, never an imitation of an answer it does not have.
+
+The room also looks for connections you did not ask about. When it changes in a way that matters (new claims, a contradiction, a new sub-room, a newly filed artifact), MindrianOS quietly runs its cross-connection search in the background and brings back at most one card, only when the finding holds up. Every finding says how sure it is: strong, indirect, or unverified, checked against the methodology graph rather than guessed from a similarity score.
+
+---
+
+## The three layers
+
+| Layer | What | Who owns it |
+|-------|------|-------------|
+| **Plugin** | Skills, commands, agents, and hooks that run the conversation | Open, in this repo |
+| **Brain** | Theo, the graph-native teaching backend: 28,131 nodes, 53,313 relationships, 457 frameworks, accumulated teaching expertise, served over MCP (the standard way Claude reaches an outside service) | Served remotely, never distributed |
+| **Room** | Your venture, your decisions, your files | Yours, on your machine, always |
+
+The Brain never sees your room. Every query it answers carries a generic methodology question, never your notes, your decisions, or your meetings.
+
+Node, relationship and framework counts are from a live [census of the Theo graph](docs/BRAIN-GRAPH-CENSUS.generated.md) dated 2026-10-01.
+
+---
+
+## What Theo is
+
+"The Brain" is the role: the thinking partner behind every graph-grounded answer Larry gives you. Theo is the thing doing that job today, not a rename of it. Theo took over on 2026-09-03, replacing the graph database the Brain ran on before.
+
+Theo runs as a remote MCP server at `theo-mcp.onrender.com` (MCP is the standard way Claude connects to an outside service). You never talk to it directly; Larry does, on your behalf.
+
+The rule Theo lives inside is the one the whole project holds itself to: a generic methodology question crosses the wire (a framework name, a problem type), and your room, your notes, your decisions, and your meetings never do. That boundary is written down in [`docs/MINDRIAN-CANON.md`](docs/MINDRIAN-CANON.md).
+
+Semantic search stays home too: e5 (multilingual-e5-large, 1024-dim), embedded locally on your machine, no network egress.
+
+Read more: what the Brain holds and the six tools Larry calls on it ([`docs/THE-BRAIN.md`](docs/THE-BRAIN.md)), Desktop and Cowork connector setup ([`docs/install/BRAIN-SETUP.md`](docs/install/BRAIN-SETUP.md)), and the opaque per-install identifier ([`docs/THEO-INSTALL-ID.md`](docs/THEO-INSTALL-ID.md)).
+
+---
+
+## Why not just talk to Claude, ChatGPT, or Gemini directly?
+
+You can. MindrianOS is not instead of them, it is the layer that makes one of them remember, judge, and hold you to your own reasoning. A raw AI is brilliant for one turn and forgets the next. It knows every framework but not which one you need right now. And it is agreeable: it will help you build a beautiful deck on a false premise, because it optimizes for a helpful answer, not a true one.
+
+MindrianOS adds what a raw model structurally cannot be: it remembers (your room persists across every session), it knows when (accumulated teaching experience calibrates which method fits which stage), it pushes back (a co-founder tells you when you are wrong, a chatbot tells you that you are brilliant), and it keeps your data yours (only generic methodology crosses to the Brain, never your specifics).
+
+---
+
+## Three surfaces
+
+MindrianOS works wherever Claude works. Same Larry, same room, every surface.
+
+| Surface | What it gives you |
+|---------|-------------------|
+| **Claude Code CLI** | Full power. Hooks fire, scripts run, the room is on disk, Larry teaches with visible structure. |
+| **Claude Desktop** | Same Larry, conversational. Your Data Room (the structured folder on your machine where the room lives) shows up as inline panels (dashboard, wiki, knowledge graph). |
+| **Cowork** | Same plugin, shared room. Daily briefings, persistent perspectives, multi-user. |
+
+---
+
+## Commands are internals
+
+Talk. That is the whole interface. Larry reaches for the right command on your behalf; the ones below are here for when you already know the shortcut.
+
+```bash
+/mos:ignite               # the front door: start or excavate a room
+/mos:discover             # Larry-led client + product + JTBD discovery
+/mos:beautiful-question   # reframe the problem before solving it
+/mos:file-meeting         # paste a transcript, Larry files it
+/mos:graph "what is the weakest assumption in my financial model?"
+/mos:grade                # honest assessment against real ventures
+```
+
+That is a slice of the 113 commands this plugin ships, alongside 126 skills and 17 agents. If you do not know which one to run, that is the normal case. Just talk.
+
+---
+
+## Pricing
+
+Free plugin. It requires a paid Claude plan (Claude Pro, $20/mo, or higher) because it runs on top of Claude. The Brain installs with it, silently registered, at no separate cost.
+
+---
+
+## The privacy line
+
+MindrianOS reads your workspace and writes only to your rooms (default: `~/MindrianRooms/`) and to session state (`./.mindrian/`). It does not push anything to the Brain beyond a generic methodology question: never your notes, never your decisions, never your meetings.
+
+The only per-install thing Theo receives is `x-theo-install-id`, a 32-character random hex string minted once and stored on your machine. It lets Theo tell one install from another; it does not tell Theo who you are. See [`docs/THEO-INSTALL-ID.md`](docs/THEO-INSTALL-ID.md).
+
+For zero permission prompts during a session: `claude --dangerously-skip-permissions`. The read/write surface is bounded to your workspace and your rooms. For granular control, copy the matcher set from [`docs/settings-template.json`](docs/settings-template.json) into `~/.claude/settings.json`.
+
+---
+
+## Links
+
+- **Website**: [mindrian-os.com](https://mindrian-os.com)
+- **Marketplace**: [github.com/jsagir/mindrian-marketplace](https://github.com/jsagir/mindrian-marketplace)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
+- **Brain key (override path)**: [Request one](https://mindrian-os.com/brain-access)
+- **How Theo works**: [docs/THE-BRAIN.md](docs/THE-BRAIN.md), [docs/install/BRAIN-SETUP.md](docs/install/BRAIN-SETUP.md), [docs/THEO-INSTALL-ID.md](docs/THEO-INSTALL-ID.md)
+
+---
+
+Install MindrianOS. Start thinking with Larry.
+
+## License
+
+Source-available (BSL 1.1), not open source. Copyright Jonathan Sagir and PWS / Mindrian.

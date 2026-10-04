@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# post-write -- PostToolUse handler for Write, Edit, and MultiEdit
+# Routes to classify-insight for room file classification
+# Routes to file-asset for binary file detection
+# Phase 88-04: also fires the per-section freshness triple when a write
+# lands inside a Data Room section (detected via .room-root sentinel):
+#   1. Enqueue MINTO regen via minto-debouncer (synchronous, fast)
+#   2. Recompile ROOM.md references (backgrounded)
+#   3. Stamp last_artifact_write_seen_at on MINTO.md frontmatter (backgrounded)
+# System files (ROOM.md/STATE.md/MINTO.md) stamp only. Non-.md files skip
+# enqueue + recompile. Stamp and recompile are spawned BACKGROUNDED so the
+# user-visible hook return is not serialized on the write-lock.
+#
+# Called by run-hook.cmd when PostToolUse fires after Write/Edit/MultiEdit.
+# Claude Code passes hook data as JSON on stdin (PostToolUse schema):
+#   { "tool_name": "Write"|"Edit"|"MultiEdit", "tool_input": { "file_path": "..." }, ... }
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Phase 88-04: detect whether FILE_PATH lives inside a Data Room section by
+# walking up for the .room-root sentinel. On hit, echoes "<roomDir>|<section>"
+# to stdout and returns 0. On miss, returns 1. Section name is the first
+# directory under the room root. Cap hops at 12 to avoid pathological loops.
+detect_room_section() {
+  local file_path="$1"
+  local dir
+  dir=$(dirname "$file_path")
+  local hops=0
+  while [ "$dir" != "/" ] && [ "$dir" != "." ] && [ "$hops" -lt 12 ]; do
+    if [ -e "$dir/.room-root" ]; then
+      # dir is the room root. section = first path component under dir.
+      local rel="${file_path#$dir/}"
+      local section="${rel%%/*}"
+      # Guard: the file must actually be under a section, not directly
+      # in the room root.
+      if [ -n "$section" ] && [ "$section" != "$rel" ]; then
+        printf '%s|%s\n' "$dir" "$section"
+        return 0
+      fi
+      return 1
+    fi
+    dir=$(dirname "$dir")
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Phase 95-02: bash post-write envelope hygiene + cascade side-channel.
+#
+# Cascade payload used to live at JSON ROOT alongside `systemMessage`
+# (cascade_status, classification, git_commit, graph_index,
+# proactive_intelligence). Claude Code 2.x's PostToolUse schema sets
+# `additionalProperties: false`, which rejects every unknown root key.
+# Result: (a) "Hook JSON output validation failed" tripped on every
+# cascade, and (b) the room-proactive skill received nothing because
+# the envelope was silently dropped or partially surfaced.
+#
+# Phase 95-02 fix:
+# 1. Stdout becomes ONE JSON object with `hookSpecificOutput` only.
+#    additionalContext carries the existing tight one-line systemMessage.
+# 2. The full cascade payload moves to <roomDir>/.mindrian/last-cascade.json,
+#    written atomically (mktemp inside SIDE_DIR + mv -f for POSIX-atomic
+#    rename(2) on the same filesystem). LOCAL only - never network surface
+#    per Canon Part 8.
+# 3. The skills/room-proactive/SKILL.md trigger contract (Plan 95-03) reads
+#    the side-channel file when it sees one of the two recognized
+#    additionalContext prefixes:
+#       ^post-write: cascade complete
+#       ^queued MINTO regen
+# ---------------------------------------------------------------------------
+
+# Emit a Claude Code 2.x compliant PostToolUse advisory envelope.
+# Empty input -> silent (zero bytes). Non-empty -> single JSON line.
+emit_post_tool_use_envelope() {
+  local msg="$1"
+  if [ -z "$msg" ]; then return 0; fi
+  jq -nc --arg m "$msg" '{
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext: $m
+    }
+  }'
+}
+
+# Write cascade payload atomically to <roomDir>/.mindrian/last-cascade.json.
+# Soft-fail at every step: a permission error, missing jq, or torn temp file
+# MUST NOT break the post-write hook.
+write_cascade_side_channel() {
+  local room_dir="$1"
+  local file_path="$2"
+  local section="$3"
+  local cascade_output="$4"
+  local session_id="$5"
+
+  [ -z "$room_dir" ] && return 0
+  [ -z "$cascade_output" ] && return 0
+
+  local side_dir="$room_dir/.mindrian"
+  mkdir -p "$side_dir" 2>/dev/null || return 0
+
+  local payload
+  payload=$(jq -nc \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg fp "$file_path" \
+    --arg sec "$section" \
+    --arg sid "$session_id" \
+    --argjson cascade "$cascade_output" \
+    '{
+      timestamp: $ts,
+      file_path: $fp,
+      section: $sec,
+      session_id: (if $sid == "" then null else $sid end),
+      cascade_status: "complete",
+      classification: ($cascade.classification // null),
+      git_commit: ($cascade.gitCommit // null),
+      graph_index: ($cascade.graphIndex // null),
+      proactive_intelligence: ($cascade.proactiveIntelligence // null)
+    }' 2>/dev/null) || return 0
+
+  # Atomic write via mktemp inside SIDE_DIR (same-filesystem invariant) +
+  # mv -f. POSIX-portable form: no `-p` flag (BSD/macOS divergence; the
+  # template path itself dictates the directory).
+  local tmp
+  tmp=$(mktemp "$side_dir/.last-cascade.json.XXXXXX" 2>/dev/null) || return 0
+  printf '%s\n' "$payload" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  mv -f "$tmp" "$side_dir/last-cascade.json" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+}
+
+# Read file path from stdin JSON (Claude Code hook API),
+# fall back to $1 or TOOL_INPUT_PATH for backward compatibility
+# Phase 237-06 (REACH-03): SESSION_ID is read alongside FILE_PATH from the
+# SAME hook stdin payload -- session_id is a documented COMMON input field
+# on every hook event including PostToolUse. Manual/TTY invocation has no
+# hook stdin, so SESSION_ID stays empty there (the degrade path).
+SESSION_ID=""
+if [ -t 0 ]; then
+  # stdin is a terminal (manual invocation) -- use args
+  FILE_PATH="${1:-${TOOL_INPUT_PATH:-}}"
+else
+  # stdin has data -- parse JSON from Claude Code hook
+  HOOK_INPUT=$(cat)
+  FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)
+  # Fallback: try tool_response.filePath
+  if [[ -z "$FILE_PATH" ]]; then
+    FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_response.filePath // empty' 2>/dev/null || true)
+  fi
+  # Final fallback: positional arg or env var
+  if [[ -z "$FILE_PATH" ]]; then
+    FILE_PATH="${1:-${TOOL_INPUT_PATH:-}}"
+  fi
+  SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+fi
+
+if [[ -z "$FILE_PATH" ]]; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 88-04: triple-fire on room section writes.
+#
+# Fires BEFORE the existing cascade block so the freshness wires land even
+# when the legacy cascade path is skipped (e.g. fixture rooms that do not
+# carry STATE.md at the room root). Detection uses the .room-root sentinel
+# from Phase 87-01a, which is distinct from (and complementary to) the
+# STATE.md walk used below for the cascade.
+#
+# Latency contract (88-04):
+#   - Target: < 300ms user-visible foreground under uncontended conditions.
+#   - Hard ceiling: 3000ms hook timeout (hooks.json).
+#   - Under 20-writer Cowork contention: stamp + recompile serialize on the
+#     room-level write-lock, but both are spawned BACKGROUNDED so the
+#     user-visible hook return is NOT gated on them. Only the debouncer
+#     enqueue runs in the foreground; it is a single tiny JSON write that
+#     completes in single-digit ms.
+#
+# Safety: every call is wrapped in `|| true` so a broken dependency cannot
+# break the hook. The final `exit 0` at the bottom of this script is the
+# soft-fail guarantee.
+# ---------------------------------------------------------------------------
+if ROOM_SECTION_INFO=$(detect_room_section "$FILE_PATH" 2>/dev/null); then
+  ROOM_DIR="${ROOM_SECTION_INFO%|*}"
+  SECTION="${ROOM_SECTION_INFO##*|}"
+  BASENAME=$(basename "$FILE_PATH")
+
+  # Stamp ALWAYS fires (even for system-file writes -- section mtime
+  # changed). BACKGROUNDED so it never serializes on the write-lock during
+  # the user-visible hook return.
+  ( node "${SCRIPT_DIR}/stamp-artifact-write.cjs" "$ROOM_DIR/$SECTION" >/dev/null 2>&1 || true ) &
+
+  # Enqueue regen + recompile ROOM.md references only for non-system .md
+  # files. ROOM.md/STATE.md/MINTO.md are the TARGETS of reasoning, not
+  # artifact signals -- they must not trigger regen or they create
+  # infinite loops with the regen worker.
+  case "$BASENAME" in
+    ROOM.md|STATE.md|MINTO.md)
+      : # system file: stamp only, skip enqueue + recompile
+      ;;
+    *.md)
+      # Debouncer CLI: node <script>/minto-debouncer.cjs enqueue <roomDir> <section> <reason>
+      # Synchronous (fast JSON write); soft-fail via || true.
+      DEBOUNCER_SCRIPT="${SCRIPT_DIR}/minto-debouncer.cjs"
+      node "$DEBOUNCER_SCRIPT" enqueue "$ROOM_DIR" "$SECTION" "post-write:$BASENAME" >/dev/null 2>&1 || true
+      # Recompile ROOM.md references BACKGROUNDED. Do not block the hook
+      # return on the recompile write-lock wait.
+      ( node "${SCRIPT_DIR}/recompile-room-references.cjs" "$ROOM_DIR/$SECTION" >/dev/null 2>&1 || true ) &
+      ;;
+    *)
+      : # non-.md files (.txt, .pdf, .png, ...): skip enqueue + recompile
+      ;;
+  esac
+fi
+
+# Resolve active room for guard check
+ACTIVE_ROOM=$("${SCRIPT_DIR}/resolve-room" "$PWD" 2>/dev/null) || ACTIVE_ROOM=""
+
+# Track artifact creation if in room/ or rooms/
+if [[ "$FILE_PATH" == */room/* ]] || [[ "$FILE_PATH" == */rooms/* ]]; then
+  # Active room guard: skip processing for non-active rooms
+  if [ -n "$ACTIVE_ROOM" ]; then
+    case "$FILE_PATH" in
+      "${ACTIVE_ROOM}"/*) ;; # File is in active room -- proceed
+      *) exit 0 ;; # File is in a different room -- skip silently
+    esac
+  fi
+  # Extract section name from path (parent directory of the file)
+  section=$(dirname "$FILE_PATH" | xargs basename || true)
+  if [ -n "$section" ]; then
+    bash "${SCRIPT_DIR}/track-analytics" artifact "$section" 2>/dev/null &
+  fi
+fi
+
+# Resolve plugin root and room directory for downstream steps
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+room_dir=""
+
+# Walk up from FILE_PATH looking for STATE.md to find room root
+# Runs for ALL file types (binary and markdown) so room_dir is available
+check_dir=$(dirname "$FILE_PATH")
+while [ "$check_dir" != "/" ] && [ "$check_dir" != "." ]; do
+  if [ -f "$check_dir/STATE.md" ]; then
+    room_dir="$check_dir"
+    break
+  fi
+  check_dir=$(dirname "$check_dir")
+done
+
+# -- Delegate intelligence cascade to shared module (works on all surfaces) --
+# The shared module (lib/core/intelligence-cascade.cjs) handles:
+#   - Binary file detection and routing to file-asset
+#   - Markdown cascade: classify-insight, graph-index, HSI, reverse salients, hsi-to-graph, presentation
+# This keeps CLI hooks and MCP tools using identical intelligence logic.
+if [ -n "$room_dir" ]; then
+  # Run cascade in foreground so we can capture and report status
+  CASCADE_OUTPUT=$(node "${PLUGIN_ROOT}/scripts/mindrian-tools.cjs" cascade "$room_dir" "$FILE_PATH" --raw 2>/dev/null) || CASCADE_OUTPUT='{"error":"cascade failed"}'
+
+  # 88.1-03: systemMessage retrofit. Derive a tight one-line status reporting
+  # which section fired the regen/recompile cascade plus the triggering
+  # artifact basename. LOCAL-only (Canon Part 8): never leaks file content.
+  # Soft-fail: if detect_room_section did not populate SECTION/BASENAME (write
+  # outside a room), fall back to a generic "cascade complete" line.
+  SM_SECTION="${SECTION:-unknown}"
+  SM_BASENAME="${BASENAME:-$(basename "$FILE_PATH" 2>/dev/null || echo unknown)}"
+  if [ "$SM_SECTION" = "unknown" ]; then
+    SM_TEXT="post-write: cascade complete for $(basename "$FILE_PATH" 2>/dev/null || echo file)"
+  else
+    SM_TEXT="queued MINTO regen for ${SM_SECTION}, recompiled references (${SM_BASENAME})"
+  fi
+
+  # 95-02: side-channel write + envelope-only stdout.
+  # The full cascade payload (classification + gitCommit + graphIndex +
+  # proactiveIntelligence) goes into <roomDir>/.mindrian/last-cascade.json.
+  # Stdout is ONLY the schema-valid envelope advisory.
+  write_cascade_side_channel "$room_dir" "$FILE_PATH" "${SECTION:-unknown}" "$CASCADE_OUTPUT" "$SESSION_ID"
+  emit_post_tool_use_envelope "$SM_TEXT"
+fi
+
+# Phase 88-04: explicit exit 0 -- the PostToolUse hook is a soft-fail channel.
+# Any failure upstream (cascade, triple-fire, stamp, debouncer, recompile)
+# must NOT propagate as a non-zero exit that could surface to the user as a
+# broken Write/Edit/MultiEdit tool call.
+exit 0

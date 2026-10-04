@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "canon_parts": ["Part 7", "Part 11"],
+  "_doc": {
+    "purpose": "Phase 267.3 (ruling D-A): the out-of-frontmatter first-reward declaration contract for first-touch surfaces that have no frontmatter block to declare in, the motivating case being scripts/session-start, a bash hook whose FIRST_INSTALL, UPDATE, MODE_ROUTING and COLD_START_MENU branches emit user-facing first-touch prose and have nowhere to put an interactive_first_reward key. Registry-is-the-table: this file IS the contract, read at check time by scanDeclaredSurfaces() in lib/core/mva-rule-linter.cjs, never a hardcoded list inside the scanner. Record shape mirrors data/first-touch-surfaces.json (Canon Part 7, reuse before build); the _doc convention mirrors data/hitl-shape-declaration-schema.json.",
+    "reward_vocabulary": [
+      "reframe_question",
+      "instant_brief",
+      "schema_preview",
+      "calibration_distribution_preview",
+      "paragraph_preview",
+      "--none (scripting only)",
+      "methodology_reframe",
+      "--none (diagnostic surface)",
+      "live_deliverable"
+    ],
+    "reward_vocabulary_note": "This array MIRRORS the REWARD_TYPES frozen Set in lib/core/mva-rule-linter.cjs; it does not define it. Set-equality between the two is test-enforced (lib/core/mva-rule-linter.test.cjs and tests/test-267.3-surface-declarations.cjs), so a term added here and not there, or there and not here, reds the suite. A new term is a canon amendment landed in BOTH docs/reward-before-investment-rule.md and the REWARD_TYPES Set together, never a registry-local invention.",
+    "kind_vocabulary": ["shell_script", "injected_prose", "cjs"],
+    "kind_vocabulary_note": "Copied from data/first-touch-surfaces.json's kind values, minus the kinds no record here uses (command_md and agent_md both carry frontmatter, so they declare in frontmatter and never in this registry), plus injected_prose for a named prose branch inside a larger script. Add no kind until a record actually needs it.",
+    "record_shape": {
+      "id": "Required. A unique, non-empty stable surface identifier, for example session-start:FIRST_INSTALL. No two records may share one.",
+      "file": "Required. A repo-relative path to the declaring surface. The file MUST exist on disk at check time, so a declaration cannot outlive the surface it describes.",
+      "kind": "Required. One member of kind_vocabulary.",
+      "anchor": "Required. A grep-able literal or variable name locating the prose inside the file, for example the branch variable FIRST_INSTALL, so a reader can jump from this record to the prose it describes.",
+      "interactive_first_reward": "Required. One member of reward_vocabulary, validated by the SAME validateFrontmatter() the frontmatter path uses, so the two declaration surfaces cannot drift on what a legal value is.",
+      "why": "Required. One non-empty Feynman-simplified sentence naming the surface's ACTUAL first-reward moment, in plain words, hyphens not em-dashes."
+    },
+    "validation_rule": "A record is valid when every required field in record_shape is present, id is unique across the registry, file resolves to an existing file under the repo root, kind is a member of kind_vocabulary, interactive_first_reward is a member of reward_vocabulary, and why is a non-empty string. Any violation fails closed.",
+    "default_on_miss": "reject (fail closed): a file that is not on disk, an unknown kind, an unknown reward value, a duplicate id, an empty why, or an unparseable registry is a hard error, not a silent pass. A gate that reports is better than a gate that crashes, so an unreadable registry is reported as registry_read_error rather than thrown.",
+    "surface_count_principle": "The total count of declaring surfaces is NEVER hardcoded. It is always surfaces.length, read from this file by the gate at check time."
+  },
+  "surfaces": [
+    {
+      "id": "session-start:FIRST_INSTALL",
+      "file": "scripts/session-start",
+      "kind": "injected_prose",
+      "anchor": "[MindrianOS Onboarding] First install detected.",
+      "interactive_first_reward": "instant_brief",
+      "why": "The branch now hands first contact to scripts/first-install-router.cjs, which classifies the user's one-sentence free-text answer locally and, when the shipped MVA classifier judges that sentence venture-shaped, fires the room-free Instant Brief pipeline (lib/core/mva-orchestrator.cjs) out of band as a detached child process. The rendered result is drained and injected as additionalContext on a later turn, not the same turn: the brief lands one turn after the triggering sentence (plan 267.2-07, decision D-D). Stated plainly rather than declared stronger than the machinery supports: a session whose free-text answer never qualifies as venture-shaped delivers no brief. Closes GAP R-1 (.planning/research/2026-08-27-hooked-first-install-audit.md), repaired by Phase 267.2 plans 267.2-06 (the router's arm/route legs), 267.2-07 (the reward fire/drain legs) and this plan (the prose handoff)."
+    },
+    {
+      "id": "session-start:UPDATE",
+      "file": "scripts/session-start",
+      "kind": "injected_prose",
+      "anchor": "Welcome back. The user has updated from v",
+      "interactive_first_reward": "--none (diagnostic surface)",
+      "why": "Delivers a what-is-new digest read out of CHANGELOG.md for the exact version pair the user crossed, which is real machinery (the ONBOARD_STEPS / CHANGELOG_DIFF extraction) but a fully predictable output given those two versions. That is the case docs/reward-before-investment-rule.md:59-60 already names in its own words: a state report is not a reward. Honest opt-out, no repair queued against it."
+    },
+    {
+      "id": "session-start:MODE_ROUTING",
+      "file": "scripts/session-start",
+      "kind": "injected_prose",
+      "anchor": "[MindrianOS Mode Routing] No room detected.",
+      "interactive_first_reward": "--none (diagnostic surface)",
+      "why": "Delivers a three-option routing card and nothing else: it asks the user to pick an entry mode before anything is handed back, which is investment before reward, the exact ordering this rule exists to prevent. Declared as an opt-out because no reward member of the closed vocabulary would be a true statement about it. Repairing the ordering is onboarding-flow work Phase 267.2 owns, not a declaration change."
+    },
+    {
+      "id": "session-start:COLD_START_MENU",
+      "file": "scripts/session-start",
+      "kind": "injected_prose",
+      "anchor": "COLD_START_MENU=\"---\\nGet started:",
+      "interactive_first_reward": "--none (diagnostic surface)",
+      "why": "Delivers a static four-command menu, appended by all three cold-start branches, whose command count is computed live from disk. It reports what is available rather than delivering a variable reward, so the opt-out is literal here. Its one measured defect is a routing gap and not a false reward claim: it never names /mos:ignite, the front door built to deliver the Hooked first-cycle reward (GAP R-1, same audit). Phase 267.2 owns that too."
+    }
+  ]
+}

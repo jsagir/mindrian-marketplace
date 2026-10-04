@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "phase": "quick-260705-sd5",
+  "canon_parts": [
+    "Part 3",
+    "Part 7",
+    "Part 10",
+    "Part 11"
+  ],
+  "decisions": [
+    "D-06",
+    "D-07"
+  ],
+  "_note": "All user-facing commands appear in /mos:help (selector menu). The 11 families below are the real command surface, grouped as a 3-card F-shape selector (Card 1: Start Here / Rooms & Data Room / Frame & Validate / Run a Methodology; Card 2: Explore Futures & Trends / Intelligence & Research / Opportunities Funding & Meetings / Present & Publish; Card 3: Orchestrate & Automate / Memory State & Engine / System & Maintenance). Each family declares a jtbd: [] outcome list (the traceability artifact refined by quick-260705-sd5): every non-deprecated member command's serves_jtbd frontmatter intersects its family's jtbd, machine-enforced by scripts/check-help-coverage.cjs. EXCLUDED, born-listed and machine-checkable by scripts/check-help-coverage.cjs: (1) visibility:admin commands (admin, dogfood-flush), detected from each command's frontmatter; (2) the deprecated_aliases map below, which IS the explicit exclusion registry -- every command whose frontmatter carries `deprecated: true` MUST appear as a key here (reason: deprecated soft-redirect), or the gate hard-fails. Each family carries lane: start|methodology|explore|view for the renderer text view (--list), which walks all groups.",
+  "groups": [
+    {
+      "id": "start-here",
+      "label": "Start Here",
+      "glyph": "▶",
+      "commands": [
+        "onboard",
+        "ignite",
+        "new-project",
+        "discover",
+        "mos",
+        "help",
+        "setup",
+        "splash",
+        "update"
+      ],
+      "lane": "start",
+      "jtbd": ["explore", "build", "audit-room"]
+    },
+    {
+      "id": "rooms-data-room",
+      "label": "Rooms & Data Room",
+      "glyph": "⬡",
+      "commands": [
+        "room",
+        "rooms",
+        "dashboard",
+        "wiki",
+        "status",
+        "show",
+        "snapshot",
+        "vault",
+        "grade",
+        "deep-grade"
+      ],
+      "lane": "start",
+      "jtbd": ["audit-room", "prepare-pitch"]
+    },
+    {
+      "id": "frame-the-problem",
+      "label": "Frame & Validate",
+      "glyph": "?",
+      "commands": [
+        "diagnose",
+        "beautiful-question",
+        "challenge-assumptions",
+        "map-unknowns",
+        "root-cause",
+        "structure-argument",
+        "validate",
+        "score-innovation",
+        "analyze-needs",
+        "user-needs"
+      ],
+      "lane": "methodology",
+      "jtbd": ["find-problem", "validate-idea", "surface-contradiction", "decide-pursue"]
+    },
+    {
+      "id": "run-a-methodology",
+      "label": "Run a Methodology",
+      "glyph": "□",
+      "commands": [
+        "lean-canvas",
+        "mullins",
+        "think-hats",
+        "persona",
+        "hat-briefing",
+        "build-knowledge",
+        "value-proposition",
+        "leadership"
+      ],
+      "lane": "methodology",
+      "jtbd": ["prepare-pitch", "validate-idea", "understand-market", "explore"]
+    },
+    {
+      "id": "explore-futures-trends",
+      "label": "Explore Futures & Trends",
+      "glyph": "↗",
+      "commands": [
+        "explore-domains",
+        "explore-futures",
+        "explore-trends",
+        "scenario-plan",
+        "futures",
+        "trending-to-absurd",
+        "macro-trends",
+        "dominant-designs",
+        "analyze-timing",
+        "diffusion"
+      ],
+      "lane": "explore",
+      "jtbd": ["understand-market", "explore", "plan-execution", "find-problem"]
+    },
+    {
+      "id": "intelligence-research",
+      "label": "Intelligence & Research",
+      "glyph": "⚡",
+      "commands": [
+        "research",
+        "scientific-roadmap",
+        "find-connections",
+        "build-thesis",
+        "compare-ventures",
+        "whitespace",
+        "causal",
+        "graph",
+        "find-bottlenecks",
+        "rs-experts",
+        "rs-explain",
+        "rs-fetch",
+        "rs-thesis",
+        "bono",
+        "systems-thinking",
+        "analyze-systems",
+        "find-analogies",
+        "eureka"
+      ],
+      "lane": "explore",
+      "jtbd": ["find-bottleneck", "connect-domains", "explore", "decide-pursue", "compare-options", "find-problem"]
+    },
+    {
+      "id": "opportunities-funding-meetings",
+      "label": "Opportunities, Funding & Meetings",
+      "glyph": "◆",
+      "commands": [
+        "opportunities",
+        "qualify-opportunity",
+        "explore-opportunity",
+        "funding",
+        "grade-grant",
+        "scout",
+        "file-meeting",
+        "reanalyze",
+        "speakers"
+      ],
+      "lane": "explore",
+      "jtbd": ["explore", "file-meeting", "decide-pursue"]
+    },
+    {
+      "id": "present-publish",
+      "label": "Present & Publish",
+      "glyph": "↓",
+      "commands": [
+        "export",
+        "present",
+        "publish",
+        "deck",
+        "radar"
+      ],
+      "lane": "view",
+      "jtbd": ["prepare-pitch", "understand-market"]
+    },
+    {
+      "id": "orchestrate-automate",
+      "label": "Orchestrate & Automate",
+      "glyph": "▸",
+      "commands": [
+        "act",
+        "pipeline",
+        "intel-pipeline",
+        "suggest-next",
+        "scheduled-tasks"
+      ],
+      "lane": "explore",
+      "jtbd": ["plan-execution"]
+    },
+    {
+      "id": "memory-state-engine",
+      "label": "Memory, State & Engine",
+      "glyph": "✓",
+      "commands": [
+        "memory",
+        "memory-cortex-reach",
+        "jtbd",
+        "operator",
+        "stance",
+        "explain-decision",
+        "models",
+        "mva-brief",
+        "mva-option",
+        "mva-report",
+        "mos-reason",
+        "brain-derive",
+        "dial-memory-refresh",
+        "feynman-timeline-refresh",
+        "correct-reference-now"
+      ],
+      "lane": "view",
+      "jtbd": ["audit-room", "navigate", "explore", "compare-options", "temporal-correction"]
+    },
+    {
+      "id": "system-maintenance",
+      "label": "System & Maintenance",
+      "glyph": "⚙",
+      "commands": [
+        "doctor",
+        "diagnostics",
+        "agentshield",
+        "new-surface",
+        "skill",
+        "ingest-methodology",
+        "auto-explore",
+        "pws-brain"
+      ],
+      "lane": "view",
+      "jtbd": ["audit-room", "explore", "build"]
+    }
+  ],
+  "deprecated_aliases": {
+    "_note": "Per Phase 121.5-08 Sub-plan J. Old commands stay as soft-alias stubs but do NOT appear in /mos:help groups -- they redirect to the canonical command. This map doubles as the EXCLUSION REGISTRY read by scripts/check-help-coverage.cjs: reason for every key is `deprecated`, cross-checked against each command's frontmatter `deprecated: true`. A deprecated command absent from this map is a hard-fail (unlisted_deprecated) so a deprecation can never silently vanish from coverage.",
+    "heal": "doctor --heal-room",
+    "query": "graph",
+    "organize": "rooms organize",
+    "hmi-status": "doctor --ui-compliance",
+    "visualize": "dashboard --mermaid"
+  },
+  "_lanes": {
+    "start": "Start + navigate",
+    "methodology": "Run a methodology",
+    "explore": "Explore + intelligence",
+    "view": "View + manage"
+  }
+}

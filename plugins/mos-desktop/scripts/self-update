@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# self-update: DEPRECATED 2026-04-26 (v1.10.19)
+#
+# This script is intentionally a no-op stub. The previous implementation
+# (preserved at scripts/self-update.deprecated-2026-04-26.bak, 427 lines,
+# Plan 84-09 rewrite) copied plugin files to the cache directory but did
+# NOT update Claude Code's plugin registry:
+#
+#   ~/.claude/plugins/installed_plugins.json     (gitCommitSha drift)
+#   ~/.claude/settings.json :: enabledPlugins    (plugin not enabled)
+#   ~/.claude/plugins/known_marketplaces.json    (marketplace state)
+#
+# Result: cache had the new version, registry didn't know about it,
+# Claude Code's plugin loader silently ignored the install. Slash commands
+# disappeared. Confirmed in field by Aryeh Holtzberg (PWS IRIS 2025) on
+# 2026-04-26. Matches Anthropic-tracked issues #11357, #12457, #14815, #17832.
+#
+# REPLACEMENT: use Claude Code's native plugin loader, which keeps all
+# four registry files in sync atomically.
+#
+#   From inside a Claude Code session (recommended):
+#       /plugin marketplace update
+#       /plugin update mos@mindrian-marketplace
+#
+#   From the CLI (equivalent):
+#       claude plugin marketplace update
+#       claude plugin update mos@mindrian-marketplace
+#
+#   Or, the wrapper that handles this end-to-end with version check + Larry voice:
+#       /mos:update
+#
+# This shim is preserved (not deleted) so that existing automation
+# (cron jobs, CI scripts, hook chains) that invoke `self-update` get a
+# clear migration message instead of silent breakage. It will be removed
+# in a future major release once the migration window is closed.
+#
+# Reference:
+#   - Plugin repo: https://github.com/jsagir/mindrian-os-plugin
+#   - Hotfix doc:  .planning/phases/90-brain-derivation-layer/90-HOTFIX-2026-04-26.md
+#   - Constitutional rationale: Canon Part 7 (Reuse Before Build)
+#   - Backup of previous implementation: scripts/self-update.deprecated-2026-04-26.bak
+
+set -euo pipefail
+
+MODE="${1:-help}"
+
+# Phase 339 Plan 06 (FLIP-04, D-08): the plugin-update command line below is
+# sourced from lib/core/update-path.cjs, the single source of the two-command
+# update path, so this deprecated stub cannot drift from it (three retyped
+# copies is exactly the drift D-08 exists to prevent).
+# tests/test-339-update-path-single-source.cjs Arm 5 polices the OTHER
+# direction: the literal must appear nowhere in lib/ or scripts/ except
+# inside update-path.cjs itself, so it is fetched here, never retyped.
+SELF_UPDATE_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_UPDATE_CMD="$(node -e "process.stdout.write(require(process.argv[1]).PLUGIN_UPDATE_COMMAND)" "${SELF_UPDATE_REPO_ROOT}/lib/core/update-path.cjs" 2>/dev/null || true)"
+if [ -z "${PLUGIN_UPDATE_CMD}" ]; then
+  PLUGIN_UPDATE_CMD="the plugin-update command from .claude/includes/release-process.md"
+fi
+
+cat >&2 <<EOF
+══════════════════════════════════════════════════════════════════════════
+DEPRECATED -- scripts/self-update is a no-op as of 2026-04-26
+══════════════════════════════════════════════════════════════════════════
+
+The self-update script bypassed Claude Code's plugin registry and caused
+the plugin to silently fail to load after "successful" updates. It has
+been replaced with native delegation.
+
+USE INSTEAD (in this order):
+
+  1. From a Claude Code session:
+        /plugin marketplace update
+        /plugin update mos@mindrian-marketplace
+
+  2. Or the friendly wrapper (recommended -- includes version check + changelog):
+        /mos:update
+
+  3. From the bash CLI (equivalent to the slash commands):
+        claude plugin marketplace update
+        ${PLUGIN_UPDATE_CMD}
+
+After update, restart Claude Code and verify with /mos:help.
+
+WHY THE CHANGE:
+  - self-update only updated ~/.claude/plugins/cache/...
+  - It never updated ~/.claude/plugins/installed_plugins.json
+  - It never updated ~/.claude/settings.json :: enabledPlugins
+  - Claude Code's plugin loader requires ALL three to agree
+  - Result: cache had v1.10.18, registry thought v1.10.13 was installed,
+    plugin loader saw mismatch and ignored the new version
+
+The native commands above keep all registry files in sync atomically.
+
+Reference:
+  https://github.com/jsagir/mindrian-os-plugin/blob/main/CHANGELOG.md
+  (search for "Hotfix 2026-04-26" under [1.10.18])
+
+══════════════════════════════════════════════════════════════════════════
+EOF
+
+# Exit code: non-zero so callers (cron, CI, automation) detect this as
+# a failure they need to migrate from. NOT zero -- silently succeeding
+# would mask the migration need.
+exit 1

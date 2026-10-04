@@ -1,0 +1,2816 @@
+'use strict';
+
+/**
+ * Brain HTTP Client -- calls the Brain HTTP server. Default is
+ * `https://theo-mcp.onrender.com`, a BARE origin (no path, no trailing
+ * slash): this client appends `/mcp` for tool calls and `/register` for the
+ * key ladder, so a `/mcp` suffix here would yield `/mcp/mcp` and a trailing
+ * slash a double slash, both 404 and both rendered as "Brain unreachable"
+ * rather than a configuration error. Override via the MINDRIAN_BRAIN_URL env
+ * var, the per-install rollback lever; that lever (and the fleet-wide
+ * patch-release revert of this line) is valid only while the previous
+ * origin is still running, because pointing it at a suspended service is a
+ * second outage stacked on the first, arriving exactly when the operator is
+ * under pressure.
+ *
+ * Replaces direct MCP tool calls (mcp__neo4j-brain__*, mcp__pinecone-brain__*)
+ * with a single HTTP API that handles the graph backend behind one key.
+ *
+ * Falls back gracefully:
+ *   1. If MINDRIAN_BRAIN_KEY is set → calls Brain API
+ *   2. If Brain API returns a quota/capacity error → retries once
+ *   3. If no key → returns null (Tier 0, no Brain)
+ *
+ * Usage in commands/skills:
+ *   const brain = require('./brain-client.cjs');
+ *   const result = await brain.query('MATCH (f:Framework) RETURN f.name LIMIT 5');
+ *   const result = await brain.search('innovation framework');
+ *   const schema = await brain.schema();
+ */
+
+// Phase 339, 2026-09-03 (FLIP-10, D-13 locked): the flip. BARE origin only --
+// no path, no trailing slash -- because `${BRAIN_URL}/mcp` and
+// `${BRAIN_URL}/register` are both formed by appending below. This does NOT
+// change: input arg keys (byte-for-byte unchanged, tests/test-247-contract-
+// client.cjs stays green untouched), the shim server key `mindrian-brain`,
+// BRAIN_TOOL_MATCHER / hooks/hooks.json for the CLI surface, or the
+// brain_query {rows, diagnostics} shape adaptation (already shipped at
+// :927-945, commit 21fdd7bc). MINDRIAN_BRAIN_URL remains the per-install
+// override and the one-line rollback lever.
+const BRAIN_URL = process.env.MINDRIAN_BRAIN_URL || 'https://theo-mcp.onrender.com';
+
+// Per-request hard timeout for every Brain HTTP call (init handshake + tool
+// calls). Node's global fetch() has NO default timeout, so without this a
+// slow/wedged Brain hangs the calling /mos: command indefinitely. The Render
+// service answers in ~1-2s normally; 20s is a generous-but-bounded ceiling.
+// Override via MINDRIAN_BRAIN_TIMEOUT_MS (brain-router wants ~2000 for Tier 3).
+const BRAIN_REQUEST_TIMEOUT_MS = Number(process.env.MINDRIAN_BRAIN_TIMEOUT_MS) || 20000;
+
+// Phase 250-01 (AVAIL-02, navigator ruling 2026-08-10): bounded transport
+// retry budget around the single HTTP dispatch seam every Brain tool flows
+// through (callTool()'s tools/call POST below). Retries ONLY transport-class
+// outcomes -- network errors and 5xx responses -- BEFORE a blip ever becomes
+// an unreachable refusal. NEVER retries 401/403 (validation-class, mapped to
+// their own sentinels) or any other status; those are zero-retry by design
+// (retrying an auth failure hammers auth, taxonomy-wrong per the data4sci
+// four-class error taxonomy). Defensive numeric-env convention (repo-wide,
+// e.g. BRAIN_REQUEST_TIMEOUT_MS above): an invalid override falls back to
+// the default rather than throwing or disabling the feature silently.
+const RETRY_MAX_DEFAULT = 2; // 2 retries = 3 attempts total.
+const RETRY_BASE_MS_DEFAULT = 300; // 300ms, then 900ms (base * 3^attempt).
+
+function _envNonNegativeInt(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return def;
+  const n = Number(raw);
+  return (Number.isFinite(n) && n >= 0) ? Math.floor(n) : def;
+}
+
+function _retryMax() {
+  return _envNonNegativeInt('MINDRIAN_BRAIN_RETRY_MAX', RETRY_MAX_DEFAULT);
+}
+
+function _retryBaseMs() {
+  return _envNonNegativeInt('MINDRIAN_BRAIN_RETRY_BASE_MS', RETRY_BASE_MS_DEFAULT);
+}
+
+function _sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Phase 259 (TRUST-01, D-01/D-02/D-03): a dedicated retry budget for HTTP
+// 429 (rate limited), separate from AVAIL-02's RETRY_MAX_DEFAULT /
+// RETRY_BASE_MS_DEFAULT above. Deliberately NOT reusing
+// MINDRIAN_BRAIN_RETRY_MAX / MINDRIAN_BRAIN_RETRY_BASE_MS: those are the
+// operator knob for transport blips (network errors, 5xx), and sharing
+// them would let an operator who sets MINDRIAN_BRAIN_RETRY_MAX=0 for
+// fast-fail silently also disable Retry-After honoring, regressing into
+// the exact bug this phase closes. D-01/D-02's schedule (3 retries,
+// 500/1000/2000ms) is also arithmetically distinct from AVAIL-02's (2
+// retries, base * 3^attempt).
+const RATE_LIMIT_RETRY_MAX_DEFAULT = 3; // 3 retries = 4 attempts total (D-01).
+const RATE_LIMIT_BASE_MS_DEFAULT = 500; // 500ms, then 1000ms, then 2000ms (base * 2^attempt) (D-02).
+
+function _rateLimitRetryMax() {
+  return _envNonNegativeInt('MINDRIAN_BRAIN_RATELIMIT_RETRY_MAX', RATE_LIMIT_RETRY_MAX_DEFAULT);
+}
+
+function _rateLimitBaseMs() {
+  return _envNonNegativeInt('MINDRIAN_BRAIN_RATELIMIT_BASE_MS', RATE_LIMIT_BASE_MS_DEFAULT);
+}
+
+// OQ-4: an explicit, operator-set, self-declaring ceiling on the wait --
+// UNSET by default, which is what ships D-01 ("honor Retry-After exactly")
+// literally, never a silent Math.min. The Brain's own limiter bounds
+// Retry-After to its window (60s at defaults, verified against
+// ProblemsWorthSolving-Brain src/http/rate-limit.mjs), so an operator
+// only needs this when self-hosting a differently-configured limiter.
+function _rateLimitMaxWaitMs() {
+  const raw = process.env.MINDRIAN_BRAIN_RATELIMIT_MAX_WAIT_MS;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return (Number.isFinite(n) && n >= 0) ? Math.floor(n) : null;
+}
+
+// Phase 259 (TRUST-01): parse a Retry-After header value into milliseconds.
+// Returns null when the header is absent or unusable, meaning "fall back
+// to the D-02 exponential schedule". Handles both RFC 9110 forms: the
+// delay-seconds integer form (the Brain's own live wire shape, verified
+// this session against its deployed limiter) and the HTTP-date form
+// (defensive only -- no known live caller sends it). Never lets NaN, a
+// negative, or Infinity reach _sleep: _sleep(NaN) resolves on the very
+// next tick, which is a silent zero-wait that would hammer the limiter.
+// RFC 7231 IMF-fixdate, the exact shape Date.prototype.toUTCString() emits
+// (e.g. "Wed, 21 Oct 2015 07:28:00 GMT") -- the only HTTP-date form worth
+// trusting. Gating on this BEFORE calling Date.parse matters: V8's Date.parse
+// falls back to a lenient legacy-format heuristic for anything that isn't a
+// recognized standard form, and mis-parses garbage like "-5" or "1.5" into
+// real (wrong) timestamps instead of NaN (verified this session).
+const HTTP_DATE_RE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+function _parseRetryAfterMs(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return seconds * 1000;
+  }
+  if (!HTTP_DATE_RE.test(trimmed)) return null;
+  const parsedDate = Date.parse(trimmed);
+  if (!Number.isFinite(parsedDate)) return null;
+  const deltaMs = parsedDate - Date.now();
+  return deltaMs > 0 ? deltaMs : 0;
+}
+
+// Phase 259 (TRUST-01): pure wait-schedule function -- no I/O, no clock
+// beyond the Date.now() inside _parseRetryAfterMs. attemptIndex is 0-based
+// over the RETRIES (0 -> first retry, 1 -> second, 2 -> third), matching
+// Pattern 1 in 259-RESEARCH.md.
+function _rateLimitWaitMs(attemptIndex, retryAfterHeader, baseMs) {
+  const parsed = _parseRetryAfterMs(retryAfterHeader);
+  const computed = parsed !== null ? parsed : baseMs * Math.pow(2, attemptIndex);
+  const ceiling = _rateLimitMaxWaitMs();
+  if (ceiling !== null && computed > ceiling) return ceiling;
+  return computed;
+}
+
+// Phase 87-07 (CASCADE-06): Brain session cache with 5-minute TTL.
+// Every callTool() previously re-ran the `initialize` handshake (~1 network
+// round-trip). With a long-lived MCP server this is wasted work -- sessions
+// live longer than the ~60s transport timeout. Cache the initialized
+// sessionId (keyed by api-key-hash) for 5 minutes.
+//
+// R-87-07-RACE (audit): two concurrent callTool() invocations with the same
+// api_key previously both saw a cache miss, both initialized, and the second
+// overwrote the first -- one of the two initialize handshakes was wasted.
+// Fix: cache the init *Promise*, not the resolved session. The first caller
+// stores { promise: initSession(apiKey), expiresAt }; concurrent callers
+// within the TTL `await entry.promise`. On rejection we remove the entry so
+// the next caller re-initializes fresh.
+//
+// Hash: sha256 truncated to 16 hex chars (64 bits of key space, zero realistic
+// collision). A cheaper non-crypto hash was considered but its narrower int
+// space has non-zero collision probability once the design extends across
+// users; sha256 is effectively free at these volumes and eliminates the
+// concern entirely (R-87-07-RACE).
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+// Phase 123 Plan-07: getApiKey() delegates to the single Brain-key resolver.
+// The legacy inline 3-path lookup (env -> CWD .env -> ~/.mindrian.env) is gone;
+// the resolver does env -> ~/.mindrian.env -> CWD .env (D-31 order) + SEC-02
+// POSIX permission check + explicit reason strings. See HARNESS-123-15.
+const { resolveBrainKey } = require('./resolve-brain-key.cjs');
+const SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+/** @type {Map<string, {promise: Promise<string>, expiresAt: number}>} */
+const sessionCache = new Map();
+
+function _hashKey(key) {
+  return crypto.createHash('sha256').update(String(key)).digest('hex').slice(0, 16);
+}
+
+/**
+ * SEC-01: Sanitize any user-origin string before interpolation into a
+ * Cypher query. Whitelist from 87-CONTEXT.md lines 121-127:
+ *   [a-zA-Z0-9 ._-]
+ * Every other char (including `"`, `'`, backtick, newline, `{`, `}`, `$`,
+ * `\`, `;`, `/`, `*`) is stripped. Null/undefined return ''. Non-strings
+ * are coerced via String() defensively so the caller never crashes.
+ *
+ * This replaces the legacy single-quote-escape pattern that only
+ * escaped one metacharacter (double-quote) and was trivially bypassable
+ * via backticks, newlines, `${...}` expansions, or Cypher comments.
+ *
+ * @param {*} value
+ * @returns {string}
+ */
+function sanitizeCypherInput(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value !== 'string') {
+    try { value = String(value); } catch (_e) { return ''; }
+  }
+  return value.replace(/[^a-zA-Z0-9 ._-]/g, '');
+}
+
+/**
+ * SEC-02: Refuse to load a Brain API key from a .env file whose permissions
+ * expose it to group or world readers. Unix semantics only -- on Windows
+ * POSIX mode bits are not meaningful for NTFS ACLs, so we return true and
+ * warn once per process.
+ *
+ *   mode & 0o077 !== 0  =>  any group/world bit is set  =>  reject
+ *   mode 0o600 (-rw-------) and 0o400 (-r--------) pass; 0o644, 0o664 fail.
+ *
+ * On stat failure we return false (no key beats a key we cannot verify).
+ *
+ * @param {string} envPath
+ * @returns {boolean}
+ */
+function checkFilePermissions(envPath) {
+  try {
+    const fs = require('fs');
+    if (process.platform === 'win32') {
+      if (!checkFilePermissions._warned) {
+        process.stderr.write(
+          '[mindrian-os] Note: API key file permission check is Linux/macOS only; '
+          + 'on Windows rely on NTFS ACLs.\n'
+        );
+        checkFilePermissions._warned = true;
+      }
+      return true;
+    }
+    const stat = fs.statSync(envPath);
+    if ((stat.mode & 0o077) !== 0) {
+      process.stderr.write(
+        `[mindrian-os] Refusing to load API key from ${envPath}: `
+        + `permissions too open (must be 0600). chmod 600 ${envPath}\n`
+      );
+      return false;
+    }
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+checkFilePermissions._warned = false;
+
+// Phase 123 Plan-07: getApiKey() delegates to lib/core/resolve-brain-key.cjs.
+//
+// Order: MINDRIAN_BRAIN_KEY env -> ~/.mindrian.env -> CWD .env -> not-found.
+// NOTE: this REVERSES the previous CWD-first-then-~/.mindrian.env order.
+// Rationale: the global backup (~/.mindrian.env, mode 0600 per SEC-02) is more
+// trustworthy than a project's potentially-stale .env file. Cited: Phase 123
+// D-31. The resolver returns { key, source, available, reason }; we surface
+// the key (or null) here and log a non-null reason ONCE per process via
+// console.error -- SEC-02 group/world-bit rejection routes through this
+// channel, never as a silent null.
+//
+// The legacy inline 3-path lookup and the per-file checkFilePermissions gate
+// previously inlined here are gone -- the resolver owns both responsibilities
+// now. checkFilePermissions remains exported on _test for backward-compat
+// with security-trifecta.test.cjs (the helper itself still works locally;
+// it's just not called by getApiKey anymore).
+let _memoizedKey = null;
+let _memoizedAt = 0;
+let _reasonLoggedThisProcess = false;
+const _GETKEY_MEMO_MS = 60 * 1000;
+function getApiKey() {
+  if (_memoizedAt && (Date.now() - _memoizedAt) < _GETKEY_MEMO_MS) {
+    return _memoizedKey;
+  }
+  const r = resolveBrainKey();
+  if (r && r.available) {
+    _memoizedKey = r.key;
+    _memoizedAt = Date.now();
+    return _memoizedKey;
+  }
+  if (r && r.reason && !_reasonLoggedThisProcess) {
+    // SEC-02 reject + not-found-with-reason both route through stderr ONCE
+    // per process -- never a silent null. The session-start status line is
+    // the user-visible surface; this is the in-process diagnostic.
+    process.stderr.write('[mindrian-os] Brain key not loaded: ' + r.reason + '\n');
+    _reasonLoggedThisProcess = true;
+  }
+  _memoizedKey = null;
+  _memoizedAt = Date.now();
+  return null;
+}
+
+/**
+ * Check if Brain is available (key exists).
+ */
+function isAvailable() {
+  return !!getApiKey();
+}
+
+// Quick 260911-iko (D-04): the opaque per-install header, spread into both
+// of callTool's wire requests. A per-process memo is correct here (mirrors
+// the getApiKey() memo idiom above) and must be commented as such: the id
+// only changes on reinstall or on a `doctor --reset-install-id` run, and
+// both of those happen in a DIFFERENT process, so re-reading it on every
+// call would buy nothing. Wrapped in its own try/catch so a missing or
+// broken install-id module can never take a Brain call down -- the header
+// is a bucket key, never a requirement (D-04: omitted, never an error).
+//
+// This helper never touches the Part 8 egress belt (classify() at
+// callTool's egress-guard call below): that belt classifies `args`, and
+// headers are not payload. The install id never enters `args` and must
+// never be added to them.
+let _memoizedInstallIdHeaders = null;
+function _installIdHeaders() {
+  if (_memoizedInstallIdHeaders) return _memoizedInstallIdHeaders;
+  try {
+    const installIdMod = require('./install-id.cjs');
+    const id = installIdMod.getInstallId();
+    _memoizedInstallIdHeaders = (typeof id === 'string')
+      ? { [installIdMod.installIdHeaderName]: id }
+      : {};
+  } catch (_e) {
+    _memoizedInstallIdHeaders = {};
+  }
+  return _memoizedInstallIdHeaders;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 250-04 (HONEST-03, SEED-011 Option A) -- per-install silent
+// registration. Design doc: docs/BRAIN-IDENTITY-DESIGN.md.
+//
+// The ladder's fourth leg (resolve-brain-key.cjs, read-only) resolves an
+// existing cached install token; THIS module owns the minting side. When the
+// ladder resolves nothing at the first Brain consult, mint a fresh UUID,
+// POST it to the Brain's /register endpoint, cache the returned token at
+// mode 0600, and let the SAME process's next getApiKey() call pick it up.
+//
+// Once-per-process cap: exactly ONE registration attempt per process,
+// success or failure. A failed attempt is the failure edge (registration
+// failed / Brain offline) -- it is NEVER retried within the process (the
+// AVAIL-02 bounded-retry budget explicitly does not apply here; a fresh
+// process retries fresh on its own next launch). NEVER thrown into the
+// caller; NEVER blocks a non-methodology path (this only runs from the
+// Brain-consult chokepoint below, never from session-start or a hot path).
+let _autoRegisterAttemptedThisProcess = false;
+let _autoRegisterFailureReason = null;
+
+function _installTokenPath(home) {
+  const h = home || process.env.HOME || process.env.USERPROFILE || require('node:os').homedir();
+  return path.join(h, '.mindrian-install.json');
+}
+
+/**
+ * Attempt the one-shot silent registration. Returns the minted key string on
+ * success, or null (opt-out, already-attempted, or any failure). On success,
+ * updates the module's own memoized key so the CALLER's next getApiKey()
+ * returns it immediately (no redundant resolver re-read needed, though a
+ * fresh resolveBrainKey() call would ALSO see the cache file now).
+ *
+ * @returns {Promise<string|null>}
+ */
+async function _tryAutoRegister() {
+  if (_autoRegisterAttemptedThisProcess) return null;
+  _autoRegisterAttemptedThisProcess = true;
+
+  if (process.env.MINDRIAN_DISABLE_AUTO_REGISTER) {
+    _autoRegisterFailureReason = 'auto-registration disabled (MINDRIAN_DISABLE_AUTO_REGISTER set)';
+    return null;
+  }
+
+  try {
+    const installId = crypto.randomUUID();
+    // Quick 260911-iko: the x-theo-install-id header does NOT ride here.
+    // D-04 names callTool's two header blocks only; registration is a
+    // different endpoint with its own contract, and it runs before there is
+    // an established Brain session to bucket. Adding it here would be a
+    // change to Theo's registration surface, which D-06 says must be
+    // announced to Theo first -- a deliberate exclusion, not a miss.
+    const res = await fetch(`${BRAIN_URL}/register`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(BRAIN_REQUEST_TIMEOUT_MS),
+      headers: { 'Content-Type': 'application/json' },
+      // Part 8 posture (T-250-13): install_id ONLY ever crosses in this body.
+      body: JSON.stringify({ install_id: installId }),
+    });
+    if (!res.ok) {
+      try { await res.arrayBuffer(); } catch (_e) { /* drain, see _ensureSession's precedent */ }
+      _autoRegisterFailureReason = 'registration failed (HTTP ' + res.status + ', offline or unreachable)';
+      return null;
+    }
+    const body = await res.json();
+    if (!body || typeof body.token !== 'string' || body.token.length === 0) {
+      _autoRegisterFailureReason = 'registration returned a malformed response (offline or unreachable)';
+      return null;
+    }
+
+    const cachePath = _installTokenPath();
+    const payload = { install_id: installId, token: body.token, minted_at: new Date().toISOString() };
+    fs.writeFileSync(cachePath, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 });
+    // writeFileSync's mode option only applies on file CREATION; force it
+    // explicitly so a pre-existing looser-permission file is corrected too
+    // (SEC-02 posture, mirrors resolve-brain-key.cjs's own gate on this file).
+    try { fs.chmodSync(cachePath, 0o600); } catch (_e) { /* best-effort on platforms without chmod semantics */ }
+
+    _memoizedKey = body.token;
+    _memoizedAt = Date.now();
+    return body.token;
+  } catch (e) {
+    _autoRegisterFailureReason = 'registration failed: ' + (e && e.message || String(e)) + ' (offline or unreachable)';
+    return null;
+  }
+}
+
+/**
+ * Async-aware availability gate: the "first Brain consult" seam every
+ * MCP-surface entry point passes through before dispatching a tool
+ * (bin/mindrian-brain-mcp-client.cjs's per-tool gates use this INSTEAD of
+ * the synchronous isAvailable(), so silent registration actually fires on
+ * that path -- isAvailable() alone cannot attempt an async network mint).
+ * Direct brain-client consumers (query/ask/schema/... via callTool) do not
+ * need to call this explicitly -- callTool() below performs the identical
+ * fallback internally, so BOTH surfaces share the SAME once-per-process cap.
+ *
+ * @returns {Promise<boolean>}
+ */
+async function ensureAvailable() {
+  if (isAvailable()) return true;
+  await _tryAutoRegister();
+  return isAvailable();
+}
+
+/**
+ * The honest reason the last auto-registration attempt failed (or the
+ * opt-out reason), or null if no attempt has failed this process (either
+ * none was attempted yet, or the last attempt succeeded). Consumed by the
+ * no_key failure-edge refusal copy (refusal-messaging.cjs) so the reason names
+ * "registration" / "offline" rather than a generic "no key" framing.
+ *
+ * @returns {string|null}
+ */
+function getAutoRegisterFailureReason() {
+  return _autoRegisterFailureReason;
+}
+
+/**
+ * Phase 87-07: ensure we have a valid initialized Brain session for the given
+ * api key, reusing the cached one if non-expired. Uses the pending-promise
+ * pattern so concurrent callers share a single in-flight init (R-87-07-RACE).
+ *
+ * Returns the resolved session marker (an opaque string -- the Brain Streamable
+ * HTTP transport does not require us to echo a sessionId on subsequent requests
+ * inside the same cache window, but awaiting this promise proves the key is
+ * valid against the Brain endpoint exactly once per TTL window).
+ *
+ * On any init rejection (network error, 401, etc.) the cache entry is removed
+ * in the .catch() tail so the next caller retries fresh rather than inheriting
+ * a poisoned promise.
+ *
+ * Sentinel `{ error: 'invalid_key' }` is returned *through* the promise (not
+ * thrown) so callers treat 401 identically to the pre-cache flow.
+ *
+ * @param {string} apiKey
+ * @returns {Promise<string|{error:string,message:string}|null>}
+ */
+async function _ensureSession(apiKey) {
+  const keyHash = _hashKey(apiKey);
+  const cached = sessionCache.get(keyHash);
+  if (cached && cached.expiresAt > Date.now()) {
+    // Cache hit. Works whether the promise is still pending (concurrent init
+    // in flight) or already resolved (TTL reuse). Awaiting a resolved promise
+    // is a microtask no-op, so the fast path stays fast.
+    return cached.promise;
+  }
+  // Cache miss. Build the promise FIRST, install it in the cache BEFORE the
+  // first real await, so concurrent callers within the same event-loop tick
+  // see the same in-flight promise (R-87-07-RACE pending-promise pattern).
+  const promise = (async () => {
+    const initRes = await fetch(`${BRAIN_URL}/mcp`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(BRAIN_REQUEST_TIMEOUT_MS),
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Authorization': `Bearer ${apiKey}`,
+        ..._installIdHeaders(),
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'mindrian-cli', version: '1.0.0' },
+        },
+      }),
+    });
+    if (!initRes.ok) {
+      // Debug session doctor-brain-smoke-win-crash (2026-05-30): drain the
+      // response body on the non-OK path. Node global fetch (undici) keeps the
+      // underlying TLS socket in a keep-alive, not-yet-released state until its
+      // body is consumed. An un-drained socket is a live libuv handle at exit;
+      // a synchronous process.exit() in a caller tears it down mid-close and
+      // asserts on Windows (src/win/async.c UV_HANDLE_CLOSING). Consuming the
+      // body lets undici release/recycle the socket cleanly. Cross-platform.
+      try { await initRes.arrayBuffer(); } catch (_) { /* body already gone */ }
+      if (initRes.status === 401) {
+        return { error: 'invalid_key', message: 'Brain API key is invalid.' };
+      }
+      // Any other non-OK status becomes a throw so the cache entry is purged
+      // by the .catch() below and the next caller retries.
+      throw new Error(`Brain init HTTP ${initRes.status}`);
+    }
+    // Opaque session marker. Subsequent tools/call requests don't need to
+    // echo this back -- the transport is stateless at the HTTP level. What
+    // matters is that we validated the key is live within this TTL window.
+    return 'validated-' + Date.now();
+  })();
+  sessionCache.set(keyHash, { promise, expiresAt: Date.now() + SESSION_TTL_MS });
+  // On reject, purge the entry so the next caller initializes fresh. Swallow
+  // here (we re-throw in the awaiter below) so Node doesn't see an
+  // unhandledRejection on the cache handle itself.
+  promise.catch(() => { sessionCache.delete(keyHash); });
+  return promise;
+}
+
+/**
+ * Phase 254 / COMP-02 (D-02 Option A): attach an additive `egress_disclosure`
+ * field to a callTool() success return when the Part 8 belt captured an
+ * `ambiguous` verdict for this call. Module-private -- used only at
+ * callTool()'s three success-return sites below.
+ *
+ * Returns `result` UNCHANGED when `disclosure` is falsy, when `result` is
+ * not a non-null plain object, or when `result` already carries an own
+ * `error` property (so `tier_denied` / `invalid_key` / `rate_limited` /
+ * `egress_blocked` sentinels are never decorated -- those are refusals, not
+ * success returns). Never throws: the assignment is wrapped so a frozen or
+ * exotic result object degrades to the undecorated value rather than
+ * crashing a Brain call.
+ *
+ * COPY-ON-ATTACH FOR PLAIN OBJECTS, MUTATE FOR ARRAYS (WR-02, 254-REVIEW.md):
+ * for a plain object, this returns a NEW shallow-copied object rather than
+ * mutating `result` in place -- every call site hands in a value freshly
+ * parsed via `JSON.parse` two lines above, so no other reference exists to
+ * preserve, and copy-on-attach closes the "same reference silently gains a
+ * field" hazard at zero real cost. For an ARRAY, mutation is structurally
+ * required: `callTool`'s contract for `brain_query` must stay a bare array
+ * per the 2026-05-11 hotfix note, so wrapping it in a new object here would
+ * break the `Array.isArray(result)` shape every `brain_query` consumer keys
+ * on. The disclosure is therefore attached as a non-index own property of
+ * the SAME array reference -- this is load-bearing for `query()`'s own
+ * `Array.isArray(result)` normalization branch below, which reads this
+ * property off the array and copies + deletes it onto the new top-level
+ * object it constructs (CR-01, 254-REVIEW.md). Any OTHER caller reading a
+ * bare array off `callTool('brain_query', ...)` directly (bypassing
+ * `query()`) must do the same: check `result.egress_disclosure` before
+ * treating `result` as a plain row array, since `JSON.stringify` silently
+ * drops non-index array properties.
+ *
+ * @param {*} result
+ * @param {object|null} disclosure
+ * @returns {*}
+ */
+function _attachEgressDisclosure(result, disclosure) {
+  if (!disclosure) return result;
+  if (result === null || typeof result !== 'object') return result;
+  if (Object.prototype.hasOwnProperty.call(result, 'error')) return result;
+  try {
+    if (Array.isArray(result)) {
+      result.egress_disclosure = disclosure;
+      return result;
+    }
+    return Object.assign({}, result, { egress_disclosure: disclosure });
+  } catch (_e) {
+    // Frozen or exotic result object -- degrade to the undecorated value. A
+    // belt that can crash a Brain call is worse than the gap it closes.
+    return result;
+  }
+}
+
+/**
+ * Call a Brain MCP tool via HTTP.
+ * @param {string} toolName - e.g., 'brain_query', 'brain_search', 'brain_schema'
+ * @param {object} args - tool arguments
+ * @returns {object|null} - result or null if unavailable
+ */
+async function callTool(toolName, args) {
+  let key = getApiKey();
+  if (!key) {
+    // Phase 250-04: the ladder resolved nothing -- this IS the first Brain
+    // consult. Attempt the one-shot silent registration before giving up;
+    // shares the same _autoRegisterAttemptedThisProcess cap as
+    // ensureAvailable() (the shim's gate), so whichever surface consults
+    // first performs the real network attempt and the other reuses it.
+    key = await _tryAutoRegister();
+  }
+  if (!key) return null;
+
+  // Quick 260819-c8j (WS-D2): the Part 8 in-process classify() belt at the
+  // single dispatch seam every callTool() caller flows through. Placement is
+  // load-bearing: AFTER the key gate above (so the no-key `null` contract
+  // stays byte-unchanged) and BEFORE _ensureSession below (so a blocked
+  // payload opens no socket at all -- not even a session init).
+  //
+  // MECHANISM CHOICE: one guard in one function covers all 16 wrappers,
+  // versus ~12 near-identical per-wrapper edits that drift the moment a 17th
+  // wrapper lands. Double-classification is NOT double-prompting --
+  // classify() returns a verdict, it does not elicit. The 4 existing
+  // raw-field guards (query() :601, hatAwareRecommend() :942,
+  // suggestValidationSteps() :1056, sendPacket() :1643) are NOT removed and
+  // NOT weakened by this belt: their own docblocks prove why the belt cannot
+  // replace them (classifying the ASSEMBLED template string instead of the
+  // raw field lets the template's own word "Framework" launder an embedded
+  // canary from ambiguous to allow, and sanitizeCypherInput strips the '@'
+  // the PII pattern keys on) -- this is a belt UNDERNEATH them, never a
+  // substitute. An 'ambiguous' verdict never blocks and never prompts, the
+  // same posture sendPacket()'s belt already takes at :1643 in spirit.
+  //
+  // `egress_blocked` is a sentinel OBJECT, not `null`: `null` is the
+  // test-pinned transport-failure signal across ~82 degradation tests, and
+  // conflating a constitutional refusal with an outage would make the
+  // refusal invisible. The sentinel-object idiom is already established by
+  // `tier_denied` (:497 area) and `invalid_key` above.
+  //
+  // Phase 254 / COMP-02 (D-02 Option A, navigator-ruled 2026-09-02):
+  // `ambiguous` now DISCLOSES and still PROCEEDS. `ambiguousDisclosure`
+  // (declared below, function-scoped so it survives into the retry loop and
+  // the SSE parse) captures the typed disclosure ADDITIVELY -- borrowing the
+  // idiom `brain-router.cjs:414-422` already uses for `brain_refusal`
+  // (an additive field, best-effort, never blocking), not the function
+  // itself. Option B (fail-closed on `ambiguous` too) was considered and
+  // explicitly rejected for this phase: it would change the behaviour of all
+  // 16 `callTool` wrappers at once and needs its own canary suite, out of
+  // this phase's scope. A Shape F.1 gate belongs at the MCP handler
+  // (`lib/mcp/gate-render.cjs::renderGate`) and never at this transport
+  // chokepoint -- inventing an elicitation path inside a stateless server
+  // handler is exactly what Option A avoids. The disclosure names the
+  // verdict class and the tool; it never carries payload bytes (every
+  // `ambiguous`-branch `reason` string in `part8-egress-guard.cjs` is a
+  // constant literal, unlike the `block` branch's reason which embeds the
+  // matched pattern -- this path never reaches that branch).
+  //
+  // The host PreToolUse hook (`scripts/part8-egress-guard-hook.cjs`) still
+  // gates `ambiguous` with a real Shape F.1 render on the model-issued path.
+  // The two enforcement points now DIVERGE BY A STATED DECISION rather than
+  // by omission -- COMP-02's literal wording.
+  let ambiguousDisclosure = null;
+  try {
+    const callToolEgressGuard = require('./part8-egress-guard.cjs');
+    const callToolEgressVerdict = callToolEgressGuard.classify(args, { toolName: toolName });
+    if (callToolEgressVerdict && callToolEgressVerdict.verdict === 'block') {
+      return {
+        error: 'egress_blocked',
+        tool: toolName,
+        egress_class: callToolEgressVerdict.class || 'content_set',
+      };
+    } else if (callToolEgressVerdict && callToolEgressVerdict.verdict === 'ambiguous') {
+      ambiguousDisclosure = {
+        verdict: 'ambiguous',
+        egress_class: callToolEgressVerdict.class || 'unknown',
+        reason: callToolEgressVerdict.reason || null,
+        tool: toolName,
+        disposition: 'proceeded',
+      };
+    }
+  } catch (_e) {
+    // Belt-internal error (guard module missing/throws): degrade to existing
+    // behavior. This belt is a belt, not the primary control.
+  }
+
+  try {
+    // Phase 87-07: reuse cached Brain session (5-min TTL) instead of
+    // re-running initialize on every callTool. Concurrent callers share
+    // the in-flight promise via the pending-promise pattern.
+    const session = await _ensureSession(key);
+    if (session && typeof session === 'object' && session.error === 'invalid_key') {
+      return session;
+    }
+    if (!session) return null;
+
+    // Phase 250-01 (AVAIL-02): bounded retry loop around the tools/call
+    // dispatch -- the single HTTP seam every Brain tool flows through after
+    // session establishment. NULL CONTRACT PRESERVED: the retry changes WHEN
+    // null returns (after the budget instead of after one attempt), never
+    // WHAT returns null, and never which statuses map to which sentinels
+    // (247-02 do-not-widen note; 82 degradation tests key on this).
+    const retryMax = _retryMax();
+    const baseMs = _retryBaseMs();
+    // Phase 259 (TRUST-01): a SEPARATE counter from the loop's `attempt`,
+    // so a 5xx blip earlier in this same callTool invocation cannot eat
+    // into the 429 budget, and vice versa. Declared outside the `for` so
+    // it survives iterations.
+    let rlAttempt = 0;
+    let rlTruncated = false; // OQ-4: set when MINDRIAN_BRAIN_RATELIMIT_MAX_WAIT_MS truncated a wait this call.
+    for (let attempt = 0; ; attempt += 1) {
+      let toolRes;
+      try {
+        toolRes = await fetch(`${BRAIN_URL}/mcp`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(BRAIN_REQUEST_TIMEOUT_MS),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+            'Authorization': `Bearer ${key}`,
+            ..._installIdHeaders(),
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: toolName, arguments: args },
+          }),
+        });
+      } catch (fetchErr) {
+        // Network error / timeout at the tools/call seam -- transport-class,
+        // retryable. Every other thrown error (outside this inner try) still
+        // falls through to the outer catch below, unchanged.
+        if (attempt < retryMax) {
+          await _sleep(baseMs * Math.pow(3, attempt));
+          continue;
+        }
+        return null;
+      }
+
+      if (!toolRes.ok) {
+        // Phase 247-02 (CONTRACT-01 error semantics): HTTP 403 means the Brain's
+        // tier gate refused this tool on this key (a MoatViolation), NOT that the
+        // Brain is unreachable. Mirrors the invalid_key sentinel precedent in
+        // _ensureSession above -- a plain object returned through the promise,
+        // never thrown, so callers that already understand sentinel passthrough
+        // (query()'s {error:...} passthrough is the existing example) keep
+        // working unchanged. 401/403 are validation-class -- ZERO retry, ever
+        // (AVAIL-02: retrying an auth failure hammers auth, taxonomy-wrong).
+        if (toolRes.status === 403) {
+          let rawText = '';
+          try { rawText = await toolRes.text(); } catch (_e) { rawText = ''; }
+          let message = null;
+          try {
+            const parsedBody = JSON.parse(rawText);
+            if (parsedBody && parsedBody.error && typeof parsedBody.error.message === 'string') {
+              message = parsedBody.error.message;
+            }
+          } catch (_e) {
+            // Unparseable body -- fall through to the raw-text fallback below.
+          }
+          if (!message) {
+            message = rawText
+              ? rawText.slice(0, 300)
+              : 'Brain denied tier access (403, no body).';
+          }
+          return { error: 'tier_denied', tool: toolName, message: message };
+        }
+        // Phase 259 (TRUST-01): 429 previously fell through the generic
+        // non-OK ladder into the bare `return null` at the bottom of this
+        // block, which the MCP shim renders as BRAIN_UNREACHABLE with copy
+        // claiming a retry budget was spent -- factually false, since zero
+        // retries ran on that leg. Verified wire contract (this session,
+        // ProblemsWorthSolving-Brain src/http/rate-limit.mjs::
+        // perKeyRateLimit): 120 requests per 60s per key at defaults,
+        // Retry-After ALWAYS set as an integer delay-seconds string,
+        // floored at 1 and bounded above by the window. D-01: honor it
+        // exactly. D-02: fall back to 500/1000/2000ms when absent. D-03:
+        // after the budget exhausts, return a distinct rate_limited
+        // sentinel, never null.
+        if (toolRes.status === 429) {
+          const retryAfterRaw = toolRes.headers.get('retry-after');
+          // Drain this branch's own body before bailing/continuing, exactly
+          // as the 403 block above consumes its own body (an un-drained
+          // undici socket is a live libuv handle that asserts on Windows).
+          try { await toolRes.arrayBuffer(); } catch (_e) { /* body already gone */ }
+          if (rlAttempt < _rateLimitRetryMax()) {
+            const ceilingMsForWait = _rateLimitMaxWaitMs();
+            const computedWaitMs = _rateLimitWaitMs(rlAttempt, retryAfterRaw, _rateLimitBaseMs());
+            if (ceilingMsForWait !== null && computedWaitMs >= ceilingMsForWait) rlTruncated = true;
+            await _sleep(computedWaitMs);
+            rlAttempt += 1;
+            continue;
+          }
+          const parsedRetryAfterMs = _parseRetryAfterMs(retryAfterRaw);
+          const retryAfterS = parsedRetryAfterMs !== null ? Math.ceil(parsedRetryAfterMs / 1000) : null;
+          const ceilingMs = _rateLimitMaxWaitMs();
+          let message = `Brain rate-limited ${toolName} after ${rlAttempt + 1} attempts (429).`;
+          if (rlTruncated && ceilingMs !== null) {
+            message += ` At least one Retry-After wait was truncated to the operator-set ceiling of ${ceilingMs}ms.`;
+          }
+          return {
+            error: 'rate_limited',
+            tool: toolName,
+            retry_after_s: retryAfterS,
+            attempts: rlAttempt + 1,
+            message: message.slice(0, 300),
+          };
+        }
+        // Drain the body before bailing so undici releases the keep-alive socket
+        // (see _ensureSession non-OK note: an un-drained socket is a live libuv
+        // handle that asserts on Windows when a caller force-exits).
+        try { await toolRes.arrayBuffer(); } catch (_) { /* body already gone */ }
+        // 5xx is transport-class (transient) -- retryable within budget.
+        // Every OTHER non-OK, non-retried status still returns null -- that
+        // remains the sole transport-failure signal (research Pitfall 4: 82
+        // degradation tests key on it; do not widen this branch).
+        if (toolRes.status >= 500 && toolRes.status < 600 && attempt < retryMax) {
+          await _sleep(baseMs * Math.pow(3, attempt));
+          continue;
+        }
+        return null;
+      }
+
+      const text = await toolRes.text();
+      // Parse SSE response
+      const dataLine = text.split('\n').find(l => l.startsWith('data: '));
+      if (!dataLine) return null;
+
+      const parsed = JSON.parse(dataLine.slice(6));
+      if (parsed.result && parsed.result.content) {
+        const textContent = parsed.result.content.find(c => c.type === 'text');
+        if (textContent) {
+          try {
+            return _attachEgressDisclosure(JSON.parse(textContent.text), ambiguousDisclosure);
+          } catch (e) {
+            return _attachEgressDisclosure({ text: textContent.text }, ambiguousDisclosure);
+          }
+        }
+      }
+      // The helper's own non-object guard already handles the null case
+      // here (parsed.result || null); wrapped anyway so the intent is
+      // legible at the call site rather than relying on the guard alone.
+      return _attachEgressDisclosure(parsed.result || null, ambiguousDisclosure);
+    }
+  } catch (err) {
+    // Network error, timeout, etc. (outside the retry loop -- e.g. during
+    // _ensureSession).
+    return null;
+  }
+}
+
+/**
+ * Query Neo4j via Brain (Cypher query).
+ * This does NOT use Pinecone, no embedding quota consumed.
+ *
+ * NOTE (Finding I, v1.10.9 hotfix 2026-04-15): the Brain MCP brain_query
+ * tool expects the parameter name `cypher`, not `query`. Previously this
+ * function sent { query: cypher } which tripped an MCP input validation
+ * error (code -32602, path ["cypher"], "Required"). Downstream scripts
+ * like fetch-brain-baseline.cjs and compute-whitespace-gaps.py then
+ * silently fell through to empty-baseline mode even though Brain was
+ * fully reachable and the key was valid. Witnessed against the live
+ * iia-deeptech-centers room on 2026-04-15. brain_search uses `query`
+ * which is why Pinecone semantic search kept working and masked this.
+ *
+ * NOTE (2026-05-11, graph-on-graph P0): `query` now accepts an optional
+ * second argument `params` and forwards it to the `brain_query` MCP tool
+ * as { cypher, params }. The Brain tool declares `params:
+ * z.record(z.any()).optional()`, so a parameterized Cypher gets its
+ * bindings through cleanly. `params` MUST be a generic-handles-only object
+ * -- framework names, phase identifiers, problem types per Canon Part 8 --
+ * NEVER user content (artifact bodies, meeting text, personal identifiers,
+ * proprietary numbers). Previously the second arg was silently dropped, so
+ * callers (rs-explain-command.cjs, rs-thesis-command.cjs, rs-nl-to-query)
+ * that generated parameterized Cypher had their bindings disappear or were
+ * pushed toward unsafe string interpolation. A param-less call still sends
+ * only { cypher } and behaves exactly as before.
+ *
+ * NOTE (2026-05-11, graph-on-graph P0 cont.): RESULT-SHAPE NORMALIZATION.
+ * The Brain MCP `brain_query` tool serializes its result as
+ * `JSON.stringify(records)` where `records` is a BARE ARRAY of row objects.
+ * `callTool` returns that array directly (or `{ text: 'Error: ...' }` on a
+ * Cypher error, or `null` when the Brain is unreachable / no API key).
+ * Consumers across the codebase -- brain-router.cjs, brain-derivation.cjs's
+ * `renderRecords`, rs-chain-feeder.cjs, rs-experts-command.cjs,
+ * rs-explain-command.cjs, rs-thesis-command.cjs -- all read `result.records`,
+ * so the bare-array shape silently dropped every row. `query` therefore now
+ * ALWAYS returns `{ records: [...] }` on a successful brain_query; an
+ * unreachable Brain / missing key still returns `null`; a Cypher-error
+ * response (`{ text: 'Error: ...' }` or `{ error: ... }`) passes through
+ * unchanged so callers that inspect the failure can still see it; any other
+ * unexpected shape collapses to `{ records: [] }` so callers never crash.
+ * `search`, `smartSearch`, `schema`, `stats`, `write`, `callTool` are
+ * deliberately untouched -- only `query` is normalized.
+ *
+ * NOTE (2026-09-01, quick/260901-ipp): a THIRD recognized shape. Theo's
+ * `brain_query` contract cutover returns `{ rows: [...], diagnostics: {...} }`
+ * instead of the bare array above, and that shape matched none of the
+ * branches here -- it fell through to the unexpected-shape safety net, so
+ * every post-flip `brain_query` call returned an empty result set that was
+ * indistinguishable from a legitimate no-match, with no error and no crash.
+ * `query` now recognizes `result.rows` (guarded with `Array.isArray`, never
+ * mere key presence, so a malformed `rows` value still lands on the safety
+ * net) and normalizes it into `records` while preserving every other field
+ * the Brain sent (`diagnostics`, and any future `coverage` block). Preserving
+ * `diagnostics` is load-bearing: it is what lets a caller tell a genuine
+ * `{ rows: [], diagnostics: {...} }` "nothing matched" apart from an
+ * unrecognized-shape response (see the 2026-09-03 note below for what the
+ * fallback returns now). Sources: this repo's
+ * `docs/2026-09-01-HANDOFF-phases-272-274-275-plus-theo-flip-coordination.md`
+ * finding #1, and Theo's own
+ * `.planning/phases/09-brain-contract-cutover/09-MOS-LEARNING.md`.
+ *
+ * NOTE (2026-09-03, quick/260903-eit): the safety net stopped being blind.
+ * An unrecognized shape still returns an object carrying `records: []` so
+ * callers never crash, but it now ALSO carries
+ * `error: 'brain_query_unrecognized_shape'` plus `shape_type` and
+ * `shape_keys`, and emits one warn-once `[mindrian-os]` line naming the
+ * offending top-level key names. Reason: the bare `{ records: [] }` was
+ * byte-identical to a legitimate no-match, which is precisely how the Theo
+ * `{ rows, diagnostics }` drift went unnoticed above until a human read this
+ * code. This change recognizes ZERO new response shapes -- it only makes the
+ * next mismatch audible. Sources: this task directory
+ * (`.planning/quick/260903-eit-.../260903-eit-PLAN.md`) alongside the
+ * 2026-09-01 sources above.
+ */
+async function query(cypher, params) {
+  // Part 8 BACKSTOP (Phase 239 / BRAIN-02). This is a BACKSTOP ONLY and is
+  // PROVABLY INSUFFICIENT ALONE: MEASURED, the template's own vocabulary word
+  // "Framework" satisfies the classifier's positive methodology recognizer
+  // and launders an embedded canary from ambiguous to allow -- classifying
+  // the payload {cypher:"CANARY7F3A2B"} on its own yields verdict ambiguous,
+  // but classifying {cypher:'MATCH (f:Framework) WHERE x="CANARY7F3A2B"'}
+  // yields verdict allow. The REAL coverage is the raw-field guard added in
+  // hatAwareRecommend and suggestValidationSteps (classify-before-sanitize,
+  // classify-before-interpolate). Anyone tempted to delete those raw-field
+  // guards because "query() already checks" must read this comment first:
+  // it does not.
+  // An 'ambiguous' verdict on an assembled template is EXPECTED policy here
+  // (every legitimate methodology query looks ambiguous at this tier) and is
+  // deliberately NOT blocked; only a proven 'block' (a CONTENT-SET hit) stops
+  // the call.
+  try {
+    const queryEgressGuard = require('./part8-egress-guard.cjs');
+    const queryEgressVerdict = queryEgressGuard.classify(
+      { cypher: String(cypher || '') },
+      { toolName: 'brain_query' }
+    );
+    if (queryEgressVerdict && queryEgressVerdict.verdict === 'block') {
+      _logEventBestEffort(undefined, 'brain_egress_blocked', {
+        egress_class: queryEgressVerdict.class || 'content_set',
+        verdict: 'block',
+        count: 1,
+        created_by: 'system',
+        source_path: 'system:brain-query',
+      });
+      return null;
+    }
+  } catch (_e) {
+    // Belt-internal error (guard module missing/throws): degrade to existing
+    // behavior. This backstop is a belt, not the primary control.
+  }
+
+  const args = { cypher: cypher };
+  if (params && typeof params === 'object' && Object.keys(params).length > 0) {
+    args.params = params;
+  }
+  const result = await callTool('brain_query', args);
+  if (result == null) return null;                              // unreachable / no API key
+  if (Array.isArray(result)) {
+    // the normal brain_query shape. `_attachEgressDisclosure` (Phase 254 /
+    // COMP-02) attaches `egress_disclosure` as a non-index own property of
+    // this SAME array when the Part 8 belt captured an `ambiguous` verdict.
+    // The `{ records: result }` wrapper below is a BRAND-NEW object, so that
+    // property is not carried over automatically -- it must be copied onto
+    // the new top-level object explicitly, or it silently relocates to
+    // `.records.egress_disclosure` (invisible to every documented/tested
+    // caller and to JSON.stringify). See CR-01, 254-REVIEW.md.
+    const normalized = { records: result };
+    if (Object.prototype.hasOwnProperty.call(result, 'egress_disclosure')) {
+      normalized.egress_disclosure = result.egress_disclosure;
+      // `normalized.records` is the SAME array reference as `result` (not a
+      // copy), so without this the stray non-index property would still sit
+      // on it after normalization -- accessible via result.records.egress_disclosure
+      // even though the documented, tested contract is the top-level field
+      // above. Deleting closes the "silently relocates" failure mode WR-02
+      // flagged, not just CR-01's missing top-level copy.
+      delete result.egress_disclosure;
+    }
+    return normalized;
+  }
+  if (result && Array.isArray(result.records)) return result;   // already normalized (defensive)
+  // Theo's brain_query contract shape: { rows, diagnostics }. Guard on
+  // Array.isArray(result.rows), never mere key presence, so a malformed
+  // `rows` value still falls through to the safety net below. Placed
+  // adjacent to the other shape checks so all shape recognition stays in
+  // one block, ahead of the fallback. Theo's error envelope is
+  // { text: 'CODE: detail' } and carries no `rows`, so this branch can
+  // never swallow an error.
+  if (result && Array.isArray(result.rows)) {
+    return Object.assign({}, result, { records: result.rows });
+  }
+  if (result && (result.error || result.text)) return result;   // error / message passthrough
+  return _unrecognizedQueryShape(result);
+}
+
+// ----------------------------------------------------------------------------
+// _unrecognizedQueryShape -- the query() safety net, made loud (2026-09-03,
+// quick/260903-eit). Mirrors the _legacyPathWarned / _warnLegacyOnce idiom
+// this file already documents as "the existing once-per-process warning
+// pattern in this file".
+//
+// CANON PART 8: key NAMES only, never VALUES. A Brain response envelope's
+// top-level key names are generic schema handles; its values may carry graph
+// payload. Neither the returned `shape_keys` nor the warning line may ever
+// contain a value from the response body.
+// ----------------------------------------------------------------------------
+
+let _queryShapeWarned = false;
+
+function _unrecognizedQueryShape(result) {
+  const shapeType = typeof result;
+  // Arrays never reach here in practice (Array.isArray(result) is caught by
+  // the branch above), but keep the check anyway so this helper stays
+  // correct even if it is ever called from elsewhere.
+  const isPlainObject =
+    result !== null && shapeType === 'object' && !Array.isArray(result);
+  const shapeKeys = isPlainObject
+    ? Object.keys(result)
+        .slice(0, 12) // cap key count so a hostile/malformed envelope can't flood the log
+        .map((k) => String(k).slice(0, 64)) // cap key length for the same reason
+    : []; // never Object.keys() a string -- that yields character indices, not key names
+
+  if (!_queryShapeWarned) {
+    _queryShapeWarned = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[mindrian-os] brain_query_unrecognized_shape: the Brain returned a '
+        + 'response shape (' + shapeType + ', keys: [' + shapeKeys.join(', ') + ']) '
+        + 'that query() does not recognize. This is a CONTRACT MISMATCH, NOT an '
+        + 'empty answer -- the caller still receives records: [] so it does not '
+        + 'crash, but every downstream reader should treat this as unresolved '
+        + 'until the response contract is reconciled.'
+    );
+  }
+
+  return {
+    records: [],
+    error: 'brain_query_unrecognized_shape',
+    shape_type: shapeType,
+    shape_keys: shapeKeys,
+  };
+}
+
+/**
+ * _typedFreeformGate(toolName, text) -> sentinel object | null
+ *
+ * 354-06 (D-354-EGR): the enforcement point for ask(), search() and
+ * smartSearch() -- the two natural-language Brain channels -- called BEFORE
+ * any wire call (before callTool). This is a SEPARATE enforcement point from
+ * callTool's own classify() belt (Quick 260819-c8j): that belt still runs on
+ * every callTool() dispatch and still DISCLOSES-AND-PROCEEDS on an ambiguous
+ * verdict (Phase 254 D-02 Option A, unchanged); this gate instead REFUSES
+ * before the wire opens for these two specific channels, closing the exact
+ * gap the false-safe-egress probe measured (a private sentence that merely
+ * mentions a framework name reaching the Brain).
+ *
+ * Maps `text` onto the same free-form key classify()'s own
+ * _extractFreeFormString already recognizes for each tool
+ * (brain_search -> {query}, every other caller -> {question}), then runs the
+ * SAME classify() the callTool() belt and the PreToolUse hook already use.
+ * Returns null when the verdict is 'allow' and the class is 'typed_question'
+ * (structurally proven closed-vocabulary, 354-06 Task 2) -- the caller
+ * proceeds to callTool() unchanged. Any other outcome returns the
+ * egress_blocked sentinel described below; the caller returns it as-is and
+ * calls callTool() zero times.
+ *
+ * If the guard module itself fails to load (a defensive posture, not an
+ * expected path), this gate fails CLOSED on exactly these two channels --
+ * deliberately the opposite default from callTool's belt (which degrades
+ * to existing behavior on a guard-load failure, since it is a belt
+ * underneath other controls, not the primary one). egress_class
+ * 'guard_unavailable' names that distinct case honestly.
+ */
+function _typedFreeformGate(toolName, text) {
+  let guard;
+  try {
+    guard = require('./part8-egress-guard.cjs');
+  } catch (_e) {
+    return {
+      error: 'egress_blocked',
+      tool: toolName,
+      egress_class: 'guard_unavailable',
+      reason: 'Brain free-form channels accept closed-vocabulary methodology questions only (framework names, problem types, stages, command slugs); rephrase without room or venture details.',
+    };
+  }
+  const key = toolName === 'brain_search' ? 'query' : 'question';
+  const verdict = guard.classify({ [key]: text }, { toolName: toolName });
+  if (verdict && verdict.verdict === 'allow' && verdict.class === 'typed_question') {
+    return null;
+  }
+  return {
+    error: 'egress_blocked',
+    tool: toolName,
+    egress_class: (verdict && verdict.verdict === 'block') ? 'content_set' : 'freeform_unproven',
+    reason: 'Brain free-form channels accept closed-vocabulary methodology questions only (framework names, problem types, stages, command slugs); rephrase without room or venture details.',
+  };
+}
+
+/**
+ * Search Pinecone via Brain (semantic search).
+ * If quota exhausted, returns error with fallback suggestion.
+ */
+async function search(queryText, options = {}) {
+  const gated = _typedFreeformGate('brain_search', queryText);
+  if (gated) return gated;
+  const result = await callTool('brain_search', {
+    query: queryText,
+    namespace: options.namespace || undefined,
+    topK: options.topK || 5,
+  });
+
+  // Check for Pinecone quota exhaustion
+  if (result && result.text && result.text.includes('RESOURCE_EXHAUSTED')) {
+    return {
+      error: 'pinecone_quota_exhausted',
+      message: 'Pinecone embedding quota exhausted for this month. Using Neo4j Cypher fallback.',
+      fallback: 'neo4j',
+    };
+  }
+
+  return result;
+}
+
+/**
+ * Search with automatic fallback: Pinecone first, Neo4j Cypher if quota exhausted.
+ */
+async function smartSearch(queryText, options = {}) {
+  // 354-06 (D-354-EGR): gated explicitly here too, even though search()
+  // below already gates on the same text -- this keeps the refusal at
+  // smartSearch's own entry point (before its Cypher fallback branch is
+  // ever reached) rather than relying solely on search()'s own gate.
+  const gated = _typedFreeformGate('brain_search', queryText);
+  if (gated) return gated;
+  // Try Pinecone first
+  const pineconeResult = await search(queryText, options);
+
+  if (pineconeResult && pineconeResult.error === 'pinecone_quota_exhausted') {
+    // Fallback to Neo4j full-text search
+    const cypher = `
+      CALL db.index.fulltext.queryNodes("framework_search", $query)
+      YIELD node, score
+      RETURN node.name AS name, node.description AS description, score
+      LIMIT ${options.topK || 5}
+    `;
+    const neo4jResult = await query(cypher.replace('$query', `"${sanitizeCypherInput(queryText)}"`));
+    if (neo4jResult) {
+      neo4jResult._source = 'neo4j_fallback';
+      neo4jResult._note = 'Pinecone quota exhausted. Results from Neo4j Cypher fulltext search.';
+    }
+    return neo4jResult;
+  }
+
+  return pineconeResult;
+}
+
+// brain_schema is near-static (the teaching graph's label/relationship/property
+// taxonomy changes ~never) and is hit by several modules. Memoize it
+// process-wide for 30 minutes.
+//
+// Phase 339 (2026-09-03, FLIP-05, D-13 as corrected): _schemaCacheOrigin
+// (declared beside _schemaCacheAt below) keys the memo on the resolved
+// origin (getBrainUrl()'s own value, compared by identity), so a cached
+// schema can never be served across an origin change. The correction this
+// comment states plainly so the next reader does not re-derive it:
+// BRAIN_URL is a module-scope const resolved once at require time, so no
+// running process can ever OBSERVE an origin change -- this guard is
+// therefore provably inert against the incumbent today (the comparison
+// below is always true within one process). It ships anyway as defense in
+// depth: it becomes load-bearing the day anything makes the origin mutable
+// per process, which is exactly the class of future change that would
+// otherwise reintroduce this bug silently. By the same reasoning, no
+// exported flush-the-memo function exists here BY DECISION: it would have
+// zero callers (nothing can observe the origin change it would be flushing
+// for), which Canon Part 7 and this repo's dead-surface discipline both
+// argue against; tests/test-339-schema-memo-origin-keyed.cjs Arm 7 asserts
+// its absence. Flip-day answer for 09-MOS-LEARNING's addendum, verbatim:
+// "no flush needed: memo is process-local, keyed by origin since beta.17".
+let _schemaCache = null;
+let _schemaCacheAt = 0;
+let _schemaCacheOrigin = null;
+const SCHEMA_CACHE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Get the Brain Neo4j schema (node labels, relationship types, property keys).
+ * Memoized for 30 minutes (process-wide), keyed on the resolved origin.
+ */
+async function schema() {
+  if (
+    _schemaCache &&
+    _schemaCacheOrigin === getBrainUrl() &&
+    (Date.now() - _schemaCacheAt) < SCHEMA_CACHE_TTL_MS
+  ) {
+    return _schemaCache;
+  }
+  const result = await callTool('brain_schema', {});
+  // Phase 247-02 audit fix (Rule 1): a sentinel object (tier_denied /
+  // invalid_key -- anything carrying .error) is NOT valid schema data. Caching
+  // it would serve a stale denial for up to 30 minutes even after the Brain
+  // recovers or the key is fixed. Only cache a genuine, error-free result.
+  if (result != null && !(typeof result === 'object' && result.error)) {
+    _schemaCache = result;
+    _schemaCacheAt = Date.now();
+    _schemaCacheOrigin = getBrainUrl();
+  }
+  return result;
+}
+
+/**
+ * _inferRungFromQuestion(question) -> one of the four Theo rung ids.
+ *
+ * Theo's `classify_problem_type` tool takes NO parameters (the caller
+ * classifies), and there is no free-text rung classifier anywhere in this
+ * repo (`brain-derivation.cjs::classifyProblemType` scores MINTO triples,
+ * not text). This helper fills that local gap. It is PURE and LOCAL: it
+ * never sends the question anywhere, which is the whole reason it exists
+ * (Canon Part 8 -- the question is user data and stays local).
+ *
+ * Precedence is FIXED and load-bearing (do not reorder): Wicked is the
+ * orthogonal stakeholder-conflict axis and wins outright; UnDefined's
+ * markers are the least ambiguous of the remaining three; WellDefined's
+ * markers are next; IllDefined's markers are the broadest and are also the
+ * default, so they run last and cost nothing when they lose.
+ *
+ * Multi-word markers match as a substring; single-word markers match on a
+ * word boundary so `which` does not fire inside `whichever`. Non-string or
+ * empty input returns `'IllDefined'` and never throws.
+ *
+ * @param {*} question
+ * @returns {'Wicked'|'UnDefined'|'WellDefined'|'IllDefined'}
+ */
+const _RUNG_MARKERS = [
+  { rung: 'Wicked', markers: ['stakeholder', 'disagree', 'values', 'political'] },
+  { rung: 'UnDefined', markers: ['future of', 'no boundary', 'unbounded'] },
+  { rung: 'WellDefined', markers: ['measure', 'spec', 'test', 'kpi', 'how do we'] },
+  { rung: 'IllDefined', markers: ['next big thing', 'which', 'should we', 'opportunity'] },
+];
+
+function _matchesRungMarker(text, marker) {
+  if (marker.indexOf(' ') !== -1) return text.indexOf(marker) !== -1;
+  return new RegExp('\\b' + marker + '\\b').test(text);
+}
+
+function _inferRungFromQuestion(question) {
+  if (typeof question !== 'string' || !question.trim()) return 'IllDefined';
+  const lc = question.trim().toLowerCase();
+  for (let i = 0; i < _RUNG_MARKERS.length; i++) {
+    const entry = _RUNG_MARKERS[i];
+    for (let j = 0; j < entry.markers.length; j++) {
+      if (_matchesRungMarker(lc, entry.markers[j])) return entry.rung;
+    }
+  }
+  return 'IllDefined';
+}
+
+/**
+ * THEO_RUNG_SET -- the closed four-value rung enum Theo's `recommend_chain`
+ * matches WHERE toLower(m.id) = toLower($problemType) AND NOTHING MORE (see
+ * the BRAIN_PROBLEM_TYPE_ALIASES_THEO comment below). 354-09 (THEO-01
+ * classification round trip): a caller that already classified the room
+ * (lib/mcp/brain-router.cjs::_rungFromClassification) can hand that value to
+ * ask() structurally, through this set, instead of it being silently
+ * re-derived from a generated sentence by _inferRungFromQuestion below (the
+ * bug: brain-router's generated question never carries markers
+ * _inferRungFromQuestion recognizes, so every case landed IllDefined,
+ * regardless of the room's real classification).
+ */
+const THEO_RUNG_SET = Object.freeze(new Set(['UnDefined', 'IllDefined', 'WellDefined', 'Wicked']));
+
+/**
+ * _composeTheoAsk(payload, question, deps, opts) -> composed envelope payload.
+ *
+ * Composes `directive`, `next_gate` and `grounding` onto a Theo
+ * `answer_mode: 'structured_rows'` payload so downstream consumers
+ * (`wrapDirective`, `brainRoute`, `rs-chain-feeder.cjs`) get a real
+ * framework and chain instead of an empty scaffold. `deps` is the
+ * injectable wire seam (`{ recommendChain, query }`) the offline test suite
+ * drives; it defaults to this module's own wrappers so production behavior
+ * needs no injection.
+ *
+ * Runs entirely inside one outer try/catch and NEVER throws: on any failure
+ * it still returns the same object shape with `options: []` and
+ * `chain_status: 'unreachable'`, so a rows response with a failed chain
+ * still returns `grounding`.
+ *
+ * Canon Part 8: the only two extra wire calls this makes carry a closed
+ * rung enum (`recommendChain`) and framework names Theo itself just
+ * returned (`query`, label-anchored on `(f:Framework)`, never
+ * relationship-first -- Theo's read allow-list refuses
+ * `DirectedRelationshipTypeScan`). `query_terms` (the question's own words)
+ * is the ONLY key removed from the payload, because it is the question
+ * echoed back; the row projection is by the four NAMED keys
+ * (chapterId/section/score/snippet), never a blind row copy, for the same
+ * reason plus shape stability.
+ *
+ * 354-09 (THEO-01 classification round trip): `opts.rung`, when it is one of
+ * THEO_RUNG_SET, is used STRUCTURALLY in place of `_inferRungFromQuestion`'s
+ * text heuristic -- the caller already classified the room (a typed enum
+ * crossing an internal module boundary, Canon Part 8 clean), so this never
+ * re-derives it from prose. `rung_source` (`'structured'` or `'inferred'`)
+ * is added to the composed envelope's `grounding` ADDITIVELY, alongside the
+ * existing `problem_type` / `problem_type_source` fields, which are
+ * untouched.
+ *
+ * @param {object} payload - the raw Theo structured_rows payload
+ * @param {string} question - the original question (local only, never sent)
+ * @param {{recommendChain?: Function, query?: Function}} [deps]
+ * @param {{rung?: string}} [opts] - opts.rung is a THEO_RUNG_SET member or ignored
+ * @returns {Promise<object>}
+ */
+function _projectGroundingRows(rows) {
+  return Array.isArray(rows)
+    ? rows
+        .filter((r) => r && typeof r === 'object')
+        .map((r) => ({ chapterId: r.chapterId, section: r.section, score: r.score, snippet: r.snippet }))
+    : [];
+}
+
+async function _composeTheoAsk(payload, question, deps, opts) {
+  deps = deps || {};
+  const recommend = deps.recommendChain || recommendChain;
+  const runQuery = deps.query || query;
+
+  // 354-09 (THEO-01 classification round trip): prefer the caller's own
+  // structural classification over re-deriving it from `question`'s prose.
+  // Computed OUTSIDE the try/catch below so both the success path and the
+  // trailing catch path (which also emits a rung) agree on the same value
+  // and the same source label.
+  const structuredRung = (opts && typeof opts.rung === 'string' && THEO_RUNG_SET.has(opts.rung))
+    ? opts.rung
+    : null;
+  const rung = structuredRung || _inferRungFromQuestion(question);
+  const rungSource = structuredRung ? 'structured' : 'inferred';
+
+  try {
+    let chainRes = null;
+    let chainStatus;
+    try {
+      chainRes = await recommend(rung, 4);
+      if (chainRes == null || chainRes.error || !Array.isArray(chainRes.chain)) {
+        chainStatus = 'unreachable';
+      } else if (chainRes.chain.length === 0) {
+        chainStatus = 'empty';
+      } else {
+        chainStatus = 'ok';
+      }
+    } catch (_e) {
+      chainStatus = 'unreachable';
+    }
+    const steps = chainStatus === 'ok' ? chainRes.chain : [];
+
+    // COMMANDS: exactly one runQuery call, only when there are steps, in its
+    // own try/catch (on any failure every option gets commands: []).
+    // Label-anchored and never relationship-first: Theo's read allow-list
+    // refuses a template that starts from [:USES_FRAMEWORK].
+    const commandsByFramework = new Map();
+    if (steps.length > 0) {
+      try {
+        const names = steps
+          .map((s) => s && s.framework)
+          .filter((n) => typeof n === 'string');
+        const result = await runQuery(
+          'MATCH (f:Framework) WHERE f.name IN $names OPTIONAL MATCH (c:MindrianCommand)-[:USES_FRAMEWORK]->(f) RETURN f.name AS framework, collect(DISTINCT c.name) AS commands',
+          { names: names }
+        );
+        const records = (result && Array.isArray(result.records)) ? result.records : [];
+        for (const rec of records) {
+          if (!rec || typeof rec.framework !== 'string') continue;
+          const slugs = Array.isArray(rec.commands)
+            ? rec.commands
+                .filter((c) => typeof c === 'string' && c.length > 0)
+                .map((c) => c.replace(/^\/mos:/, ''))
+            : [];
+          commandsByFramework.set(rec.framework, slugs);
+        }
+      } catch (_e) {
+        // any failure here -> every option gets commands: [] below (Map stays empty)
+      }
+    }
+
+    // CONFIDENCE: top step reads exactly 0.9; a missing/non-finite degree -> 0.5.
+    // theo_rank and the command-bearing-first sort below never touch this
+    // computation -- the sort reorders `options`, it never recomputes a
+    // confidence value (Quick 260911-ddd, DDD-01).
+    const top = steps.reduce((max, s) => {
+      const d = s && Number.isFinite(s.degree) ? s.degree : 0;
+      return d > max ? d : max;
+    }, 0);
+    const options = steps.map((s, idx) => {
+      const degree = s && s.degree;
+      let confidence = 0.5;
+      if (top > 0 && Number.isFinite(degree)) {
+        confidence = Math.max(0.5, Math.min(0.9, Math.round((0.5 + 0.4 * (degree / top)) * 100) / 100));
+      }
+      // Quick 260911-ddd (DDD-01): theo_rank carries Theo's own rank so it
+      // is never lost by the reorder below. Theo's `step` field when it is
+      // a finite number, else the 1-based index of this step WITHIN Theo's
+      // own chain array, computed here before any sort so a later reorder
+      // can never leak into this number.
+      const theoRank = (s && Number.isFinite(s.step)) ? s.step : idx + 1;
+      return {
+        framework: s && s.framework,
+        confidence: confidence,
+        commands: commandsByFramework.get(s && s.framework) || [],
+        theo_rank: theoRank,
+      };
+    });
+
+    // Quick 260911-ddd (DDD-01): stable partition, command-bearing options
+    // first, Theo's relative order preserved inside each group. Theo's
+    // ranking is NEVER altered at the source -- this reorders the plugin's
+    // OWN options array only. A single forward pass into two queues, then
+    // concatenated, is stable BY CONSTRUCTION; it does not rest on
+    // Array.prototype.sort's engine-stability semantics. When every option
+    // or no option carries a command, one queue is empty and the
+    // concatenation is the identity, so Theo's order survives unchanged
+    // for free.
+    //
+    // DOWNSTREAM CONSEQUENCE, stated here so it is not mistaken for a
+    // regression later: lib/mcp/brain-router.cjs:398 derives topConf from
+    // options[0].confidence. On a chain whose top-ranked framework has no
+    // command, the routed confidence now reads the first command-bearing
+    // option's confidence (0.83 on the live IllDefined shape, previously
+    // 0.9) -- that is the intended meaning of the change (confidence
+    // describes the option actually surfaced to the user), not a bug.
+    // brain-router.cjs is deliberately NOT touched to compensate for this.
+    const commandBearing = [];
+    const commandLess = [];
+    for (const opt of options) {
+      if (Array.isArray(opt.commands) && opt.commands.length > 0) {
+        commandBearing.push(opt);
+      } else {
+        commandLess.push(opt);
+      }
+    }
+    const sortedOptions = commandBearing.concat(commandLess);
+
+    const out = Object.assign({}, payload);
+    delete out.query_terms;
+    out.directive = {
+      guided: { questions: [], framework: (sortedOptions[0] && sortedOptions[0].framework) || null, stage: rung },
+    };
+    out.next_gate = { sub_shape: 'F.1', options: sortedOptions };
+    out.grounding = {
+      source: 'theo',
+      answer_mode: payload.answer_mode,
+      rows: _projectGroundingRows(payload.rows),
+      problem_type: rung,
+      problem_type_source: 'heuristic',
+      // 354-09 (THEO-01): additive alongside problem_type/problem_type_source
+      // above, which stay byte-unchanged -- names WHICH path produced `rung`.
+      rung_source: rungSource,
+      chain_coverage: (chainRes && chainRes.coverage && typeof chainRes.coverage === 'object') ? chainRes.coverage : null,
+      chain_status: chainStatus,
+      confidence_source: 'theo_degree_normalized',
+      // Quick 260911-ddd (DDD-01): names the applied ordering so a
+      // consumer never has to branch on the key's presence -- present here
+      // AND on the trailing catch path below.
+      option_order: 'command_bearing_first',
+    };
+    return out;
+  } catch (_e) {
+    const out = Object.assign({}, payload);
+    delete out.query_terms;
+    out.directive = { guided: { questions: [], framework: null, stage: rung } };
+    out.next_gate = { sub_shape: 'F.1', options: [] };
+    out.grounding = {
+      source: 'theo',
+      answer_mode: payload.answer_mode,
+      rows: _projectGroundingRows(payload.rows),
+      problem_type: rung,
+      problem_type_source: 'heuristic',
+      rung_source: rungSource,
+      chain_coverage: null,
+      chain_status: 'unreachable',
+      confidence_source: 'theo_degree_normalized',
+      option_order: 'command_bearing_first',
+    };
+    return out;
+  }
+}
+
+/**
+ * Natural-language methodology question against the Brain (wraps brain_ask).
+ *
+ * brain_ask auto-routes Pinecone/Neo4j server-side and handles its own
+ * fallback -- it is the highest-level Brain entry point. Prefer it over a
+ * hand-rolled Cypher query when the caller has a natural-language methodology
+ * question. Canon Part 8: the question string carries only generic methodology
+ * language -- never user artifacts, meeting text, or personal identifiers.
+ *
+ * Two response shapes on success:
+ *   - INCUMBENT: carries `directive` already -- returned BYTE-UNCHANGED, the
+ *     same object reference, no copy.
+ *   - THEO structured_rows: `{ answer_mode: 'structured_rows', rows: [...] }`
+ *     with no `directive` -- composed through `_composeTheoAsk` into a full
+ *     envelope payload (`directive`, `next_gate`, `grounding` added).
+ * A `{ text: 'Error: ...' } / { error: ... }` sentinel passes through
+ * UNCHANGED on a server-side error; null when the Brain is unreachable or no
+ * API key is configured (graceful degradation -- mirrors query()).
+ *
+ * 354-09 (THEO-01 classification round trip): `opts.problem_type`, when
+ * present, is threaded structurally into `_composeTheoAsk`'s `opts.rung`
+ * (never re-derived from `question`'s text on that path). The wire shape of
+ * `brain_ask` itself is UNCHANGED -- `callTool('brain_ask', { question })`
+ * still sends exactly one key; the rung only reaches the already-closed-enum
+ * `recommend_chain` call one hop downstream, inside `_composeTheoAsk`.
+ *
+ * @param {string} question
+ * @param {{problem_type?: string}} [opts] - opts.problem_type is a
+ *   THEO_RUNG_SET member (UnDefined/IllDefined/WellDefined/Wicked) or
+ *   ignored
+ * @returns {Promise<object|null>}
+ */
+async function ask(question, opts) {
+  if (typeof question !== 'string' || !question.trim()) return null;
+  // 354-06 (D-354-EGR): the typed-question gate, BEFORE callTool.
+  const gated = _typedFreeformGate('brain_ask', question);
+  if (gated) return gated;
+  const raw = await callTool('brain_ask', { question: question });
+  if (raw == null) return raw; // transport-null contract, byte-locked
+  if (typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  if (raw.error) return raw; // egress_blocked / tier_denied / rate_limited / invalid_key
+  if (raw.directive) return raw; // incumbent proof -- same object reference
+  if (raw.answer_mode === 'structured_rows' && Array.isArray(raw.rows)) {
+    return _composeTheoAsk(raw, question, undefined, { rung: opts && opts.problem_type });
+  }
+  return raw;
+}
+
+/**
+ * Curated-op call against the Brain (the `op` MODE of brain_ask).
+ *
+ * brain_ask gained an optional curated-op surface (BUG 2 fix). Where ask()
+ * runs the natural-language directive path, askOp() runs one of a closed set
+ * of named, parameterized operations the Brain resolves to a FROZEN
+ * server-side Cypher string. The three ops:
+ *
+ *   - 'list_frameworks'       params { limit? }            -> rows { name, description, category }
+ *   - 'framework_edges'       params { edge_type, limit? } -> rows { from, to, confidence, transform }
+ *                                                            or { framework, problem_type }
+ *   - 'framework_chain_slice' params { seeds, max_hops?, limit? } -> rows { from, to, hop_distance }
+ *
+ * Canon Part 8: every param is a generic methodology handle (framework name,
+ * closed enum, integer) -- never user content. No caller Cypher is ever sent;
+ * the Brain owns the query text. This path is ungated -- any valid key may
+ * call it (only query()/write() touch the admin-gated tools).
+ *
+ * Consumers that only need a framework chain for ONE anchor keep using
+ * ask(question) and read next_gate.options[].framework (the directive path).
+ *
+ * Returns the parsed curated-op payload { op, source, count, rows, degraded? }
+ * on success. On any transport / parse failure (Brain unreachable, no API key,
+ * bad payload) returns a graceful { op, count: 0, rows: [], degraded: true } so
+ * the caller never crashes -- mirrors query()'s graceful-degradation contract.
+ *
+ * @param {string} operation - one of the three curated op names
+ * @param {object} [params]  - generic-handles-only params object
+ * @returns {Promise<{op: string, source?: string, count: number, rows: Array, degraded?: boolean}>}
+ */
+/**
+ * _normalizeAskOpResult(result, operation) -- the askOp() shape recognizer,
+ * extracted so tests can drive it directly with zero network. Copies the
+ * dual-shape recognizer STRUCTURE from
+ * lib/core/enrichment-queue.cjs::captureReadinessMiss: one entry point, arms
+ * keyed on payload SHAPE never on key presence alone.
+ *
+ * Theo op answers carry `coverage`, never `count`, so a `count`-keyed
+ * recognizer alone reads a live three-row answer as a degraded zero. Arms,
+ * in order:
+ *   1. INCUMBENT: `count` is a number and `rows` is an array -- the exact
+ *      object askOp built before this task. MUST run first so an incumbent
+ *      payload can never take arm 2.
+ *   2. THEO: `rows` is an array (no numeric `count` required) -- reports
+ *      `coverage.matched` as `count` when it is a finite number, else
+ *      `rows.length`.
+ *   3. Everything else (null, an `{error:...}` sentinel, a `{text:...}`
+ *      passthrough, a non-array `rows`) -- the existing degraded sentinel.
+ * Degrade ONLY when `rows` is not an array.
+ *
+ * @param {*} result
+ * @param {string} operation
+ * @returns {{op: string, source?: string, count: number, rows: Array, coverage?: object, degraded?: boolean}}
+ */
+function _normalizeAskOpResult(result, operation) {
+  if (result && typeof result === 'object'
+      && typeof result.count === 'number' && Array.isArray(result.rows)) {
+    return {
+      op: result.op || operation,
+      source: result.source,
+      count: result.count,
+      rows: result.rows,
+      ...(result.degraded ? { degraded: true } : {}),
+    };
+  }
+  if (result && typeof result === 'object' && Array.isArray(result.rows)) {
+    const coverage = result.coverage;
+    const matched = (coverage && typeof coverage === 'object' && Number.isFinite(coverage.matched))
+      ? coverage.matched
+      : result.rows.length;
+    const out = {
+      op: result.op || operation,
+      source: 'theo',
+      count: matched,
+      rows: result.rows,
+    };
+    if (coverage && typeof coverage === 'object') out.coverage = coverage;
+    return out;
+  }
+  return { op: operation, count: 0, rows: [], degraded: true };
+}
+
+async function askOp(operation, params = {}) {
+  try {
+    return _normalizeAskOpResult(
+      await callTool('brain_ask', { op: operation, params: params || {} }),
+      operation
+    );
+  } catch (_err) {
+    return { op: operation, count: 0, rows: [], degraded: true };
+  }
+}
+
+/**
+ * Get Pinecone stats.
+ */
+async function stats() {
+  return callTool('brain_stats', {});
+}
+
+/**
+ * Return the resolved Brain endpoint (BRAIN_URL above, the module-level
+ * single source of truth). The doctor store-identity sense (class-m-brain-
+ * smoke.cjs layer 6) needs to report which endpoint the wire actually
+ * resolved to, so it must read that value from the one place that decides
+ * it rather than duplicating the canon literal as a second source of truth.
+ *
+ * @returns {string}
+ */
+function getBrainUrl() {
+  return BRAIN_URL;
+}
+
+/**
+ * Enrich local graph with causal edges from Brain's teaching graph.
+ *
+ * Queries the Brain Neo4j for causal framework chains relevant to the
+ * given problem type or section keywords. Returns structured causal data
+ * suitable for writing to local SQLite graph as CAUSES/ROOT_CAUSE_OF edges.
+ *
+ * @param {string} problemType - Room problem type (e.g., 'market-validation')
+ * @param {string[]} sectionKeywords - Keywords from room sections for context
+ * @param {object} [options] - Optional config
+ * @param {number} [options.maxChainDepth=3] - Maximum causal chain depth
+ * @param {number} [options.minConfidence=0.5] - Minimum confidence threshold
+ * @returns {Promise<{ causes: Array, rootCauses: Array } | null>}
+ *   causes: [{ from, to, mechanism, confidence, framework }]
+ *   rootCauses: [{ from, to, chainLength, intermediateCauses, confidence }]
+ */
+async function enrichCausalEdges(problemType, sectionKeywords, options = {}) {
+  if (!isAvailable()) return null;
+
+  // SEC-01 defence-in-depth: coerce + bound numeric interpolants so a hostile
+  // non-number (e.g. an object with .toString() side-effects) cannot reach
+  // the Cypher string.
+  const maxDepth = Math.max(1, Math.min(10, Number(options.maxChainDepth) || 3));
+  const minConf = Math.max(0, Math.min(1, Number(options.minConfidence) || 0.5));
+  const keywordFilter = sectionKeywords && sectionKeywords.length > 0
+    ? sectionKeywords.map(k => `"${sanitizeCypherInput(k)}"`).join(', ')
+    : '';
+
+  // Query 1: Direct causal relationships from framework chains
+  const causesCypher = `
+    MATCH (f1:Framework)-[r:ADDRESSES_PROBLEM_TYPE]->(pt:ProblemType)
+    WHERE pt.name CONTAINS "${sanitizeCypherInput(problemType || '')}"
+    WITH f1
+    MATCH (f1)-[co:CO_OCCURS]->(f2:Framework)
+    WHERE co.weight >= ${minConf}
+    RETURN f1.name AS cause_framework,
+           f2.name AS effect_framework,
+           co.weight AS confidence,
+           f1.description AS mechanism
+    LIMIT 20
+  `;
+
+  // Query 2: Root cause chains (multi-hop framework dependencies)
+  const rootCauseCypher = `
+    MATCH path = (root:Framework)-[:CO_OCCURS*1..${maxDepth}]->(leaf:Framework)
+    WHERE root <> leaf
+    ${keywordFilter ? `AND ANY(k IN [${keywordFilter}] WHERE root.name CONTAINS k OR root.description CONTAINS k)` : ''}
+    WITH root, leaf, path, length(path) AS depth
+    WHERE depth >= 2
+    RETURN root.name AS root_cause,
+           leaf.name AS symptom,
+           depth AS chain_length,
+           [n IN nodes(path) | n.name] AS chain_nodes
+    LIMIT 10
+  `;
+
+  try {
+    const [causesResult, rootCausesResult] = await Promise.all([
+      query(causesCypher),
+      query(rootCauseCypher),
+    ]);
+
+    const causes = [];
+    const rootCauses = [];
+
+    // Parse causes
+    if (causesResult && Array.isArray(causesResult.records)) {
+      for (const rec of causesResult.records) {
+        causes.push({
+          from: rec.cause_framework || rec[0],
+          to: rec.effect_framework || rec[1],
+          mechanism: rec.mechanism || rec[3] || '',
+          confidence: parseFloat(rec.confidence || rec[2] || 0),
+          framework: rec.cause_framework || rec[0] || '',
+        });
+      }
+    }
+
+    // Parse root causes
+    if (rootCausesResult && Array.isArray(rootCausesResult.records)) {
+      for (const rec of rootCausesResult.records) {
+        rootCauses.push({
+          from: rec.root_cause || rec[0],
+          to: rec.symptom || rec[1],
+          chainLength: parseInt(rec.chain_length || rec[2] || 1, 10),
+          intermediateCauses: rec.chain_nodes || rec[3] || [],
+          confidence: 1.0 / (parseInt(rec.chain_length || rec[2] || 1, 10) + 1),
+        });
+      }
+    }
+
+    return { causes, rootCauses };
+  } catch (err) {
+    // Brain query failed -- return null for graceful degradation
+    return null;
+  }
+}
+
+/**
+ * Hat-aware framework recommendation.
+ *
+ * Reads persistent hat states and adjusts Brain framework queries:
+ * - Black Hat concerns boost risk-related frameworks (Risk Matrix, SWOT threats)
+ * - Yellow Hat opportunities boost HSI scoring and opportunity frameworks
+ * - Blue Hat methodology notes avoid repeating ineffective frameworks
+ *
+ * @param {string} roomDir - Absolute path to room directory
+ * @param {string} problemType - Room problem type
+ * @param {object} [options] - Optional config
+ * @param {number} [options.topK=5] - Number of frameworks to return
+ * @returns {Promise<{ frameworks: Array, hat_influence: object } | null>}
+ */
+async function hatAwareRecommend(roomDir, problemType, options = {}) {
+  if (!isAvailable()) return null;
+
+  // Lazy-require to avoid circular dependency at module load time
+  const { loadAllHatStates } = require('./hat-persistence.cjs');
+  const hatStates = loadAllHatStates(roomDir);
+  // SEC-01 defence-in-depth: bound topK numeric interpolation.
+  const topK = Math.max(1, Math.min(100, Number(options.topK) || 5));
+
+  const hatInfluence = {
+    risk_boost: false,
+    opportunity_boost: false,
+    avoid_frameworks: [],
+  };
+
+  // Black Hat: if concerns exist, boost risk-related frameworks
+  const blackConcerns = hatStates.black.top_concerns || [];
+  const riskBoost = blackConcerns.length > 0;
+  hatInfluence.risk_boost = riskBoost;
+
+  // Yellow Hat: if opportunities exist, boost HSI/opportunity frameworks
+  const yellowOpps = hatStates.yellow.top_opportunities || [];
+  const oppBoost = yellowOpps.length > 0;
+  hatInfluence.opportunity_boost = oppBoost;
+
+  // Blue Hat: methodology notes may flag ineffective frameworks to avoid
+  const blueNotes = hatStates.blue.methodology_notes || [];
+
+  // Part 8 raw-field egress guard (Phase 239 / BRAIN-02, threats T2, T4, T5).
+  // Classifies the RAW problemType and each RAW blueNotes entry BEFORE
+  // sanitizeCypherInput and BEFORE any Cypher interpolation below -- the raw
+  // field is the only place the content signal is still intact. MEASURED:
+  // classifying the ASSEMBLED cypher string instead would let the template's
+  // own vocabulary word "Framework" launder an embedded canary from ambiguous
+  // to allow, and sanitizeCypherInput strips the char the Part-8 PII pattern
+  // keys on. Fail-closed: any missing or non-allow verdict skips the Brain leg.
+  for (const rawField of [problemType].concat(blueNotes)) {
+    let hatEgressVerdict = null;
+    try {
+      const hatEgressGuard = require('./part8-egress-guard.cjs');
+      hatEgressVerdict = hatEgressGuard.classify(
+        { question: String(rawField || '') },
+        { toolName: 'brain_ask' }
+      );
+    } catch (_e) {
+      hatEgressVerdict = null;
+    }
+    if (!hatEgressVerdict || hatEgressVerdict.verdict !== 'allow') {
+      _logEventBestEffort(options.db, 'brain_egress_blocked', {
+        egress_class: (hatEgressVerdict && hatEgressVerdict.class) || 'unknown',
+        verdict: (hatEgressVerdict && hatEgressVerdict.verdict) || 'unverified',
+        count: 1,
+        created_by: 'system',
+        source_path: 'system:brain-hat-recommend',
+      });
+      return null;
+    }
+  }
+
+  const avoidPatterns = blueNotes
+    .filter(n => /ineffective|didn't work|not useful|skip|avoid/i.test(n))
+    .map(n => {
+      // Extract framework name from notes like "SWOT was ineffective for this stage"
+      const match = n.match(/^(\w[\w\s]+?)\s+(?:was|is|were|proved)\s/i);
+      return match ? match[1].trim() : null;
+    })
+    .filter(Boolean);
+  hatInfluence.avoid_frameworks = avoidPatterns;
+
+  // Build Cypher query with hat-influenced scoring
+  const safeProblemType = sanitizeCypherInput(problemType || '');
+  const avoidClause = avoidPatterns.length > 0
+    ? `AND NOT ANY(avoid IN [${avoidPatterns.map(a => `"${sanitizeCypherInput(a)}"`).join(', ')}] WHERE f.name CONTAINS avoid)`
+    : '';
+
+  // Query: frameworks for problem type, with hat-influenced ordering
+  const cypher = `
+    MATCH (f:Framework)-[:ADDRESSES_PROBLEM_TYPE]->(pt:ProblemType)
+    WHERE pt.name CONTAINS "${safeProblemType}"
+    ${avoidClause}
+    WITH f
+    OPTIONAL MATCH (f)-[co:CO_OCCURS]->(f2:Framework)
+    WITH f, count(co) AS connections
+    RETURN f.name AS name,
+           f.description AS description,
+           connections,
+           CASE
+             WHEN ${riskBoost ? 'true' : 'false'} AND (f.name CONTAINS 'Risk' OR f.name CONTAINS 'SWOT' OR f.name CONTAINS 'Failure') THEN connections + 10
+             WHEN ${oppBoost ? 'true' : 'false'} AND (f.name CONTAINS 'HSI' OR f.name CONTAINS 'Opportunity' OR f.name CONTAINS 'Innovation') THEN connections + 10
+             ELSE connections
+           END AS hat_score
+    ORDER BY hat_score DESC
+    LIMIT ${topK}
+  `;
+
+  try {
+    const result = await query(cypher);
+    const frameworks = [];
+
+    if (result && Array.isArray(result.records)) {
+      for (const rec of result.records) {
+        frameworks.push({
+          name: rec.name || rec[0],
+          description: rec.description || rec[1],
+          connections: parseInt(rec.connections || rec[2] || 0, 10),
+          hat_score: parseInt(rec.hat_score || rec[3] || 0, 10),
+        });
+      }
+    }
+
+    return {
+      frameworks,
+      hat_influence: hatInfluence,
+      black_concerns: blackConcerns.slice(0, 3),
+      yellow_opportunities: yellowOpps.slice(0, 3),
+      blue_avoid: avoidPatterns,
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Suggest validation steps for a banked opportunity using Brain framework chains.
+ *
+ * Queries Brain Neo4j for frameworks that ADDRESSES_PROBLEM_TYPE matching the
+ * opportunity's domain/problem, then follows FEEDS_INTO chains to build a
+ * suggested validation sequence.
+ *
+ * @param {Object} opportunity - Opportunity object with at minimum: problem, domain, knight_position
+ * @param {Object} [options] - Optional config
+ * @param {number} [options.maxSteps=5] - Maximum validation steps to return
+ * @param {number} [options.chainDepth=3] - Maximum FEEDS_INTO chain depth
+ * @returns {Promise<{ steps: Array<{framework: string, reason: string, order: number}>, chain_source: string } | null>}
+ *   Returns null if Brain unavailable (Tier 0 graceful degradation)
+ */
+async function suggestValidationSteps(opportunity, options = {}) {
+  if (!isAvailable()) return null;
+  if (!opportunity || !opportunity.problem) return null;
+
+  // Part 8 raw-field egress guard (Phase 239 / BRAIN-02, threats T2, T4, T5).
+  // Classifies the RAW opportunity.domain and the RAW opportunity.problem
+  // BEFORE sanitizeCypherInput and BEFORE any Cypher interpolation below --
+  // strictly upstream of sanitizeCypherInput, which is the entire point.
+  // MEASURED: sanitizeCypherInput strips the '@' the Part-8 email pattern
+  // keys on (jane@startup.com -> janestartup.com), flipping a block verdict
+  // into an allow. Classifying the ASSEMBLED cypher string instead would also
+  // let the template's own vocabulary word "Framework" launder an embedded
+  // canary from ambiguous to allow. Fail-closed: any missing or non-allow
+  // verdict skips the Brain leg entirely.
+  for (const rawField of [opportunity.domain, opportunity.problem]) {
+    let validationEgressVerdict = null;
+    try {
+      const validationEgressGuard = require('./part8-egress-guard.cjs');
+      validationEgressVerdict = validationEgressGuard.classify(
+        { question: String(rawField || '') },
+        { toolName: 'brain_ask' }
+      );
+    } catch (_e) {
+      validationEgressVerdict = null;
+    }
+    if (!validationEgressVerdict || validationEgressVerdict.verdict !== 'allow') {
+      _logEventBestEffort(options.db, 'brain_egress_blocked', {
+        egress_class: (validationEgressVerdict && validationEgressVerdict.class) || 'unknown',
+        verdict: (validationEgressVerdict && validationEgressVerdict.verdict) || 'unverified',
+        count: 1,
+        created_by: 'system',
+        source_path: 'system:brain-validation-steps',
+      });
+      return null;
+    }
+  }
+
+  const maxSteps = options.maxSteps || 5;
+  const chainDepth = options.chainDepth || 3;
+  const safeProblem = sanitizeCypherInput(opportunity.problem || '').substring(0, 200);
+  const safeDomain = sanitizeCypherInput(opportunity.domain || '').substring(0, 100);
+  const safeKnight = opportunity.knight_position || 'uncertainty';
+
+  // Query 1: Find frameworks that address this problem type / domain
+  const matchCypher = `
+    MATCH (f:Framework)-[:ADDRESSES_PROBLEM_TYPE]->(pt:ProblemType)
+    WHERE pt.name CONTAINS "${safeDomain}"
+       OR pt.description CONTAINS "${safeDomain}"
+    RETURN f.name AS name, f.description AS description
+    LIMIT 10
+  `;
+
+  // Query 2: Follow FEEDS_INTO chains from matched frameworks
+  const chainCypher = `
+    MATCH (f:Framework)-[:ADDRESSES_PROBLEM_TYPE]->(pt:ProblemType)
+    WHERE pt.name CONTAINS "${safeDomain}"
+       OR pt.description CONTAINS "${safeDomain}"
+    WITH f LIMIT 3
+    MATCH path = (f)-[:FEEDS_INTO*1..${chainDepth}]->(next:Framework)
+    RETURN f.name AS start_framework,
+           next.name AS next_framework,
+           next.description AS next_description,
+           length(path) AS depth
+    ORDER BY depth ASC
+    LIMIT ${maxSteps * 2}
+  `;
+
+  try {
+    const [matchResult, chainResult] = await Promise.all([
+      query(matchCypher),
+      query(chainCypher),
+    ]);
+
+    const steps = [];
+    const seen = new Set();
+
+    // First: add the entry-point frameworks
+    if (matchResult && Array.isArray(matchResult.records)) {
+      for (const rec of matchResult.records) {
+        const name = rec.name || rec[0];
+        if (name && !seen.has(name) && steps.length < maxSteps) {
+          seen.add(name);
+          steps.push({
+            framework: name,
+            reason: safeKnight === 'uncertainty'
+              ? `Explore this ${safeDomain} uncertainty with ${name}`
+              : `Validate this ${safeDomain} risk using ${name}`,
+            order: steps.length + 1,
+          });
+        }
+      }
+    }
+
+    // Then: add FEEDS_INTO chain steps
+    if (chainResult && Array.isArray(chainResult.records)) {
+      for (const rec of chainResult.records) {
+        const name = rec.next_framework || rec[1];
+        const desc = rec.next_description || rec[2] || '';
+        if (name && !seen.has(name) && steps.length < maxSteps) {
+          seen.add(name);
+          steps.push({
+            framework: name,
+            reason: desc ? `Then apply ${name}: ${desc.substring(0, 120)}` : `Then apply ${name} (follows from chain)`,
+            order: steps.length + 1,
+          });
+        }
+      }
+    }
+
+    if (steps.length === 0) return null;
+
+    return {
+      steps,
+      chain_source: 'brain_feeds_into',
+    };
+  } catch (err) {
+    // Brain query failed -- graceful degradation
+    return null;
+  }
+}
+
+/**
+ * Write Cypher to Neo4j via Brain (write operations).
+ * Used by sync-rooms-brain for creating Room/RoomGroup nodes and edges.
+ * Returns null if Brain is unavailable -- never throws.
+ *
+ * NOTE (Finding I sibling, v1.10.9 hotfix 2026-04-15): same param-name
+ * mismatch as brain_query had. Brain MCP brain_write expects `cypher`,
+ * not `query`. This function had the mirror bug since inception but
+ * never fired in production because sync-rooms-brain is rarely invoked
+ * against the live Brain. Caught by the plan-checker audit for Phase 85.
+ *
+ * @param {string} cypher - Cypher write query
+ * @returns {Promise<object|null>}
+ */
+async function write(cypher) {
+  return callTool('brain_write', { cypher: cypher });
+}
+
+// ============================================================================
+// Loop-contract read wrappers (Phase 247-02, CONTRACT-01).
+// ============================================================================
+//
+// Thin pass-through wrappers over callTool for the five loop-contract tools
+// that had NO client wrapper before this phase (data/brain-surface-contract.json
+// is the source of truth for the tool name + arg-key shape each wrapper below
+// must emit; tests/test-247-contract-client.cjs derives its expectations from
+// that file, not from this comment). brain_stats is the sixth loop-contract
+// tool and already has a wrapper: stats() above.
+//
+// Every wrapper is a straight callTool(name, args) call with NO result
+// reshaping -- the tier_denied / invalid_key sentinels and the transport-null
+// pass through unchanged, exactly like write() and stats() already do.
+// Part 7 (extend, never a fourth brain skill): these live in this file.
+//
+// loopSearch() is named to avoid colliding with the existing search() export
+// above, which wraps the DIFFERENT brain_search tool (Pinecone semantic
+// search with quota-fallback handling). The loop-contract `search` tool is a
+// distinct, simpler read tool -- same English word, different Brain tool,
+// different client function, deliberately renamed so callers cannot conflate
+// them.
+
+/**
+ * Loop-contract `normalize_framework_name` tool.
+ * @param {string} raw
+ * @returns {Promise<object|null>}
+ */
+async function normalizeFrameworkName(raw) {
+  return callTool('normalize_framework_name', { raw: raw });
+}
+
+/**
+ * Loop-contract `search` tool (NOT brain_search -- see module-level note above).
+ * @param {string} queryText
+ * @param {number} [topK]
+ * @returns {Promise<object|null>}
+ */
+async function loopSearch(queryText, topK) {
+  return callTool('search', { query: queryText, topK: topK });
+}
+
+// ----------------------------------------------------------------------------
+// Phase 249-01 (ENRICH-01) -- capture-on-miss for the two readiness-shaped
+// loop wrappers below. NEITHER wrapper reshapes its return value (247-02's
+// "zero result reshaping so sentinels propagate unchanged" is preserved
+// here); capture happens in a try/catch side branch AFTER resolution, and
+// the raw callTool result is returned unchanged in every case, including
+// when the capture branch itself fails. opts is OPTIONAL and backward
+// compatible: no opts / no opts.roomDir means zero capture, zero throw,
+// identical behavior to the pre-249 wrapper.
+//
+// Sentinel discipline: a result carrying .error (tier_denied, invalid_key)
+// or a null (transport failure) is NEVER a capture trigger -- failure
+// visibility is Phase 250's refusal territory, not an enrichment miss
+// (research "Where the readiness probe should run").
+//
+// Each successful capture logs a scalar enrichment_queue_captured
+// memory_event (framework handle + score only), mirroring the existing
+// brain_packet_rejected precedent's _logEventBestEffort mechanism above --
+// best-effort, silently skipped when opts.db is absent.
+// ----------------------------------------------------------------------------
+
+function _isCapturableResult(result) {
+  return result !== null && typeof result === 'object' && !result.error;
+}
+
+function _maybeCaptureEnrichmentMiss(frameworkName, result, opts) {
+  try {
+    if (!opts || typeof opts !== 'object') return;
+    if (typeof opts.roomDir !== 'string' || opts.roomDir.length === 0) return;
+    if (!_isCapturableResult(result)) return;
+    // eslint-disable-next-line global-require
+    const enrichmentQueue = require('./enrichment-queue.cjs');
+    const captureResult = enrichmentQueue.captureReadinessMiss(
+      opts.roomDir, frameworkName, result, opts.contextClass || {}
+    );
+    if (captureResult && captureResult.queued) {
+      _logEventBestEffort(opts.db, 'enrichment_queue_captured', {
+        framework: frameworkName,
+        // Phase 339 (2026-09-03, FLIP-03): recognizes Theo's orchestration_readiness
+        // payload shape (result.score, an integer 0-4 whose practical ceiling is 3,
+        // /home/jsagi/Theo/src/mcp/content/orchestration-readiness.ts:494) alongside
+        // the incumbent's result.readiness_score, in the SAME expression, each
+        // guarded by typeof === 'number' (D-04) and never on key presence. The
+        // incumbent's field is checked first so today's log bytes stay identical
+        // when both are somehow present. Deliberately does NOT rescale, does NOT
+        // default a missing score to 0, and does NOT read coverage -- coverage
+        // semantics live in the capture path in lib/core/enrichment-queue.cjs
+        // (plan 339-05's territory). null is still the final fallback so an
+        // unrecognized shape is honestly null rather than a coerced zero.
+        readiness_score: (typeof result.readiness_score === 'number')
+          ? result.readiness_score
+          : ((typeof result.score === 'number') ? result.score : null),
+        source_path: 'system:enrichment-queue',
+      });
+    }
+  } catch (_e) {
+    // Best-effort capture side branch: NEVER surfaces to the wrapper caller.
+  }
+}
+
+/**
+ * Loop-contract `discover_structure` tool.
+ *
+ * @param {string} frameworkName
+ * @param {object} [opts] - { roomDir?, contextClass?, db? }. Phase 249-01:
+ *   when opts.roomDir is set and the resolved payload carries
+ *   grounded === false, best-effort captures an enrichment-queue entry.
+ *   Absent opts / opts.roomDir: zero capture, zero throw, unchanged
+ *   backward-compatible behavior.
+ * @returns {Promise<object|null>}
+ */
+async function discoverStructure(frameworkName, opts) {
+  const result = await callTool('discover_structure', { framework_name: frameworkName });
+  _maybeCaptureEnrichmentMiss(frameworkName, result, opts);
+  return result;
+}
+
+/**
+ * Loop-contract `orchestration_readiness` tool.
+ *
+ * @param {string} frameworkName
+ * @param {object} [opts] - { roomDir?, contextClass?, db? }. Phase 249-01:
+ *   when opts.roomDir is set and the resolved payload carries
+ *   readiness_score <= 2, best-effort captures an enrichment-queue entry.
+ *   Absent opts / opts.roomDir: zero capture, zero throw, unchanged
+ *   backward-compatible behavior.
+ * @returns {Promise<object|null>}
+ */
+async function orchestrationReadiness(frameworkName, opts) {
+  const result = await callTool('orchestration_readiness', { framework_name: frameworkName });
+  _maybeCaptureEnrichmentMiss(frameworkName, result, opts);
+  return result;
+}
+
+/**
+ * Loop-contract `feeds_into_chains` tool.
+ * @param {string[]} seeds
+ * @param {number} [maxHops]
+ * @returns {Promise<object|null>}
+ */
+async function feedsIntoChains(seeds, maxHops) {
+  return callTool('feeds_into_chains', { seeds: seeds, max_hops: maxHops });
+}
+
+// Quick 260819-c8j (WS-C1): the enum-only Part 8 shape gate for
+// recommendChain(), below. `problemTypeOf(tuple)` (lib/core/insight-
+// sensors.cjs) returns `tuple.problem_type` VERBATIM off the /mos:diagnose
+// tuple, so the `brain_framework_chain:<pt>` companion string is NOT
+// structurally guaranteed to be a Brain ProblemType enum -- it could carry
+// anything the classifier wrote. A handle-shaped token (letter-initial,
+// letters/digits/space/hyphen only, 1..49 chars) cannot carry prose, a
+// sentence, a URL, an email, or a payload, so this regex is the enum-only
+// enforcement at the wire: a non-handle input is refused locally with ZERO
+// network rather than forwarded and hoped-safe.
+const PROBLEM_TYPE_HANDLE_RE = /^[A-Za-z][A-Za-z0-9 -]{0,48}$/;
+
+// Projects the LOCAL sensor slugs (`problemTypeOf`'s output shape) onto the
+// Brain's canonical ProblemType node names. This is a PROJECTION, not an
+// allow-list: an unmapped token still passes THROUGH _normalizeBrainProblemType
+// unchanged, because data/brain-census.generated.json records 26 live
+// ProblemType nodes on the Brain and this map names only the 3 the local
+// sensors are known to emit today -- a local allow-list would silently block
+// the other 23 valid types the Brain already knows how to answer.
+//
+// Deliberately NOT the same map as this file's sibling,
+// lib/brain/chain-recommender.cjs's PROBLEM_TYPE_ALIASES (:71 there): that
+// map projects onto the LOCAL router codes UDP/IDP/WDP (a different target,
+// consumed by problem-type-router.cjs), not onto Brain ProblemType node
+// names. The two are not shared on purpose, so a reader cannot conflate a
+// local router code with a Brain node name. This stays true of BOTH tables
+// below.
+//
+// Phase 339 (2026-09-03): TWO tables, not one, plus an origin-keyed
+// selector. Theo matches WHERE toLower(m.id) = toLower($problemType) AND
+// NOTHING MORE (/home/jsagi/Theo/src/mcp/content/recommend-chain.ts:320-321,
+// the matching rule stated at :65-69): no trimming, no hyphen folding, no
+// suffix stripping, no fuzzy fallback. The incumbent's target value
+// 'Undefined Problem' matches nothing on Theo's :DomainConcept nodes, whose
+// ids are the exact strings 'UnDefined' / 'IllDefined' / 'WellDefined' /
+// 'Wicked' / 'Trinity' / 'Compass' (recommend-chain.ts:27-47). A single
+// shared table can never be correct for both origins at once -- the map
+// ITSELF is what breaks the post-flip match, so the map itself is what this
+// phase fixes, before the flip ships, not with it.
+//
+// This mechanism deliberately does NOT key on a response, does not retry on
+// PROBLEM_TYPE_NOT_FOUND using available_problem_types, and does not sniff
+// the server. A runtime retry would cost a round trip on every miss, would
+// paper over a vocabulary bug at runtime instead of fixing it, and would
+// break the property this selector exists to preserve: a
+// MINDRIAN_BRAIN_URL revert moves vocabulary and URL together, with no
+// second edit anywhere.
+//
+// Canon Part 8: both tables carry problem-type handles only, closed
+// vocabulary, never room content.
+const BRAIN_PROBLEM_TYPE_ALIASES_INCUMBENT = Object.freeze({
+  'undefined': 'Undefined Problem',
+  udp: 'Undefined Problem',
+  'ill-defined': 'Ill-Defined Problem',
+  ill_defined: 'Ill-Defined Problem',
+  idp: 'Ill-Defined Problem',
+  'well-defined': 'Well-Defined Problem',
+  well_defined: 'Well-Defined Problem',
+  wdp: 'Well-Defined Problem',
+});
+
+const BRAIN_PROBLEM_TYPE_ALIASES_THEO = Object.freeze({
+  'undefined': 'UnDefined',
+  udp: 'UnDefined',
+  'ill-defined': 'IllDefined',
+  ill_defined: 'IllDefined',
+  idp: 'IllDefined',
+  'well-defined': 'WellDefined',
+  well_defined: 'WellDefined',
+  wdp: 'WellDefined',
+});
+
+// The set of Brain origins whose problem-type vocabulary is Theo's, not the
+// incumbent's. An ARRAY, not a bare string literal, so a Theo staging
+// origin is a one-line addition rather than a re-architecture. Exported so
+// lib/core/doctor/class-m-brain-smoke.cjs can key its per-origin node floor
+// on this SAME set (plan 339-12), rather than minting a second copy of the
+// origin list.
+const THEO_ORIGINS = Object.freeze(['https://theo-mcp.onrender.com']);
+
+// Selects the alias table by the resolved origin (BRAIN_URL, the same
+// module-scope const getBrainUrl() reads). Anything not in THEO_ORIGINS
+// gets the incumbent vocabulary -- the correct default while line 24 names
+// the incumbent, and the conservative default afterwards for any origin
+// this set does not yet name.
+function _brainProblemTypeAliases() {
+  return THEO_ORIGINS.indexOf(BRAIN_URL) !== -1
+    ? BRAIN_PROBLEM_TYPE_ALIASES_THEO
+    : BRAIN_PROBLEM_TYPE_ALIASES_INCUMBENT;
+}
+
+/**
+ * _normalizeBrainProblemType(raw) -> canonical string | null
+ * null when raw is not a string, is empty after trim, or fails the
+ * PROBLEM_TYPE_HANDLE_RE shape gate above. A known local slug (matched
+ * case-insensitively on the trimmed token) projects to its Brain canonical
+ * name; anything else well-shaped passes through unchanged for the Brain to
+ * rule on honestly.
+ * @param {*} raw
+ * @returns {string|null}
+ */
+function _normalizeBrainProblemType(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (!PROBLEM_TYPE_HANDLE_RE.test(trimmed)) return null;
+  const lc = trimmed.toLowerCase();
+  const table = _brainProblemTypeAliases();
+  if (Object.prototype.hasOwnProperty.call(table, lc)) {
+    return table[lc];
+  }
+  return trimmed;
+}
+
+/**
+ * Loop-contract `recommend_chain` tool. A straight sibling of
+ * feedsIntoChains() above: ZERO result reshaping, so sentinels
+ * (tier_denied/invalid_key) and the transport-null pass through untouched
+ * (247-02 convention) -- match its behavior byte-for-byte except for the
+ * pre-wire shape gate this tool needs and the sibling above does not.
+ *
+ * Live output shape (verified live 2026-08-19 AND now contractually pinned):
+ *   { tool, backend, grounded, problem_type, seed_candidates,
+ *     chain: [{ step, framework, pagerank, edge_confidence, commands }],
+ *     note, execution_hint }
+ * The Brain team froze recommend_chain as a v1 ADDITIVE-ONLY contract in
+ * their own repo (ProblemsWorthSolving-Brain, docs/RECOMMEND-CHAIN-
+ * CONTRACT.md, commit 721d8e1): under v1 these keys may gain siblings but
+ * will not be renamed or removed, and an unknown problem type is GUARANTEED
+ * to come back as { grounded: false, chain: [] } rather than an error or a
+ * throw. This wrapper does not depend on any of that shape -- it is a pure
+ * pass-through -- so a v2 or an out-of-contract change degrades at the
+ * consumer (lib/brain/chain-recommender.cjs), never here.
+ *
+ * @param {string} problemType
+ * @param {number} [maxSteps]
+ * @returns {Promise<object|null>}
+ */
+async function recommendChain(problemType, maxSteps) {
+  const normalized = _normalizeBrainProblemType(problemType);
+  if (normalized === null) {
+    // Shape gate failed: refuse locally, zero network, zero key consumption,
+    // zero auto-register attempt. T-c8j-01 mitigation.
+    return { error: 'invalid_problem_type', tool: 'recommend_chain' };
+  }
+  const steps = Number.isInteger(maxSteps) && maxSteps >= 1 && maxSteps <= 6 ? maxSteps : 6;
+  return callTool('recommend_chain', { problem_type: normalized, max_steps: steps });
+}
+
+// Phase 252-01 (SWEEP-01, guard sweep) -- getTier0Chain() / getFrameworkChain()
+// DELETED here. They served hardcoded, non-graph-grounded persona chains
+// with `source: 'tier0'` -- the counterfeit core the 250-01 doctrine kill
+// list (site #11) marked but deferred flipping. Live grep at 252 execution
+// time confirmed zero CJS consumers outside this file; their only consumer
+// was the conversation-mode SKILL instruction (skills/conversation-mode/
+// SKILL.md), rewritten in this same task to follow the refusal rail instead
+// of calling either function. The 247-02 do-not-widen note on the null
+// branch (`callTool()`'s transport-failure contract) is untouched -- this
+// deletion removes a local fallback CHAIN, not the null contract.
+
+// ============================================================================
+// Phase 110-03: Brain Context Packet wire enforcement (Canon Part 8 + Part 9).
+// ============================================================================
+//
+// sendPacket(packet, opts) is the SOLE typed-packet wire path. It runs:
+//   (1) D-08 layer-3 origin allowlist (the belt to the schema's suspenders --
+//       a caller who bypassed ajv still gets caught here).
+//   (2) Unknown-job guard against the closed D-02 vocabulary (12 jobs).
+//   (3) ajv in-validation (reject hard: throw + log brain_packet_rejected).
+//   (4) POST tools/call name:'brain_packet' via the existing callTool transport
+//       (degrade soft when the tool is absent: { advice:null, reason:
+//       'brain_packet_tool_absent' }; on transport error: { advice:null,
+//       reason: 'brain_unreachable' }). Never throws on Brain-side problems.
+//   (5) ajv out-validation (reject hard, degrade soft: log
+//       brain_response_rejected + return { advice:null, reason:
+//       'response_schema_invalid' }). Never throws, never partial-ingests.
+//   (6) Returns the validated out payload on success.
+//
+// ajv@8.18.0 is transitive via @modelcontextprotocol/sdk -- do NOT add it to
+// package.json (CLAUDE.md "What NOT to Use"). strict:false at runtime; the
+// strict:true build gate lives in scripts/build-brain-packet-schema.cjs. The
+// schema is draft 2020-12, so Ajv2020 is required (ajv/dist/2020).
+//
+// SHIPPED_JOBS is the D-02 closed vocabulary (locked in 110-CONTEXT D-02).
+
+const Ajv2020 = require('ajv/dist/2020').default || require('ajv/dist/2020');
+
+const _BRAIN_PACKET_SCHEMA_PATH = process.env.MINDRIAN_BRAIN_PACKET_SCHEMA
+  || path.join(__dirname, '..', '..', 'data', 'brain-packet-schema.json');
+
+const SHIPPED_JOBS = new Set([
+  'select_methodology',
+  'suggest_next_move',
+  'detect_contradiction',
+  'summarize_neighborhood',
+  'classify_room_budding',
+  'rank_assumptions',
+  'generate_feynman_explanation',
+  'strengthen_minto',
+  'prepare_investor_brief',
+  'opportunity_react',
+  'opportunity_reflect',
+  'opportunity_rank',
+]);
+
+let _ajv = null;
+let _schemaRaw = null;
+const _jobValidators = new Map(); // job -> { in: fn, out: fn }
+
+/**
+ * Lazily compile the brain-packet schema. Reads data/brain-packet-schema.json
+ * (or process.env.MINDRIAN_BRAIN_PACKET_SCHEMA, the test seam set up by 110-01)
+ * once at first use; subsequent calls reuse the in-memory Ajv instance.
+ *
+ * NOTE on the schema's pointer shape: the 110-01 schema's per-job $defs are
+ * { in: {...}, out: {...} } -- NOT { properties: { in, out } }. So the JSON
+ * pointer for a job half is #/$defs/<job>/<half>, not the planner's interfaces
+ * sketch shape #/$defs/<job>/properties/<half>. Compiled wrappers carry the
+ * root's $defs inline because ajv 8.x cannot resolve a deep JSON pointer into
+ * a schema indexed only by its absolute $id (a known ajv@8 quirk -- the build
+ * script in scripts/build-brain-packet-schema.cjs validates the root by
+ * compiling it directly with the same Ajv2020 class).
+ */
+function _ensureSchema() {
+  if (_ajv) return;
+  _schemaRaw = JSON.parse(fs.readFileSync(_BRAIN_PACKET_SCHEMA_PATH, 'utf8'));
+  _ajv = new Ajv2020({ allErrors: true, strict: false });
+  // Pre-add the root so cross-refs (FocusNode, Origin, BankedOpportunities,
+  // BrainResponse, etc.) resolve when sub-schemas reference them. Wrapper
+  // schemas below carry $defs inline as a defensive duplicate.
+  _ajv.addSchema(_schemaRaw);
+}
+
+/**
+ * Return the memoized in/out validator for a given (job, half). Half is
+ * 'in' or 'out'. Compiles on first use.
+ *
+ * @param {string} job  - D-02 jobname (must be in SHIPPED_JOBS).
+ * @param {'in'|'out'} half
+ * @returns {Function} a compiled ajv validator function.
+ */
+function _validatorFor(job, half) {
+  _ensureSchema();
+  let pair = _jobValidators.get(job);
+  if (!pair) { pair = {}; _jobValidators.set(job, pair); }
+  if (!pair[half]) {
+    pair[half] = _ajv.compile({
+      $id: 'urn:mindrian:brain-packet:' + job + ':' + half,
+      $ref: '#/$defs/' + job + '/' + half,
+      $defs: _schemaRaw.$defs,
+    });
+  }
+  return pair[half];
+}
+
+/**
+ * Reset the lazy schema state. Test hook only -- NOT part of the public API.
+ * Used by 110-05 (the per-job validation suite) and 110-04 (the pre-commit
+ * tripwire) to swap the schema seam (MINDRIAN_BRAIN_PACKET_SCHEMA) and re-run.
+ */
+function _resetSchema() {
+  _ajv = null;
+  _schemaRaw = null;
+  _jobValidators.clear();
+}
+
+/**
+ * Best-effort memory_event log. Skips silently if opts.db is absent OR if the
+ * navigation re-export throws (Brain telemetry should never break a Brain call).
+ *
+ * @param {object} db        - SQLite db handle from openRoomDb (or undefined).
+ * @param {string} eventType - one of 'brain_packet_rejected' /
+ *                             'brain_response_rejected' / 'brain_legacy_path_used'
+ *                             (Phase 110-02 added these to EVENT_TYPES).
+ * @param {object} payload   - { job, errors, source_path, ... } scalars only.
+ */
+function _logEventBestEffort(db, eventType, payload) {
+  if (!db) return;
+  try {
+    // Lazy-require to avoid a circular load between brain-client.cjs and
+    // navigation.cjs (navigation.cjs does NOT require brain-client.cjs today,
+    // but this stays robust if a future closure of the loop ever happens).
+    require('./navigation.cjs').logMemoryEvent(db, eventType, payload || {});
+  } catch (_e) { /* best-effort */ }
+}
+
+/**
+ * Detect a "Brain doesn't recognize this tool" error in the callTool result.
+ * Per the callTool JSDoc around line ~329, the result on a server-side error
+ * is shaped { text: 'Error: ...' } (Cypher errors pass through the same way).
+ * A missing brain_packet tool will show up as -32602 / 'unknown tool' / 'No
+ * such tool' / a 404-ish marker. Be liberal: D-04 says "degrade gracefully
+ * when the Brain doesn't recognize the contract."
+ *
+ * @param {*} result
+ * @returns {boolean}
+ */
+function _looksLikeUnknownToolError(result) {
+  if (!result) return false;
+  let t = '';
+  if (typeof result === 'string') t = result;
+  else if (typeof result === 'object') t = result.text || result.error || JSON.stringify(result);
+  const s = String(t).toLowerCase();
+  return s.includes('unknown tool')
+    || s.includes('no such tool')
+    || s.includes('method not found')
+    || s.includes('-32602')
+    || (s.includes('brain_packet') && (s.includes('not') || s.includes('unknown')))
+    || s.includes('tool not found');
+}
+
+/**
+ * Unwrap the callTool result to the Brain response object the schema wants to
+ * validate. callTool returns:
+ *   - an array (the tools/call content array on a successful brain_query-style
+ *     parsed result),
+ *   - or a parsed object (when content[0] is text and parses as JSON),
+ *   - or { text: '...' } (text content that did not parse as JSON, or an error
+ *     string),
+ *   - or null (unreachable / no API key -- handled before this is called).
+ *
+ * For brain_packet specifically, the Brain side (when implemented) will return
+ * a BrainResponse-shaped JSON object: { job_id, suggestions: [...] }. Older
+ * test transports inject [{ type:'text', text: JSON.stringify(...) }] (the raw
+ * MCP content array shape). Both shapes are unwrapped to the response object.
+ *
+ * @param {*} result
+ * @returns {object}
+ */
+function _parseBrainResult(result) {
+  if (Array.isArray(result)) {
+    for (const item of result) {
+      if (item && item.type === 'text' && typeof item.text === 'string') {
+        try { return JSON.parse(item.text); } catch (_) { /* fall through */ }
+      }
+    }
+    return { suggestions: [] };
+  }
+  if (result && typeof result === 'object') {
+    // text-only error/string shape -- try to parse, else return { suggestions: [] }
+    if (typeof result.text === 'string' && !result.job_id && !result.suggestions) {
+      try { return JSON.parse(result.text); } catch (_) { return { suggestions: [] }; }
+    }
+    return result;
+  }
+  if (typeof result === 'string') {
+    try { return JSON.parse(result); } catch (_) { return { suggestions: [] }; }
+  }
+  return { suggestions: [] };
+}
+
+// ----------------------------------------------------------------------------
+// _warnLegacyOnce -- the D-10 dual-path deprecation guard.
+//
+// As of v1.13.0-beta.3 there is NO legacy free-form Brain *job* call site --
+// new job-style work goes through sendPacket(). The guard ships now as a
+// forward-looking contract: if a free-form job helper is ever added before
+// v1.14.0, it MUST call _warnLegacyOnce() first; in v1.14.0 both the helper
+// and this guard are deleted.
+//
+// query() / write() / search() / schema() / callTool() / ask() / stats() are
+// NOT "legacy" -- raw-Cypher methodology lookups carry only generic handles
+// (framework names, phase identifiers, problem-type enums) and are Part-8
+// clean by construction; they are PERMANENT.
+//
+// Module-level flag idiom mirrors checkFilePermissions._warned (the existing
+// once-per-process warning pattern in this file).
+// ----------------------------------------------------------------------------
+
+let _legacyPathWarned = false;
+
+function _warnLegacyOnce(db) {
+  if (_legacyPathWarned) return;
+  _legacyPathWarned = true;
+  // eslint-disable-next-line no-console
+  console.warn('[mindrian-os] legacy free-form Brain job call detected. '
+    + 'Migrate to brain-client.sendPacket() -- the legacy job path is removed in v1.14.0.');
+  _logEventBestEffort(db, 'brain_legacy_path_used', {
+    source_path: 'system:brain-legacy',
+  });
+}
+
+/**
+ * Validate-then-route a Brain Context Packet. The ONLY door for typed Brain
+ * job calls.
+ *
+ * Per CONTEXT D-07 "reject hard, degrade soft":
+ *   - Bad in-packet (a programmer error in OUR code) -> throw.
+ *   - Bad origin (D-08 layer 3) -> throw.
+ *   - Unknown job -> throw.
+ *   - Brain unreachable -> { advice: null, reason: 'brain_unreachable' } (no throw).
+ *   - brain_packet tool absent on the Brain -> { advice: null, reason:
+ *     'brain_packet_tool_absent' } (no throw, no log -- D-04 graceful degrade
+ *     is NOT a bad-response situation; a half-trusted response IS one).
+ *   - Bad out-response -> { advice: null, reason: 'response_schema_invalid' }
+ *     + log brain_response_rejected. NEVER throws, NEVER partial-ingests.
+ *
+ * @param {object} packet - MUST come from lib/core/navigation.cjs::buildBrainPacket
+ *                          (D-01 chokepoint; D-08 layer 2 enforces lexically;
+ *                          D-08 layer 3 is the origin check below).
+ * @param {object} [opts] - { db?, roomDir?, __transport? }
+ *                          db        -> the SQLite handle for the memory_event log
+ *                          roomDir   -> reserved for future use; not read today
+ *                          __transport -> optional test seam: a function
+ *                                         (toolName, args) => Promise<result> that
+ *                                         replaces callTool (lets tests inject a
+ *                                         fake without require.cache surgery)
+ * @returns {Promise<object>} the validated Brain out on success; a no-advice
+ *                            sentinel on a soft-degrade.
+ * @throws on a bad in-packet, a bad origin (D-08 layer 3), or an unknown job.
+ */
+// PARKED (2026-07-30, Phase 239, BRAIN-03): ZERO production sendPacket(
+// consumers. Census across lib/, scripts/, bin/, pipelines/: the only
+// definition is this one; non-definition references are this file's own
+// export/comments, tests/test-brain-packet-validation-per-job.cjs, and the
+// D-08 layer-2 guard (scripts/check-schema-aliases.cjs --check-sendpacket).
+// This reconciles two prior contradictory claims: navigation/packet.cjs:105
+// ("zero production consumers today") was TRUE; test-150-brain-egress.cjs:12
+// ("FIRST real sendPacket consumer") was FALSE and is corrected in this
+// change. RULING: PARKED, not wired -- wiring it to a real job is net-new
+// feature work, forbidden inside this remediation-only milestone (RESEARCH.md
+// A3, a navigator-equivalent ruling, cheap to overturn). CONSEQUENCE: the
+// PB8-10 belt below (step 3.5) is correct code on an unreached path -- do NOT
+// count it as live Part 8 coverage; the live in-process coverage is sibling
+// plan 239-05's raw-field guard in hatAwareRecommend()/suggestValidationSteps().
+// RE-OPEN CONDITION: the first real caller. Caught by the D-08 layer-2
+// pre-commit guard (requires a preceding buildBrainPacket() call) and by
+// tests/test-239-sendpacket-parked.cjs LEG 1's census. See also the matching
+// ADR amendment in docs/architecture/SUBSTRATE-CONTRACT.md (Phase 239-06).
+async function sendPacket(packet, opts) {
+  const o = opts || {};
+
+  // (1) D-08 layer 3 -- the belt to the schema's suspenders. Runs FIRST so a
+  //     caller who bypassed ajv still gets caught.
+  if (!packet || typeof packet.origin !== 'string') {
+    throw new Error('brain packet missing origin (D-08): packets must come from buildBrainPacket');
+  }
+  if (packet.origin === 'test_fixture' && process.env.MINDRIAN_TEST_MODE !== '1') {
+    throw new Error('brain packet origin "test_fixture" only valid when MINDRIAN_TEST_MODE=1');
+  }
+  if (packet.origin !== 'navigation_api' && packet.origin !== 'test_fixture') {
+    throw new Error('brain packet origin "' + packet.origin
+      + '" not in the closed allowlist (D-08): navigation_api | test_fixture');
+  }
+
+  // (2) Unknown-job guard.
+  if (!SHIPPED_JOBS.has(packet.job)) {
+    throw new Error('brain packet: unknown job "' + packet.job
+      + '" (not in the D-02 closed vocabulary)');
+  }
+
+  // (3) in-validation -- reject hard.
+  const inFn = _validatorFor(packet.job, 'in');
+  if (!inFn(packet)) {
+    // Pitfall 1: snapshot errors immediately -- validate.errors is overwritten
+    // on every subsequent validate() call.
+    const errsSnapshot = (inFn.errors || []).slice();
+    const errStr = errsSnapshot
+      .map(function (e) { return (e.instancePath || '(root)') + ' ' + (e.message || ''); })
+      .join('; ');
+    _logEventBestEffort(o.db, 'brain_packet_rejected', {
+      job: packet.job,
+      errors: errsSnapshot.length,
+      source_path: 'system:brain-packet',
+    });
+    throw new Error('brain packet rejected for job "' + packet.job + '": ' + errStr);
+  }
+
+  // (3.5) PB8-10 -- the in-sendPacket defense-in-depth belt. sendPacket is the
+  //       SOLE typed-packet wire path; this is the last LOCAL check before the
+  //       packet goes on the wire. It COMPLEMENTS the required PreToolUse hook
+  //       (D-02, the primary), never replaces it. Runs the pure LOCAL classifier
+  //       (zero network, zero judge wire, D-01):
+  //         - 'block' verdict -> refuse the send, returning the same soft-degrade
+  //           sentinel the unreachable path uses; best-effort log brain_egress_blocked.
+  //         - 'ambiguous' verdict -> belt posture: the hook is the gate, so do NOT
+  //           double-prompt; best-effort log brain_egress_ambiguous and allow through.
+  //       The whole belt is wrapped so a belt-INTERNAL error degrades to the
+  //       existing behavior (the hook remains the primary). It NEVER throws and
+  //       NEVER opens a Brain wire to judge.
+  try {
+    const _guard = require('./part8-egress-guard.cjs');
+    const _verdict = _guard.classify(packet, { toolName: 'brain_packet' });
+    if (_verdict && _verdict.verdict === 'block') {
+      _logEventBestEffort(o.db, 'brain_egress_blocked', {
+        egress_class: _verdict.class || 'content_set',
+        verdict: 'block',
+        count: 1,
+        created_by: 'system',
+        source_path: 'system:brain-packet',
+      });
+      return { advice: null, reason: 'egress_blocked' };
+    }
+    if (_verdict && _verdict.verdict === 'ambiguous') {
+      _logEventBestEffort(o.db, 'brain_egress_ambiguous', {
+        egress_class: _verdict.class || 'unknown',
+        verdict: 'ambiguous',
+        count: 1,
+        created_by: 'system',
+        source_path: 'system:brain-packet',
+      });
+      // belt posture: allow the hook to have been the gate; do not double-prompt.
+    }
+  } catch (_e) {
+    // belt-internal error degrades to existing behavior (the hook is the primary, D-02).
+  }
+
+  // (4) Build the wire envelope + POST. Reuse callTool's transport (it does
+  //     tools/call over Streamable HTTP + SSE-parse). Tests can inject a fake
+  //     via opts.__transport.
+  const transport = (typeof o.__transport === 'function') ? o.__transport : callTool;
+  let result;
+  try {
+    result = await transport('brain_packet', { packet: packet });
+  } catch (_e) {
+    // Network / transport error: treat like the Brain being unreachable.
+    // No log -- it is not a leak, and not a contract violation either.
+    return { advice: null, reason: 'brain_unreachable' };
+  }
+  if (result == null) {
+    // callTool returns null when there is no API key or when the HTTP layer
+    // returned a non-ok status -- functionally the same as "Brain unreachable".
+    return { advice: null, reason: 'brain_unreachable' };
+  }
+  if (_looksLikeUnknownToolError(result)) {
+    // The live Brain has no brain_packet tool yet (D-04 generalized).
+    // Degrade soft, NO brain_response_rejected log -- this is NOT a bad
+    // response; it is the absence of a contract handler.
+    return { advice: null, reason: 'brain_packet_tool_absent' };
+  }
+
+  // (5) out-validation -- reject hard but degrade soft.
+  const parsed = _parseBrainResult(result);
+  const outFn = _validatorFor(packet.job, 'out');
+  if (!outFn(parsed)) {
+    const errsSnapshot = (outFn.errors || []).slice();
+    _logEventBestEffort(o.db, 'brain_response_rejected', {
+      job: packet.job,
+      errors: errsSnapshot.length,
+      source_path: 'system:brain-packet',
+    });
+    // NEVER throw on a bad response; NEVER partial-ingest.
+    return { advice: null, reason: 'response_schema_invalid' };
+  }
+
+  // (6) Success -- the caller gets a known-good shape (typically then calls
+  //     navigation.storeBrainSuggestions).
+  return parsed;
+}
+
+module.exports = {
+  isAvailable,
+  ensureAvailable,
+  getAutoRegisterFailureReason,
+  getApiKey,
+  callTool,
+  query,
+  write,
+  search,
+  smartSearch,
+  ask,
+  askOp,
+  // Quick 260910-hni: the pure local rung heuristic ask()/_composeTheoAsk
+  // uses to classify a question before the one recommend_chain wire call.
+  // A NAMED export per the locked design, not a _test-only member.
+  _inferRungFromQuestion,
+  // 354-09 (THEO-01): the closed rung enum ask()'s opts.problem_type and
+  // _composeTheoAsk's opts.rung are validated against.
+  THEO_RUNG_SET,
+  schema,
+  stats,
+  getBrainUrl,
+  // Phase 339 (FLIP-02): the set of Brain origins whose problem-type
+  // vocabulary is Theo's. Exported so class-m-brain-smoke.cjs's per-origin
+  // node floor (plan 339-12) keys on this SAME set rather than minting a
+  // second copy.
+  THEO_ORIGINS,
+  enrichCausalEdges,
+  hatAwareRecommend,
+  suggestValidationSteps,
+  // getFrameworkChain: DELETED (Phase 252-01, SWEEP-01) -- the counterfeit
+  // Tier-0 hardcoded-chain fallback. Zero CJS consumers at deletion time.
+  // Phase 247-02 (CONTRACT-01): loop-contract read wrappers. brain_stats is
+  // the sixth loop tool and is already exported above as stats().
+  normalizeFrameworkName,
+  loopSearch,
+  discoverStructure,
+  orchestrationReadiness,
+  feedsIntoChains,
+  // Quick 260819-c8j (WS-C1): recommend_chain is the seventh loop-contract
+  // read wrapper, a sibling of feedsIntoChains above.
+  recommendChain,
+  // Phase 110-03 (Brain Context Packet Contract wire-level enforcement):
+  // sendPacket is the SOLE typed-packet wire path; _warnLegacyOnce is the
+  // forward-looking D-10 deprecation guard with no current call site.
+  sendPacket,
+  _warnLegacyOnce,
+  // SEC-01/SEC-02 + CASCADE-06 test surface: not part of the public API.
+  // See lib/memory/security-trifecta.test.cjs + brain-cache-lru.test.cjs.
+  // Helpers are small and pure. sessionCache + _ensureSession + _hashKey +
+  // SESSION_TTL_MS are exposed for Phase 87-07 cache-behavior tests.
+  // Phase 110-03: ajv middleware test seam (_resetSchema clears the lazy
+  //   ajv state so a test can swap MINDRIAN_BRAIN_PACKET_SCHEMA and re-run;
+  //   _setLegacyWarned resets the once-per-session deprecation flag;
+  //   _validatorFor / _parseBrainResult / _looksLikeUnknownToolError are
+  //   the helpers Plan 110-05 covers in its per-job round-trip suite).
+  _test: {
+    sanitizeCypherInput,
+    checkFilePermissions,
+    sessionCache,
+    SESSION_TTL_MS,
+    _hashKey,
+    _ensureSession,
+    _resetSchema,
+    _validatorFor,
+    _parseBrainResult,
+    _looksLikeUnknownToolError,
+    _ensureSchema,
+    SHIPPED_JOBS,
+    _setLegacyWarned: function (v) { _legacyPathWarned = !!v; },
+    // Quick 260903-eit: reset seam for query()'s unrecognized-shape
+    // warn-once flag, mirroring _setLegacyWarned above.
+    _setQueryShapeWarned: function (v) { _queryShapeWarned = !!v; },
+    // Phase 250-04 test surface: silent registration internals.
+    _tryAutoRegister,
+    _installTokenPath,
+    // Phase 259 (TRUST-01) test surface: the pure 429 wait-schedule helpers,
+    // so the exact D-01/D-02 schedule is unit-tested with zero sleeps.
+    _parseRetryAfterMs,
+    _rateLimitWaitMs,
+    // Quick 260910-hni test surface: the composer's injectable deps seam
+    // and the widened askOp recognizer, both offline-drivable with zero
+    // network (see tests/test-339-theo-ask-compose.cjs).
+    _composeTheoAsk,
+    _normalizeAskOpResult,
+  },
+};

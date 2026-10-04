@@ -1,0 +1,1920 @@
+'use strict';
+
+/*
+ * Copyright (c) 2026 Mindrian. BSL 1.1.
+ *
+ * Phase 166-02 -- chain-executor.cjs (EXEC-01 / EXEC-02 / EXEC-03 / EXEC-04 / EXEC-06)
+ * ===================================================================================
+ * runChain is the ONE shared gated loop in lib/core, called by BOTH the CLI entry and
+ * the MCP server through thin command wrappers (Tri-Polar parity, D-166-04). It takes a
+ * sequence of reaches/commands and runs it as autopilot-with-gates: invoke a step,
+ * capture its structured output, pass that output (carrying the quality enum) into the
+ * next step, and loop. Auto-run steps the gate greenlights; HALT at material-decision
+ * steps and hand to the Tri-Context Decision Gate (Canon Part 3). No consumer owns a
+ * loop -- act / pipeline / ignite all call this one spine.
+ *
+ * Extracted and generalized from the donor loop in scripts/act-command.cjs (planChainRun
+ * + walk at act-command.cjs:131-147; the stop / gate render at act-command.cjs:172-224;
+ * the workflow_stage journaling at act-command.cjs:245-295). No new dispatch path.
+ *
+ * NEXT-STEP AUTHORITY (EXEC-01 + B2 + SPEC Out-of-scope): the loop re-calls decideFn()
+ * per iteration to re-derive the next reach, and records its return shape UNCHANGED
+ * (B2 -- never reshape decide()'s return). decideFn has NO DEFAULT (Phase 237-03,
+ * REACH-01): the loop's own ({step,index},{previousOutput}) call shape matches none
+ * of the real navigation-engine.cjs decide()'s documented turn/context fields, so a
+ * default that fed it straight to decide() reliably computed and stored an EMPTY
+ * decision that nothing downstream reads (a 27-hit grep found zero consumers).
+ * decideFn is therefore an OPTIONAL injectable seam ONLY: absent an adapter, no
+ * decision is computed and trace[i].decision_trace stays null. The ONE supported
+ * caller adapts this call onto the real decide({userText,sectionPath,sessionId},
+ * context) contract -- see scripts/act-command.cjs (Phase 172-08 CIRS R4). Whichever
+ * decideFn is (or is not) supplied, recipe-maps.rankedNextReach stays a contract-only
+ * reader (live nav-engine consumption of the projection deferred with Phase 157); the
+ * loop NEVER substitutes the projection's ranked list for decide().
+ *
+ * NO convergence stop (B3): the SEED-032 / imported-harness "loop until all PASSING"
+ * convergence branch is REJECTED. The stop condition is posture / quality / maxSteps
+ * ONLY -- the chain halts at the first material step per Canon Part 3.
+ *
+ * BOUNDED CONDITIONAL BACK-EDGE (SHARED-08, Phase 347-07): a step may declare
+ * `on_fail`, naming the step id to re-run when the verdict is low-quality or a
+ * failed critique -- a conditional back-edge in the resolved chain, resolved by
+ * the one named `resolveSuccessor` below. This is NOT a re-litigation of B3
+ * above. B3 rejects a LOOP-UNTIL-ALL-PASSING convergence stop condition: a
+ * hidden retry-forever branch that keeps the chain alive until every step
+ * reports PASSING, which would make "all passing" a second, unstated stop
+ * condition alongside posture / quality / maxSteps. An `on_fail` back-edge is
+ * the opposite shape: it is a DECLARED route on the resolved chain, authored by
+ * the caller before the chain ever runs, not a convergence loop invented by the
+ * executor at run time. The stop condition is still posture, quality and
+ * maxSteps ONLY -- a revisited step charges `stepsRun` exactly like a Ralph
+ * retry does at `_ralphSafeRetry` (:271-284's own bounded-exception precedent),
+ * so the EXEC-06 `maxSteps` brake below is the one and only bound on how many
+ * times a back-edge can fire. The loop never runs until all steps pass; it runs
+ * until the caller's own declared route says stop, or the budget says stop,
+ * whichever comes first. Therefore this is not B3 reopened.
+ *
+ * The six-callback contract (the SPEC):
+ *   runChain(steps, {
+ *     postureFn,    // (command) -> posture authority  (default: recipe-maps.postureForCommand)
+ *     gateFn,       // (step, posture, priorOutput) -> 'run' | 'halt'  (default: makeGateFn)
+ *     onStep,       // (step, previousOutput) -> { chain_output, quality }  (dispatches framework-runner)
+ *     provenanceFn, // optional (step, result) -> frontmatter  (pipeline supplies; act/ignite pass null)
+ *     maxSteps,     // hard cap (budget brake, EXEC-06)
+ *     onHalt,       // (step, contexts) -> the user's verb at the Tri-Context gate
+ *     decideFn,     // OPTIONAL injectable decide() seam; NO DEFAULT (237-03, REACH-01).
+ *                   // Absent, no decision is computed and decision_trace stays null.
+ *                   // The only supported caller ADAPTS runChain's ({step,index},
+ *                   // {previousOutput}) shape onto decide()'s real
+ *                   // ({userText,sectionPath,sessionId}, context) contract --
+ *                   // see scripts/act-command.cjs (Phase 172-08 CIRS R4).
+ *   }) -> { trace, completed, haltedAt }
+ *
+ * Canon Part 8 (Graph Boundary): runChain itself opens NO Brain wire. Posture is joined
+ * from the LOCAL command-registry via recipe-maps; egress (if any) is the framework-runner's
+ * existing chokepoint, reached through onStep. This file makes zero Brain calls and no raw
+ * fetch.
+ *
+ * Canon Part 7 (Reuse Before Build): ~80-85 percent repoint of shipped code (the
+ * act-command loop, the recipe-maps posture authority, the navigation-engine decide(),
+ * the framework-runner brick). Net-new is the contract + the gate predicate + the trace
+ * join.
+ *
+ * House rule: hyphens only, no em-dashes.
+ */
+
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+// EXEC-05 (D-166-01): the bounded retry-with-backoff substrate the resilient
+// onStep dispatch wraps. Lazily required so the legacy synchronous path never
+// pays for it. chain-retry.cjs is a pure timing/error helper (zero Brain wire).
+let _retry = null;
+function _loadRetry() {
+  if (_retry !== null) return _retry;
+  try {
+    _retry = require(path.join(__dirname, 'chain-retry.cjs'));
+  } catch (_e) {
+    _retry = false;
+  }
+  return _retry;
+}
+
+// EXEC-05 resume/journal substrate (D-166-02): the SOLE chain-state truth from
+// Wave 1. The resilient path journals each completed step via recordStep and
+// honors the isNext hard gate on resume so a partial re-run re-enters at the
+// failed step WITHOUT re-running upstream. No new orchestration path is built.
+let _pipelineState = null;
+function _loadPipelineState() {
+  if (_pipelineState !== null) return _pipelineState;
+  try {
+    _pipelineState = require(path.join(__dirname, '..', 'mcp', 'pipeline-state.cjs'));
+  } catch (_e) {
+    _pipelineState = false;
+  }
+  return _pipelineState;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 347-04 (SHARED-03): the per-step chain_state record write. Connects
+// this loop to the chain-state substrate landed in Phase 347-03
+// (lib/core/navigation/chain-state.cjs) so a step's real output becomes an
+// anchored room-graph node before it folds into the next step's
+// previousOutput, on BOTH runChain paths, as a PROJECTION of
+// lib/mcp/pipeline-state.cjs rather than a second chain-state memory
+// (docs/2026-09-14-CHAIN-SHARED-STATE-CONTRACT.md Section 6). Lazily
+// required, mirroring _loadRecipeMaps / _loadRetry / _loadPipelineState
+// above, so module load stays free of the navigation graph -- the Part 8
+// leak scan treats this file as a CODE_SURFACE and a top-level pull would
+// widen its import graph for every caller.
+// ---------------------------------------------------------------------------
+let _navigation = null;
+function _loadChainState() {
+  if (_navigation !== null) return _navigation;
+  try {
+    _navigation = require('./navigation.cjs');
+  } catch (_e) {
+    _navigation = false;
+  }
+  return _navigation;
+}
+
+// Mint one run_id per runChain invocation: every chain_state record for this
+// run shares it. A short random hex suffix (node:crypto, a built-in already
+// used the same way by edges.cjs for edge ids) keeps two chains started in
+// the same millisecond from colliding.
+function _mintChainRunId() {
+  return 'run:' + Date.now() + ':' + crypto.randomBytes(4).toString('hex');
+}
+
+// Resolve the caller-owned db handle for the per-step record write (Canon
+// Part 9: the executor reaches room.db ONLY through the navigation
+// chokepoint's caller-owned handle trio, exactly as chain-step-dispatcher.cjs
+// already does). Prefers an explicitly-supplied opts.db; otherwise, when
+// opts.roomDir is present, opens through the chokepoint's own caller-owned
+// open call and marks the handle as ours to close. Neither present, or the
+// open fails, or it returns nothing (Tier 0 cold start) degrades to db:null
+// -- the write helper below then no-ops and the loop stays byte-identical
+// to today.
+function _resolveChainStateDb(o) {
+  if (o && o.db) return { db: o.db, ownsHandle: false };
+  if (o && typeof o.roomDir === 'string' && o.roomDir.length > 0) {
+    const nav = _loadChainState();
+    if (nav && typeof nav.openRoomDbForCaller === 'function') {
+      let db = null;
+      try { db = nav.openRoomDbForCaller(o.roomDir); } catch (_e) { db = null; }
+      if (db) return { db: db, ownsHandle: true };
+    }
+  }
+  return { db: null, ownsHandle: false };
+}
+
+// Close a db handle this loop opened itself. A caller-supplied opts.db is
+// never closed here -- the caller owns it.
+function _closeChainStateDb(handle) {
+  if (!handle || !handle.ownsHandle || !handle.db) return;
+  const nav = _loadChainState();
+  if (nav && typeof nav.closeRoomDbForCaller === 'function') {
+    try { nav.closeRoomDbForCaller(handle.db); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// Resolve the structural anchor a record hangs off of: an explicit
+// opts.subjectNodeId, else the step's own declared subject_node_id, else the
+// room root node ('room:' + basename(roomDir)) when that node already
+// exists in this db (mirrors navigation/focus.cjs's own Rule 3 -- it never
+// creates the room node, only reads it). Returns null when none resolves;
+// the caller treats a null subject as a refusal, never a fabricated anchor
+// -- a chain must never halt because bookkeeping could not be anchored.
+function _resolveChainStateSubject(db, o, step) {
+  if (o && typeof o.subjectNodeId === 'string' && o.subjectNodeId.length > 0) {
+    return o.subjectNodeId;
+  }
+  if (step && typeof step.subject_node_id === 'string' && step.subject_node_id.length > 0) {
+    return step.subject_node_id;
+  }
+  if (o && typeof o.roomDir === 'string' && o.roomDir.length > 0) {
+    const candidate = 'room:' + path.basename(o.roomDir);
+    try {
+      const row = db.prepare('SELECT id FROM nodes WHERE id = ?').get(candidate);
+      if (row) return candidate;
+    } catch (_e) {
+      // fall through to refusal
+    }
+  }
+  return null;
+}
+
+// The closed kind for a bookkeeping record: 'draft' for a step whose
+// chain_output carries an executed:true tier-1 (executable) result, 'notes'
+// otherwise (contract Section 4's kind vocabulary; this loop writes
+// bookkeeping kinds only -- a navigator verdict's own gate_decision kind is
+// out of scope here).
+function _chainStateKindFor(chainOutput) {
+  const executedTier1 = !!(chainOutput && typeof chainOutput === 'object'
+    && chainOutput.executed === true && chainOutput.tier === 'executable');
+  return executedTier1 ? 'draft' : 'notes';
+}
+
+// The per-step record write (SHARED-03). Best-effort: wrapped end to end in
+// a try-catch that swallows and counts, in the same spirit as the existing
+// provenanceFn call below -- a failed or unanchorable write never halts a
+// chain and never changes a halt reason or the returned quality
+// (T-347-04-01). Returns { node_id } on a successful write, or null on a
+// no-op / refusal / fault; the caller counts the null case toward the
+// additive record_write_failures field.
+function _writeStepRecord(params) {
+  try {
+    const p = params || {};
+    const db = p.db;
+    if (!db) return null;
+    const nav = _loadChainState();
+    if (!nav) return null;
+
+    const step = p.step;
+    const chainOutput = p.chainOutput;
+    const subjectNodeId = _resolveChainStateSubject(db, p.opts, step);
+    if (!subjectNodeId) return null;
+
+    const tier = (chainOutput && typeof chainOutput === 'object' && typeof chainOutput.tier === 'string')
+      ? chainOutput.tier
+      : null;
+    const extraProps = p.predecessorNodeId
+      ? { predecessor_node_id: p.predecessorNodeId }
+      : undefined;
+
+    const write = nav.writeChainStateRecord(db, {
+      run_id: p.runId,
+      step_index: p.stepIndex,
+      kind: _chainStateKindFor(chainOutput),
+      command: (step && typeof step.command === 'string') ? step.command : '',
+      body: (chainOutput === undefined) ? null : chainOutput,
+      quality: (typeof p.quality === 'string') ? p.quality : null,
+      tier: tier,
+      produced_by: 'worker',
+      subject_node_id: subjectNodeId,
+      extraProps: extraProps,
+    });
+    return (write && write.ok === true) ? { node_id: write.node_id } : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CR-02 (347 code review): writeApprovedStepRecord -- the ONE additional
+// call site outside the two runChain loops permitted to invoke the per-step
+// record writer above. lib/mcp/tools/chain.cjs's _executeResumedEntry calls
+// entry.onStepFn DIRECTLY for the one step every halted-and-resumed chain
+// stops on (the material step a human just approved) -- that call happens
+// OUTSIDE either runChain loop, so neither loop's own _writeStepRecord call
+// site ever runs for it, and the approved step would otherwise get NO
+// chain_state record at all. This wrapper opens (and closes) its own
+// caller-owned db handle through the SAME _resolveChainStateDb /
+// _closeChainStateDb helpers the loops use (Canon Part 9 discipline
+// unchanged), then delegates to the identical _writeStepRecord above -- it
+// is not a second write authority, only a second entry point onto the one
+// writer.
+//
+// params: { roomDir, db?, runId, stepIndex, step, chainOutput, quality,
+//   predecessorNodeId?, subjectNodeId? }. Best-effort, mirroring
+// _writeStepRecord's own contract: a missing/invalid runId or stepIndex, or
+// an unreachable database, degrades to null rather than throwing.
+// ---------------------------------------------------------------------------
+function writeApprovedStepRecord(params) {
+  const p = params || {};
+  if (typeof p.runId !== 'string' || p.runId.length === 0) return null;
+  if (typeof p.stepIndex !== 'number' || !Number.isInteger(p.stepIndex) || p.stepIndex < 0) return null;
+  const dbHandle = _resolveChainStateDb({ db: p.db, roomDir: p.roomDir });
+  if (!dbHandle.db) return null;
+  try {
+    return _writeStepRecord({
+      db: dbHandle.db,
+      opts: { roomDir: p.roomDir, subjectNodeId: p.subjectNodeId },
+      runId: p.runId,
+      stepIndex: p.stepIndex,
+      step: p.step,
+      chainOutput: p.chainOutput,
+      quality: p.quality,
+      predecessorNodeId: p.predecessorNodeId,
+    });
+  } finally {
+    _closeChainStateDb(dbHandle);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FAN-OUT IS DECLARED HERE AND EXECUTED THERE (WD-347-1 / SHARED-08)
+// -----------------------------------------------------------------
+// cell-fanout.cjs (lib/core/bono, its own :24-28) locks D-164-S2: that
+// module MUST NOT require the sequential chain executor (the fan-out is
+// parallel; this sequential loop is the Wave-5 debate consumer, not the
+// other way round). This phase does NOT reverse that. A step's `fan_out`
+// key is a DECLARATION only -- the step ids that share one input record --
+// and its EXECUTION is delegated, through a lazy require inside the
+// fan-out branch only, to cell-fanout.cjs::runCellFanout, the one fan-out
+// engine that already ships. The dependency points executor -> engine and
+// never back, so there is exactly one fan-out implementation and the
+// locked decision stands. Reversing this means the executor grows its own
+// dispatch loop, its own cap authority beside resolveFanoutCap and the
+// futures orchestrator's own frozen fan-out ceiling constant, and its own
+// per-cell critique -- a second engine and a re-ruling of D-164-S2.
+//
+// Lazily required, mirroring _loadRecipeMaps / _loadRetry / _loadPipelineState
+// / _loadChainState above: a top-level require would pull dispatch-optimizer,
+// the futures orchestrator and research-corpus (which carries a web leg) into
+// every chain caller's module graph merely for declaring a chain, whether or
+// not it ever fans out (tests/test-chain-executor-part8-leak.cjs is the gate).
+// ---------------------------------------------------------------------------
+let _cellFanout = null;
+function _loadCellFanout() {
+  if (_cellFanout !== null) return _cellFanout;
+  try {
+    _cellFanout = require('./bono/cell-fanout.cjs');
+  } catch (_e) {
+    _cellFanout = false;
+  }
+  return _cellFanout;
+}
+
+// The default fan-out runner: a thin translation-only adapter over the
+// lazily-required cell-fanout engine. No dispatch loop, no clamp, no
+// per-cell critique -- all three already exist in runCellFanout. Production
+// resolves here; a test may inject opts.fanOutFn to observe or replace the
+// call without ever touching cell-fanout.cjs's require.cache.
+function _defaultFanOutFn(callParams) {
+  const engine = _loadCellFanout();
+  if (!engine || typeof engine.runCellFanout !== 'function') {
+    return Promise.resolve({ cells: [], dropped: [], plan: { requested: 0, dispatched: 0, capped: false } });
+  }
+  return engine.runCellFanout(callParams);
+}
+
+// Translate a step's declared `fan_out` array plus the shared input record
+// id into the cell shape cell-fanout.cjs already takes (subdomains x hats),
+// call the (possibly injected) fanOutFn EXACTLY ONCE, and map the returned
+// cells back onto individual fan-out trace entries. Each declared step id
+// becomes one `subdomain` cell against a single synthetic `hats` entry, so
+// the grid length equals the declared fan_out length -- one cell per
+// declared step id, never a cartesian blow-up. No clamp is applied here:
+// the engine's own resolveFanoutCap is the one cap authority.
+const FAN_OUT_HAT = 'declared';
+
+async function _dispatchFanOut(step, inputRecordId, fanOutFn) {
+  const stepIds = Array.isArray(step.fan_out)
+    ? step.fan_out.filter(function (s) { return typeof s === 'string' || typeof s === 'number'; })
+    : [];
+  const callParams = {
+    subdomains: stepIds.map(String),
+    hats: [FAN_OUT_HAT],
+    // A translation-only cell dispatch: no research/web leg, no per-cell
+    // model call -- the declared fan-out is a routing shape, not a BONO
+    // debate cell. cell.subdomain carries the declared step id straight
+    // through normalizeReading, which is how the caller maps cells back to
+    // trace entries below (no extra correlation key needed).
+    dispatchCell: function () {
+      return Promise.resolve({ stance: 'supports', evidence: [], confidence: 1 });
+    },
+    selfCritique: function (cell) { return { keep: true, cell: cell }; },
+  };
+  let cellResult;
+  try {
+    cellResult = await fanOutFn(callParams);
+  } catch (_e) {
+    cellResult = { cells: [], dropped: [], plan: { requested: stepIds.length, dispatched: 0, capped: false } };
+  }
+  const cells = (cellResult && Array.isArray(cellResult.cells)) ? cellResult.cells : [];
+  const entries = cells.map(function (cell) {
+    return {
+      fan_out_step: cell.subdomain,
+      input_record_id: inputRecordId,
+      stance: cell.stance,
+      evidence: cell.evidence,
+      confidence: cell.confidence,
+    };
+  });
+  return { entries: entries, cellResult: cellResult };
+}
+
+// The closed fan-in reducer table: an ENUM HANDLE lookup, never a function
+// carried in data (T-347-07-03). An unknown handle is refused with a named
+// reason so the chain halts rather than silently picking a default --
+// mirroring commands/file-meeting.md's own no-silent-pick discipline for
+// knowledge-type reconciliation.
+const FAN_IN_REDUCERS = Object.freeze({
+  first: function (values) { return (values.length > 0) ? values[0] : null; },
+  concat: function (values) { return values.slice(); },
+  merge: function (values) {
+    const out = {};
+    for (const v of values) { if (v && typeof v === 'object') Object.assign(out, v); }
+    return out;
+  },
+});
+
+// Apply a step's declared `fan_in` ({ from, reducer }) against the trace
+// built so far. `from` names step ids whose chain_output is collected, in
+// trace order; `reducer` is looked up in the closed FAN_IN_REDUCERS table.
+// Returns { ok:false, reason } on a malformed declaration or an unknown
+// reducer handle (the caller halts named, never silently proceeds), or
+// { ok:true, value } with the reduced value.
+function _applyFanIn(fanIn, trace) {
+  if (!fanIn || typeof fanIn !== 'object' || !Array.isArray(fanIn.from) || fanIn.from.length === 0) {
+    return { ok: false, reason: 'malformed_fan_in' };
+  }
+  const reducer = (typeof fanIn.reducer === 'string') ? FAN_IN_REDUCERS[fanIn.reducer] : undefined;
+  if (typeof reducer !== 'function') {
+    return { ok: false, reason: 'unknown_fan_in_reducer' };
+  }
+  const froms = fanIn.from.map(String);
+  const collected = [];
+  for (const entry of trace) {
+    const sid = (entry && entry.step) ? _stepIdOf(entry.step) : undefined;
+    if (sid !== undefined && froms.indexOf(String(sid)) !== -1) {
+      collected.push(entry.chain_output);
+    }
+  }
+  return { ok: true, value: reducer(collected) };
+}
+
+// ---------------------------------------------------------------------------
+// Lazy seams. The production defaults are required lazily so a test can inject
+// stubs (decideFn / postureFn / gateFn) without loading the real engine, and so
+// a missing dependency degrades gracefully rather than crashing at require time.
+// ---------------------------------------------------------------------------
+let _recipeMaps = null;
+function _loadRecipeMaps() {
+  if (_recipeMaps !== null) return _recipeMaps;
+  try {
+    _recipeMaps = require(path.join(__dirname, 'recipe-maps.cjs'));
+  } catch (_e) {
+    _recipeMaps = false;
+  }
+  return _recipeMaps;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 356 R5: a dev-time-scored irreversibility ledger, shipped as data.
+// Add-only: it can force isIrreversibleStep to halt, it can never clear a
+// halt the two older signals already decided. Zero network. Lazily required
+// so a missing or unreadable ledger degrades silently to the pre-356
+// predicate, mirroring _loadRecipeMaps above.
+// ---------------------------------------------------------------------------
+let _irreversibilityLedger = null;
+function _loadIrreversibilityLedger() {
+  if (_irreversibilityLedger !== null) return _irreversibilityLedger;
+  try {
+    _irreversibilityLedger = require(path.join(__dirname, 'irreversibility-ledger.cjs'));
+  } catch (_e) {
+    _irreversibilityLedger = false;
+  }
+  return _irreversibilityLedger;
+}
+function _ledgerForcesIrreversible(command) {
+  const m = _loadIrreversibilityLedger();
+  if (!m || typeof m.forcesIrreversible !== 'function') return false;
+  try {
+    return m.forcesIrreversible(command) === true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 177 Wave 5 (BCH-09) -- the BEHAVIORAL_CHANNEL_ARMED kill-switch seam.
+// The escape-hatch gate-SUPPRESSION branch (in makeGateFn below) is GATED by
+// this flag. It is read LAZILY from its home (navigation/calibration-gate.cjs,
+// shipped in 177-08) so the gate can never drift from the calibration owner's
+// notion of ARMED, and so a missing dependency degrades to LOCKED (false) rather
+// than crashing the legacy synchronous path at require time. The default is
+// false ALWAYS today -- no real calibration PASS has armed it -- so the
+// suppression branch is provably inert and makeGateFn() is byte-identical to its
+// pre-seam behavior. We do NOT re-type the literal false here; we read the shipped
+// constant so there is ONE source of truth.
+// ---------------------------------------------------------------------------
+let _calibrationArmed = null;
+function _loadBehavioralChannelArmed() {
+  if (_calibrationArmed !== null) return _calibrationArmed;
+  try {
+    const mod = require(path.join(__dirname, 'navigation', 'calibration-gate.cjs'));
+    _calibrationArmed = (mod && typeof mod.BEHAVIORAL_CHANNEL_ARMED === 'boolean')
+      ? mod.BEHAVIORAL_CHANNEL_ARMED
+      : false;
+  } catch (_e) {
+    _calibrationArmed = false; // withhold-default: a missing owner stays LOCKED.
+  }
+  return _calibrationArmed;
+}
+
+// Pure helper: does the step carry an ACTIVE escape_hatch observation handle?
+// Reads ONLY the step's escape_hatch scalar (a boolean / truthy enum surfaced by
+// the Wave-1 observation schema -- "just tell me" / "bottom line"), never user
+// prose, never an artifact body (Canon Part 8). The handle may sit directly on
+// the step or on a step.observation sub-object (both Wave-1 surfaces); read both,
+// scalar-only.
+function _escapeHatchActive(step) {
+  if (!step || typeof step !== 'object') return false;
+  if (step.escape_hatch === true) return true;
+  if (step.observation && typeof step.observation === 'object'
+    && step.observation.escape_hatch === true) {
+    return true;
+  }
+  return false;
+}
+
+// EXEC-06: a sane default budget brake. The caller may lower it; the loop never
+// runs more than this many steps regardless of the chain length.
+const DEFAULT_MAX_STEPS = 25;
+
+// The quality enum the framework-runner emits (framework-runner.md Step 6:
+// quality: {high|medium|low}). The gate halts on 'low' even for an autonomous_safe
+// step (EXEC-02 quality carry stops garbage-in-garbage-out down the chain).
+const LOW_QUALITY = 'low';
+
+// The kill-switch verb. A [stop] verb at the Tri-Context gate flushes the filed
+// artifacts (the trace built so far) and ends the chain cleanly (EXEC-04). Accepts
+// the bare verb and the bracketed render form so both onHalt idioms work.
+function _isStopVerb(verb) {
+  if (typeof verb !== 'string') return false;
+  const v = verb.trim().toLowerCase();
+  return v === 'stop' || v === '[stop]';
+}
+
+// ---------------------------------------------------------------------------
+// Default posture authority: recipe-maps.postureForCommand (the ONE posture
+// authority, joined from the LOCAL command-registry). Degrades to a
+// withhold-default ('halt') when recipe-maps is unavailable -- never a fabricated
+// autonomous_safe (T-166-02).
+// ---------------------------------------------------------------------------
+function _defaultPostureFn(command) {
+  const rm = _loadRecipeMaps();
+  if (rm && typeof rm.postureForCommand === 'function') {
+    return rm.postureForCommand(command);
+  }
+  return { command: command || null, autonomous_safe: false, posture: 'halt' };
+}
+
+// ---------------------------------------------------------------------------
+// IRREVERSIBLE forced-material classification (EXEC-03 HARD RULE + D-166-05).
+// An irreversible step (sends email / deploys / publishes / external write) is
+// FORCED-MATERIAL: it ALWAYS halts at the gate regardless of an autonomous_safe
+// tag. Two signals: an explicit step.irreversible flag, OR the step's
+// command/connector matching one of the frozen irreversible-action keywords.
+// Phase 356 adds a third signal, reached only when both signals above find
+// nothing: a fresh dev-time-scored ledger entry for the step's command; it
+// can force a halt here, it can never clear one the first two signals gave.
+// ---------------------------------------------------------------------------
+const IRREVERSIBLE_HINTS = Object.freeze([
+  'email',
+  'deploy',
+  'publish',
+  'send',
+  'release',
+  'external-write',
+  'external_write',
+]);
+
+function isIrreversibleStep(step) {
+  if (!step || typeof step !== 'object') return false;
+  if (step.irreversible === true) return true;
+  const hay = String(step.command || '').toLowerCase();
+  if (hay.length === 0) return false;
+  for (const hint of IRREVERSIBLE_HINTS) {
+    if (hay.indexOf(hint) !== -1) return true;
+  }
+  return _ledgerForcesIrreversible(step.command);
+}
+
+// ---------------------------------------------------------------------------
+// fable-mode (HARN-02, D-167-04): POSTURE-SCOPED material-step classification.
+// fable-mode is net-new NAMING over the shipped quality machinery -- it invents
+// NO fable model tier; model-profiles stays opus/sonnet/haiku. The verify +
+// self-critique fires ONLY on MATERIAL / uncertain steps, NOT on every
+// autonomous_safe step (this respects the 166 token analysis: do not burn
+// tokens re-verifying trivially-safe steps). A step is material when:
+//   1. its posture verb is NOT push_forward ('run'), OR
+//   2. the step is irreversible (forced-material, EXEC-03), OR
+//   3. the caller flags step.material === true.
+// A trivially-safe push_forward + reversible step is NOT material -> the
+// critique is SKIPPED on it.
+// ---------------------------------------------------------------------------
+function _isMaterialStep(step, posture) {
+  if (isIrreversibleStep(step)) return true;
+  if (step && step.material === true) return true;
+  const verb = (posture && typeof posture === 'object') ? posture.posture : null;
+  // A non-push_forward posture (verb !== 'run') is material / uncertain. An
+  // absent posture is treated as uncertain -> material (withhold-default).
+  if (verb !== 'run') return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// SHARED-10 (Phase 347-10): the reviewer identity guard. "The critic of a
+// step is never the same node that did the work; a same-identity verdict is
+// refused and the refusal is recorded" (this plan's own must_haves truth).
+//
+// SCOPE (deliberate, and load-bearing for backward compatibility): the guard
+// fires ONLY on a step that AFFIRMATIVELY declares a reviewer contract via
+// `step.reviewer` (kind navigator or subagent). A step that never asked for
+// an independent reviewer has no "reviewer requirement" to satisfy or game,
+// so a plain self-critique with no reviewer_id at all -- the shape
+// tests/test-chain-executor-fable-mode.cjs's own generic selfCritiqueFn seam
+// has always used, predating SHARED-10 entirely -- is byte-identical to its
+// pre-347-10 contract. Widening the guard to fire unconditionally on every
+// self-critique would retroactively refuse EVERY verdict that repo's own
+// regression suite already proved out, which is not what "add an identity
+// guard, change nothing else about the seam" means.
+//
+// When a reviewer IS declared: reviewer_id equal to the worker identity, OR
+// ABSENT entirely, is REFUSED. Treating a missing reviewer_id as
+// same-identity is deliberate: an un-attributed critique is indistinguishable
+// from the worker grading itself, and the whole point of SHARED-10 is that
+// true self-review means a DIFFERENT node -- defaulting the other way would
+// let a step that declared it wants review keep satisfying that requirement
+// by omission. A differing reviewer_id is applied exactly as the pre-existing
+// quality-only path.
+// ---------------------------------------------------------------------------
+function _workerIdentityFor(step) {
+  return (step && typeof step.produced_by === 'string' && step.produced_by) ? step.produced_by : 'worker';
+}
+
+function _hasReviewerDeclaration(step) {
+  return !!(step && step.reviewer && typeof step.reviewer === 'object'
+    && (step.reviewer.kind === 'subagent' || step.reviewer.kind === 'navigator'));
+}
+
+// The opt-in reviewer DISPATCH condition (distinct from the declaration check
+// above): only kind === 'subagent' ever runs an independent critic through
+// the selfCritiqueFn seam here. kind === 'navigator' means the step is
+// reviewed by the navigator at the gate (this plan's must_haves truth #4),
+// a path this executor never duplicates.
+function _stepWantsReviewerDispatch(step) {
+  return !!(step && step.reviewer && typeof step.reviewer === 'object' && step.reviewer.kind === 'subagent');
+}
+
+function _evaluateReviewerVerdict(step, verdict) {
+  if (!_hasReviewerDeclaration(step)) return null;
+  const workerId = _workerIdentityFor(step);
+  const reviewerId = (verdict && typeof verdict.reviewer_id === 'string' && verdict.reviewer_id) ? verdict.reviewer_id : null;
+  if (reviewerId === null || reviewerId === workerId) {
+    return { applied: false, reason: 'reviewer_is_worker' };
+  }
+  return { applied: true, reviewer_id: reviewerId };
+}
+
+// ---------------------------------------------------------------------------
+// fable-mode seam (HARN-02, D-167-04, MEDIUM-3). The ONE shared helper applied
+// at BOTH execution seams (sync runChain + async _runChainResilient) so the two
+// paths cannot drift. It runs AFTER the per-step result.quality is captured and
+// BEFORE chain_output folds into the next previousOutput. When a selfCritiqueFn
+// is supplied AND the step is material, it calls selfCritiqueFn(step, result);
+// if the verdict indicates a FAILED self-critique (verdict.quality === 'low' OR
+// verdict.passed === false), it AUGMENTS the captured quality to LOW_QUALITY so
+// the EXISTING quality_early_stop branch + the next-hop makeGateFn LOW_QUALITY
+// halt fire. It adds NO new halt reason, NO retry, NO loop -- the verdict is a
+// gate INPUT, never a convergence stop condition (166 B3). A selfCritiqueFn
+// fault degrades to NO augmentation (fail open on the critic, T-167-12): a
+// broken critic must not silently halt every step, but a LOW verdict halts.
+//
+// SHARED-10 addition (Phase 347-10): when the step declares a reviewer
+// contract, the verdict passes through the identity guard above BEFORE the
+// existing LOW_QUALITY augmentation check; a refused verdict never augments
+// quality. Returns { quality, reviewer } -- reviewer is null when no
+// selfCritiqueFn fired, the step is not material, the critic threw, or the
+// step declared no reviewer contract at all (byte-identical trace shape for
+// every caller that predates this plan).
+// ---------------------------------------------------------------------------
+function _applySelfCritique(selfCritiqueFn, step, posture, result, quality) {
+  if (typeof selfCritiqueFn !== 'function') return { quality: quality, reviewer: null };
+  if (!_isMaterialStep(step, posture)) return { quality: quality, reviewer: null };
+  let verdict = null;
+  try {
+    verdict = selfCritiqueFn(step, result);
+  } catch (_e) {
+    // Fail open on the critic itself: a thrown critic does not halt the chain.
+    return { quality: quality, reviewer: null };
+  }
+  const reviewer = _evaluateReviewerVerdict(step, verdict);
+  if (reviewer && reviewer.applied === false) {
+    return { quality: quality, reviewer: reviewer };
+  }
+  if (verdict && (verdict.quality === LOW_QUALITY || verdict.passed === false)) {
+    return { quality: LOW_QUALITY, reviewer: reviewer };
+  }
+  return { quality: quality, reviewer: reviewer };
+}
+
+// ---------------------------------------------------------------------------
+// SHARED-10 (Phase 347-10): the opt-in independent-reviewer DISPATCH on an
+// autonomous_safe step, mirroring `step.ralph_verify === true` immediately
+// below on the IDENTICAL D-167-04 token-economy reasoning: 48 of 113
+// registry commands are autonomous_safe and DEFAULT_MAX_STEPS is 25, so
+// reviewing every safe step would double the worst-case dispatch count.
+// Default OFF: fires ONLY when the caller invokes this (gated at the call
+// site on `_stepWantsReviewerDispatch(step)`). Reuses the SAME
+// selfCritiqueFn seam and the SAME `_evaluateReviewerVerdict` identity guard
+// as the material path above -- this is NOT a second critic seam, just a
+// second call site for the one seam. A single dispatch, no retry: Ralph
+// already owns bounded verify-and-fix retry; this is a review, not a
+// verify-and-fix loop.
+// ---------------------------------------------------------------------------
+function _applyReviewerDispatch(selfCritiqueFn, step, result, quality) {
+  let verdict = null;
+  try {
+    verdict = selfCritiqueFn(step, result);
+  } catch (_e) {
+    return { quality: quality, reviewer: null, dispatched: false };
+  }
+  const reviewer = _evaluateReviewerVerdict(step, verdict);
+  let nextQuality = quality;
+  if (!(reviewer && reviewer.applied === false)) {
+    if (verdict && (verdict.quality === LOW_QUALITY || verdict.passed === false)) {
+      nextQuality = LOW_QUALITY;
+    }
+  }
+  return { quality: nextQuality, reviewer: reviewer, dispatched: true };
+}
+
+// ---------------------------------------------------------------------------
+// SEED-033 L1 (Phase 201-02): opt-in bounded Ralph verify+retry on an
+// autonomous_safe step. This is DISTINCT from the material-step _applySelfCritique
+// seam above (which stays material-only, token-economy per D-167-04). It fires ONLY
+// when the caller opts a step in (step.ralph_verify === true) AND a selfCritiqueFn is
+// supplied AND the step is autonomous_safe (NOT material / irreversible -- the caller
+// guarantees this). It re-runs onStep up to min(cap, budgetRemaining) times while the
+// critique fails, returning the FIRST passing result; if the retries are exhausted it
+// returns the last result with quality forced to LOW_QUALITY so the EXISTING
+// quality_early_stop + next-hop gate halt fire (the safe step still halts when it
+// cannot self-correct -- Ralph inside the safe step, the gate still at the material
+// one). Fail-open on a thrown critic (a broken critic must not force a halt).
+// Bounded twice over: the cap AND the EXEC-06 step budget. Never unbounded.
+// ---------------------------------------------------------------------------
+const RALPH_RETRY_CAP_DEFAULT = 2;
+
+function _safeCritique(selfCritiqueFn, step, result) {
+  try { return selfCritiqueFn(step, result); } catch (_e) { return null; }
+}
+
+function _critiqueFailed(verdict) {
+  return !!(verdict && (verdict.quality === LOW_QUALITY || verdict.passed === false));
+}
+
+function _ralphSafeRetry(params) {
+  const step = params.step;
+  const selfCritiqueFn = params.selfCritiqueFn;
+  const onStep = params.onStep;
+  const previousOutput = params.previousOutput;
+  let result = params.initialResult;
+  let quality = params.initialQuality;
+  const cap = params.cap;
+  const budgetRemaining = params.budgetRemaining;
+  const maxRetries = Math.max(0, Math.min(cap, budgetRemaining));
+  let attempts = 0;
+  let verdict = _safeCritique(selfCritiqueFn, step, result);
+  while (_critiqueFailed(verdict) && attempts < maxRetries) {
+    attempts += 1;
+    let retried;
+    try { retried = onStep(step, previousOutput); } catch (_e) { break; }
+    result = retried || {};
+    quality = (typeof result.quality === 'string') ? result.quality : quality;
+    verdict = _safeCritique(selfCritiqueFn, step, result);
+  }
+  // Exhausted = stopped WITHOUT a passing verdict. The step must HALT (never silently
+  // proceed): force LOW so it falls through to the existing gate (Ralph inside the safe
+  // step, the gate still at the material one). We ALSO name WHY it stopped, so the caller
+  // can set a distinct haltedAt.reason (Task 3c): the EXEC-06 budget bound the retries
+  // strictly below the cap (budget_brake), or the cap itself was reached (retry_exhausted).
+  const exhausted = _critiqueFailed(verdict);
+  let haltReason = null;
+  if (exhausted) {
+    quality = LOW_QUALITY;
+    haltReason = (budgetRemaining < cap) ? 'budget_brake' : 'retry_exhausted';
+  }
+  return { result: result, quality: quality, attempts: attempts, exhausted: exhausted, haltReason: haltReason };
+}
+
+// ---------------------------------------------------------------------------
+// Default gate predicate (EXEC-03, the single leverage point). Used when no
+// gateFn is injected. Returns 'run' ONLY when ALL three hold:
+//   1. the step's posture maps to push_forward (autonomous_safe), AND
+//   2. the inbound priorOutput.quality is NOT 'low' (EXEC-02 quality carry), AND
+//   3. the step is NOT irreversible (forced-material steps ALWAYS halt).
+// Otherwise 'halt'. The posture is read via postureFn (recipe-maps default).
+// makeGateFn(opts) returns the bound predicate; opts.postureFn overrides the
+// posture authority (test seam / caller-supplied).
+// ---------------------------------------------------------------------------
+// Phase 365 (D-12): the constraint verdict the gate reached for a step, so the two
+// haltedAt sites can name WHY without widening gateFn's 'run' | 'halt' return value.
+// Keyed by the step object; set on a constraint halt, deleted when the check passes.
+const _constraintVerdicts = new WeakMap();
+
+// The haltedAt reason for a halted step: an irreversible step is always
+// forced_material; a room-named step carries the constraint reason; else gate_halt.
+function _haltReasonFor(step) {
+  if (isIrreversibleStep(step)) return 'forced_material';
+  const v = (step && typeof step === 'object') ? _constraintVerdicts.get(step) : null;
+  return v ? v.reason : 'gate_halt';
+}
+
+function _haltConstraintFor(step) {
+  if (isIrreversibleStep(step)) return null;
+  const v = (step && typeof step === 'object') ? _constraintVerdicts.get(step) : null;
+  return (v && v.constraint) ? v.constraint : null;
+}
+
+function makeGateFn(opts) {
+  const o = opts || {};
+  const postureFn = (typeof o.postureFn === 'function') ? o.postureFn : _defaultPostureFn;
+  // Phase 177 Wave 5 (BCH-09): the ARMED gate for the escape-hatch suppression
+  // branch. Overridable via opts.armed (the TEST seam) so the armed-true path can
+  // be exercised WITHOUT mutating the shipped BEHAVIORAL_CHANNEL_ARMED constant
+  // (the calibration-gate change-control rule forbids flipping it to unblock a
+  // wave). When opts.armed is absent it defaults to the LAZY calibration-gate read
+  // -- false ALWAYS today.
+  const armed = (typeof o.armed === 'boolean') ? o.armed : _loadBehavioralChannelArmed();
+  return function gateFn(step, posture, priorOutput) {
+    // (1) FORCED-MATERIAL FIRST (HARD RULE, UNCONDITIONAL, BCH-09). An irreversible
+    // step (sends email / deploys / publishes / external write, OR step.irreversible)
+    // ALWAYS halts -- armed or not, escape-hatch or not. This statement STAYS the
+    // very first decision in gateFn; nothing may be added before it. Because the
+    // irreversible step returns here, the escape-hatch suppression branch below can
+    // NEVER reach a forced-material step -- the guardrail is structurally upstream.
+    if (isIrreversibleStep(step)) return 'halt';
+
+    // (1b) Phase 365 D-12 / D-13: the room's never-do list. ADD-ONLY: this check can
+    // only turn a would-run into a halt (every path through it returns 'halt' or falls
+    // through to (2)..(4) untouched); it can never turn a halt into a run. The list is
+    // read FRESH on every step (the opposite of irreversibility-ledger's cache, on
+    // purpose: an entry the navigator just added must bite the very next step). A
+    // malformed list halts every step (fail shut). It sits directly after (1) so an
+    // irreversible step still stops first, for its own reason (forced_material).
+    if (typeof o.roomDir === 'string' && o.roomDir !== '') {
+      const roomConstraints = require('./room-constraints.cjs');
+      const cv = roomConstraints.checkStep(
+        o.roomDir,
+        roomConstraints.declaredFieldsOfChainStep(step, { targetSection: o.targetSection })
+      );
+      if (cv && cv.halt) {
+        const entry = cv.entry || null;
+        if (step && typeof step === 'object') {
+          _constraintVerdicts.set(step, { reason: cv.reason, constraint: entry });
+        }
+        roomConstraints.recordTrip(o.roomDir, {
+          surface: 'chain_run',
+          reason: cv.reason,
+          kind: entry ? entry.kind : null,
+          value: entry ? entry.value : null,
+          step_command: step && step.command,
+          run_id: o.runId || null,
+        });
+        return 'halt';
+      }
+      if (step && typeof step === 'object') _constraintVerdicts.delete(step);
+    }
+
+    // (2) Quality carry: a low-quality inbound output halts even an autonomous_safe
+    // step (stops garbage-in-garbage-out propagation -- loop R3).
+    if (priorOutput && priorOutput.quality === LOW_QUALITY) return 'halt';
+
+    // Posture authority: resolve the verb ONCE. Prefer an explicitly-passed posture
+    // object; otherwise ask the posture authority for the step's command. Shared by
+    // both the escape-hatch suppression branch (3) and the normal return (4) so the
+    // two cannot read a different posture.
+    let verdict = (posture && typeof posture === 'object') ? posture : null;
+    if (!verdict) verdict = postureFn(step && step.command);
+    const autonomousSafe = !!(verdict && verdict.autonomous_safe === true);
+    const verb = verdict && verdict.posture; // 'run' (push_forward) | 'halt'
+
+    // (3) Escape-hatch gate-SUPPRESSION (Phase 177 Wave 5, BCH-09) -- WIRED-BUT-
+    // SHADOWED. When ARMED and the step carries an ACTIVE escape_hatch, the gate may
+    // SUPPRESS the Decision Gate (return 'run' instead of halting for human
+    // confirmation) -- but ONLY for an already autonomous_safe + reversible step.
+    // It NEVER escalates a non-safe step, and it can NEVER reach an irreversible /
+    // forced-material step (that returned 'halt' at the UNCONDITIONAL first check
+    // above). The branch reads ONLY the ARMED boolean, the escape_hatch scalar
+    // handle, and the resolved posture enum -- never user prose, never an artifact
+    // body (Canon Part 8 LOCAL -> BRAIN: NO; the gate adds no Brain wire).
+    //
+    // DORMANT CONTRACT: when unarmed (always today, because no real calibration PASS
+    // has armed the flag) this branch's guard is false, so it suppresses NOTHING and
+    // falls through to the identical (4) return -- makeGateFn() is byte-identical to
+    // its pre-seam behavior, the Decision Gate fires unchanged, and the escape_hatch
+    // handle has zero effect on the verb. The LIVE flip (a real gate actually
+    // suppressed) happens only when a real calibration PASS arms the flag -- that
+    // arming is data-gated (177-08 fit.method:'deferred') AND Canon-Custodian-gated
+    // (Canon Part 8 PR gate). This wave does NOT weaken the human-in-the-loop
+    // Decision Gate today.
+    if (armed && _escapeHatchActive(step) && autonomousSafe && verb === 'run') {
+      return 'run';
+    }
+
+    // (4) Normal posture/autonomous_safe return (the pre-seam terminal decision).
+    if (autonomousSafe && verb === 'run') return 'run';
+    return 'halt';
+  };
+}
+
+// ---------------------------------------------------------------------------
+// resolveSuccessor (SHARED-06 / SHARED-08, Phase 347-07): the ONE named,
+// exported, PURE function that computes what comes next on BOTH loops. It
+// reads nothing but its own parameters -- no module state, no closure over
+// the loop's trace or db handle. Rules, in order:
+//   1. a low-quality / failed-critique verdict on a step declaring `on_fail`
+//      returns that id (the bounded conditional back-edge, see the header
+//      paragraph above).
+//   2. otherwise, a step declaring `on_pass` returns that id.
+//   3. otherwise, the id of the step at currentIndex + 1, or null when there
+//      is none (the byte-identical default -- SHARED-06's own floor).
+// `verdict` accepts either the bare quality string ('low'/'medium'/'high'/
+// null) or an object carrying `.quality` / `.passed` (the same shapes
+// _critiqueFailed already reads), so the same call shape works whether the
+// caller passes the captured quality or a fuller verdict object.
+// ---------------------------------------------------------------------------
+function _stepIdOf(s) {
+  if (!s || typeof s !== 'object') return undefined;
+  if (s.id !== undefined) return s.id;
+  if (s.step !== undefined) return s.step;
+  return undefined;
+}
+
+// The single named lookup helper (per Task 2's own action text) mapping a
+// resolved successor id back to its index in `list`. A returned id naming a
+// step not present in the list resolves to -1 -- the caller treats that as
+// "no successor" (T-347-07-04: the chain completes, it never loops or
+// throws on a tampered / stale routing declaration).
+function _stepIndexById(list, id) {
+  if (id === null || id === undefined) return -1;
+  for (let i = 0; i < list.length; i += 1) {
+    if (_stepIdOf(list[i]) === id) return i;
+  }
+  return -1;
+}
+
+function _verdictFailed(verdict) {
+  if (verdict && typeof verdict === 'object') {
+    return verdict.quality === LOW_QUALITY || verdict.passed === false;
+  }
+  return verdict === LOW_QUALITY;
+}
+
+function resolveSuccessor(step, verdict, list, currentIndex) {
+  const failed = _verdictFailed(verdict);
+  if (failed) {
+    if (step && step.on_fail !== undefined && step.on_fail !== null) {
+      return step.on_fail;
+    }
+  } else if (step && step.on_pass !== undefined && step.on_pass !== null) {
+    return step.on_pass;
+  }
+  const nextIndex = currentIndex + 1;
+  if (nextIndex >= list.length) return null;
+  const nextId = _stepIdOf(list[nextIndex]);
+  return (nextId === undefined) ? null : nextId;
+}
+
+// ---------------------------------------------------------------------------
+// runChain -- the loop runner (EXEC-01 / 02 / 03 / 04 / 06).
+// ---------------------------------------------------------------------------
+/**
+ * runChain(steps, opts) -> { trace, completed, haltedAt }
+ *
+ * steps: ordered array of step objects. Each step carries at least { step, command }
+ *        and MAY carry { irreversible:true, reach_id, framework, ... }.
+ *
+ * opts (the six-callback contract + the decideFn seam):
+ *   postureFn(command) -> posture authority   (default recipe-maps.postureForCommand)
+ *   gateFn(step, posture, priorOutput) -> 'run'|'halt'   (default makeGateFn({postureFn}))
+ *   onStep(step, previousOutput) -> { chain_output, quality }   (REQUIRED; dispatches the brick)
+ *   provenanceFn(step, result) -> frontmatter   (optional; called per run step when supplied)
+ *   maxSteps   hard cap (default DEFAULT_MAX_STEPS) -- EXEC-06 budget brake
+ *   onHalt(step, contexts) -> verb   (the Tri-Context gate; returns one of the 10 verbs)
+ *   decideFn(turn, context) -> decision   (OPTIONAL injectable decide() seam; NO DEFAULT
+ *     as of 237-03/REACH-01 -- when absent, no decision is computed and
+ *     trace[i].decision_trace stays null. The only supported caller ADAPTS runChain's
+ *     own ({step,index},{previousOutput}) shape onto decide()'s real
+ *     ({userText,sectionPath,sessionId}, context) contract; see scripts/act-command.cjs,
+ *     the reference adapter (Phase 172-08 CIRS R4).)
+ *   selfCritiqueFn(step, result) -> verdict   (fable-mode, HARN-02 / D-167-04; OPTIONAL,
+ *     default a no-op pass-through. POSTURE-SCOPED: fires only on material steps. A verdict
+ *     with quality:'low' or passed:false AUGMENTS result.quality -> the existing LOW_QUALITY
+ *     halt. Rides BOTH the sync runChain path and the async _runChainResilient path.)
+ *
+ * Returns:
+ *   trace      ONE ordered array; each entry { step, chain_output, decision_trace }
+ *              (decision_trace is decide()'s return handle, UNCHANGED -- B2)
+ *   completed  true when every step ran with no halt / no budget brake
+ *   haltedAt   the step where the chain stopped (or a synthetic budget-brake marker),
+ *              or null when completed
+ *
+ * Never throws on a callback fault that is recoverable; a missing onStep is the one
+ * hard precondition (the loop has nothing to dispatch without it).
+ */
+function runChain(steps, opts) {
+  const o = opts || {};
+  const list = Array.isArray(steps) ? steps : [];
+
+  // EXEC-05 dispatch: when ANY reliability opt is present (retries / journal /
+  // roomDir / resume / sleep), run the ASYNC resilient path -- onStep wrapped in
+  // bounded retry-with-backoff, exhaustion folded into a GRACEFUL PARTIAL, the
+  // position journaled via the Wave-1 pipeline-state substrate. The legacy
+  // synchronous path below is UNCHANGED for callers that pass none of these
+  // (Wave-2 contract preserved byte-for-byte). This is ONE entry point, not a
+  // consumer-visible fork: runChain stays the single door (D-166-04).
+  // Phase 347-07 (SHARED-08): a declared fan_out or fan_in also forces the
+  // async path -- the fan-out delegation awaits the lazily-loaded
+  // cell-fanout engine, which the synchronous loop below cannot do. A chain
+  // that declares neither (every caller shipped before this plan) never
+  // evaluates this check true, so the sync path's byte-identical floor is
+  // untouched.
+  const hasFanRouting = list.some(function (s) {
+    return !!(s && ((Array.isArray(s.fan_out) && s.fan_out.length > 0) || (s.fan_in && typeof s.fan_in === 'object')));
+  });
+
+  if (
+    o.retries !== undefined ||
+    o.journal === true ||
+    o.roomDir !== undefined ||
+    o.resume === true ||
+    typeof o.sleep === 'function' ||
+    hasFanRouting
+  ) {
+    return _runChainResilient(list, o);
+  }
+
+  const onStep = (typeof o.onStep === 'function') ? o.onStep : null;
+  if (!onStep) {
+    return {
+      trace: [],
+      completed: false,
+      haltedAt: { step: null, reason: 'no_onStep_callback' },
+    };
+  }
+
+  const postureFn = (typeof o.postureFn === 'function') ? o.postureFn : _defaultPostureFn;
+  const gateFn = (typeof o.gateFn === 'function') ? o.gateFn : makeGateFn({ postureFn: postureFn, roomDir: o.roomDir, targetSection: o.targetSection, runId: o.runId });
+  const onHalt = (typeof o.onHalt === 'function') ? o.onHalt : function () { return 'defer'; };
+  const provenanceFn = (typeof o.provenanceFn === 'function') ? o.provenanceFn : null;
+  // Phase 237-03 (REACH-01): NO default. decideFn is an OPTIONAL injectable seam
+  // -- when absent, no decision is computed and every trace entry's
+  // decision_trace stays null (see the call site below for why the DEFAULT was
+  // removed while the seam itself was kept).
+  const decideFn = (typeof o.decideFn === 'function') ? o.decideFn : null;
+  // fable-mode (HARN-02 / D-167-04): default a no-op so an absent selfCritiqueFn
+  // is byte-identical to the Wave-166 behavior (regression guard).
+  const selfCritiqueFn = (typeof o.selfCritiqueFn === 'function') ? o.selfCritiqueFn : null;
+  const maxSteps = (typeof o.maxSteps === 'number' && o.maxSteps > 0)
+    ? Math.floor(o.maxSteps)
+    : DEFAULT_MAX_STEPS;
+
+  const trace = [];
+  let completed = true;
+  let haltedAt = null;
+  let previousOutput = null; // EXEC-02: prior chain_output folds into the next step.
+  let stepsRun = 0;
+
+  // Phase 347-04 (SHARED-03): one run_id per invocation, and the caller-owned
+  // db handle (if any) for the per-step record write. A missing database
+  // degrades the write helper to a no-op below -- see _resolveChainStateDb.
+  // CR-01 (347 code review): a caller MAY pin its own run_id via opts.runId
+  // (e.g. lib/mcp/tools/chain.cjs, which must mint the SAME id it hands to
+  // makeChainStepDispatcher's closure BEFORE this loop ever runs, so the
+  // dispatcher's predecessor read and this loop's record write key on the
+  // identical run). Absent an override, the mint is byte-identical to before.
+  const chainRunId = (typeof o.runId === 'string' && o.runId.length > 0) ? o.runId : _mintChainRunId();
+  // CR-02 (347 code review): a caller MAY offset every written step_index by
+  // a fixed amount (e.g. chain.cjs's halt-then-resume continuation, so the
+  // remainder's chain_state records continue the ORIGINAL chain's absolute
+  // step numbering instead of restarting at 0). Absent an override this is
+  // 0, so `i + stepIndexOffset === i` -- byte-identical to before.
+  const stepIndexOffset = (typeof o.stepIndexOffset === 'number' && o.stepIndexOffset >= 0)
+    ? Math.floor(o.stepIndexOffset) : 0;
+  const chainStateDbHandle = _resolveChainStateDb(o);
+  const chainStateDb = chainStateDbHandle.db;
+  let chainStateWriteFailures = 0;
+  let lastChainStateNodeId = null;
+
+  for (let i = 0; i < list.length;) {
+    const step = list[i];
+
+    // EXEC-06 budget brake: a hard cap on steps run. When the next iteration would
+    // exceed the budget, halt with a recorded reason (haltedAt names the brake).
+    if (stepsRun >= maxSteps) {
+      completed = false;
+      haltedAt = { step: step, reason: 'budget_brake', maxSteps: maxSteps };
+      break;
+    }
+
+    // EXEC-01 + B2: re-call decide() per loop to re-derive the next reach from the
+    // navigated graph neighborhood. Capture its decision_trace handle UNCHANGED into
+    // the trace. decide() is the LIVE next-step authority -- NOT rankedNextReach.
+    // Wrapped so a decide() fault degrades to a null handle rather than crashing the
+    // chain (the loop still runs; the trace records the absence).
+    //
+    // Phase 237-03 (REACH-01): decideFn has NO default -- when the caller does
+    // not inject an ADAPTED decideFn, this block simply does not run and
+    // decisionTrace stays null. Why the old default was removed: the call
+    // below passes runChain's own ({step,index},{previousOutput}) shape, which
+    // matches none of the real decide()'s documented turn/context fields (all
+    // read as undefined); decide() never throws (it falls through to
+    // emptyDecision()), so the old default reliably computed and stored an
+    // EMPTY decision, and a 27-hit grep across lib/ and scripts/ found zero
+    // consumers of runChain's stored decision_trace. The seam itself is kept:
+    // scripts/act-command.cjs injects an ADAPTED decideFn that reshapes this
+    // exact call onto a real decide({userText,sectionPath,sessionId}, context)
+    // call (Phase 172-08 CIRS R4) -- that is the ONLY supported caller shape.
+    let decisionTrace = null;
+    if (typeof decideFn === 'function') {
+      try {
+        const decision = decideFn({ step: step, index: i }, { previousOutput: previousOutput });
+        // Record decide()'s decision_trace UNCHANGED (reference, never a copy / reshape).
+        decisionTrace = (decision && decision.decision_trace) ? decision.decision_trace : null;
+      } catch (_e) {
+        decisionTrace = null;
+      }
+    }
+
+    // EXEC-03: gate the step. posture authority is consulted via postureFn so the
+    // gate fires on push_forward + not-low-quality + reversible. The default gateFn
+    // resolves posture internally; an injected gateFn may use the passed posture.
+    let posture = null;
+    try { posture = postureFn(step && step.command); } catch (_e) { posture = null; }
+
+    let verb = 'halt';
+    try {
+      verb = gateFn(step, posture, previousOutput);
+    } catch (_e) {
+      verb = 'halt'; // a gate fault is a withhold-default (fail closed).
+    }
+
+    if (verb !== 'run') {
+      // HALT: hand to the Tri-Context Decision Gate (Part 3). onHalt returns the
+      // user's verb. A [stop] verb is the kill switch: flush (return the trace built
+      // so far) and end cleanly (EXEC-04). Any other verb also ends the loop here
+      // (the chain halts at the first material step per Canon Part 3 -- B3: there is
+      // NO convergence-driven continue).
+      let userVerb = 'defer';
+      try {
+        userVerb = onHalt(step, { previousOutput: previousOutput, posture: posture, decisionTrace: decisionTrace });
+      } catch (_e) {
+        userVerb = 'defer';
+      }
+      completed = false;
+      haltedAt = {
+        step: step,
+        reason: isIrreversibleStep(step) ? 'forced_material' : _haltReasonFor(step),
+        verb: userVerb,
+        stopped: _isStopVerb(userVerb),
+      };
+      if (_haltConstraintFor(step)) {
+        const _ce = _haltConstraintFor(step);
+        haltedAt.constraint = { kind: _ce.kind, value: _ce.value, why: _ce.why };
+      }
+      // Whether the verb is [stop] or another halt verb, the loop ends here and the
+      // trace built ABOVE the stop is flushed (already in `trace`), never dropped.
+      break;
+    }
+
+    // RUN: dispatch the per-step brick (framework-runner via onStep). It returns
+    // { chain_output, quality }. Fold chain_output into the next previousOutput
+    // (EXEC-02), carrying the quality enum forward via the result object.
+    let result = null;
+    try {
+      result = onStep(step, previousOutput);
+    } catch (_e) {
+      // An onStep dispatch fault halts the chain (fail closed) rather than silently
+      // continuing with a stale previousOutput.
+      completed = false;
+      haltedAt = { step: step, reason: 'onStep_fault' };
+      break;
+    }
+    result = result || {};
+    let quality = (typeof result.quality === 'string') ? result.quality : null;
+
+    // SEED-033 L1 (201-02): opt-in bounded Ralph verify+retry on an autonomous_safe
+    // step. DEFAULT OFF (token economy, D-167-04) -- fires ONLY when step.ralph_verify
+    // is true, a selfCritiqueFn is supplied, and the step is autonomous_safe (NOT
+    // material / irreversible). It may replace `result` with a passing retry, or force
+    // LOW when the retries are exhausted; retry re-runs count against the EXEC-06 budget
+    // (stepsRun += ralphAttempts below). Material steps are UNTOUCHED -- they keep the
+    // _applySelfCritique-as-halt-input path below (B3 intact).
+    let ralphAttempts = 0;
+    let ralphHaltReason = null;
+    if (step && step.ralph_verify === true && typeof selfCritiqueFn === 'function' &&
+        !_isMaterialStep(step, posture)) {
+      const budgetRemaining = Math.max(0, maxSteps - stepsRun - 1);
+      const cap = (typeof o.ralphRetryCap === 'number' && o.ralphRetryCap >= 0)
+        ? Math.floor(o.ralphRetryCap) : RALPH_RETRY_CAP_DEFAULT;
+      const r = _ralphSafeRetry({
+        step: step, selfCritiqueFn: selfCritiqueFn, onStep: onStep,
+        previousOutput: previousOutput, initialResult: result, initialQuality: quality,
+        cap: cap, budgetRemaining: budgetRemaining,
+      });
+      result = r.result;
+      quality = r.quality;
+      ralphAttempts = r.attempts;
+      if (r.exhausted) ralphHaltReason = r.haltReason;
+    }
+
+    const chainOutput = (result.chain_output !== undefined) ? result.chain_output : null;
+
+    // SHARED-10 (Phase 347-10): the opt-in independent-reviewer dispatch on an
+    // autonomous_safe step, mirroring the L1 Ralph opt-in immediately above on
+    // the identical D-167-04 token-economy reasoning. Fires ONLY when the step
+    // declares reviewer.kind === 'subagent'. Reuses the SAME selfCritiqueFn
+    // seam _applySelfCritique uses below; no second critic seam. A reviewer
+    // dispatch charges the same EXEC-06 brake a Ralph retry charges (stepsRun
+    // increment below).
+    let reviewerInfo = null;
+    let reviewerDispatchCharge = 0;
+    if (step && _stepWantsReviewerDispatch(step) && typeof selfCritiqueFn === 'function' &&
+        !_isMaterialStep(step, posture)) {
+      const rd = _applyReviewerDispatch(selfCritiqueFn, step, result, quality);
+      quality = rd.quality;
+      reviewerInfo = rd.reviewer;
+      if (rd.dispatched) reviewerDispatchCharge = 1;
+    }
+
+    // fable-mode seam (HARN-02 / D-167-04): posture-scoped self-critique runs
+    // AFTER the result.quality capture and BEFORE the previousOutput fold. On a
+    // material step a failed verdict augments quality to LOW_QUALITY, feeding the
+    // EXISTING quality_early_stop branch + next-hop LOW_QUALITY gate. Shared with
+    // the async path via _applySelfCritique so the two seams cannot drift. (Safe-step
+    // verify+retry is the L1 opt-in above; this stays material-only.)
+    const critiqueOutcome = _applySelfCritique(selfCritiqueFn, step, posture, result, quality);
+    quality = critiqueOutcome.quality;
+    if (critiqueOutcome.reviewer) reviewerInfo = critiqueOutcome.reviewer;
+
+    // optional provenance side-channel (pipeline supplies it; act/ignite pass null).
+    if (provenanceFn) {
+      try { provenanceFn(step, result); } catch (_e) { /* best-effort; never load-bearing */ }
+    }
+
+    // EXEC-04 single trace: append ONE entry built from the step + its chain_output
+    // + the UNCHANGED decide() decision_trace handle (B2). SHARED-10: `reviewer`
+    // is an additive field, null unless a reviewer contract was declared and
+    // evaluated above.
+    trace.push({
+      step: step,
+      chain_output: chainOutput,
+      quality: quality,
+      decision_trace: decisionTrace,
+      reviewer: reviewerInfo,
+    });
+
+    // Phase 347-04 (SHARED-03): one chain_state record per step, written
+    // AFTER the trace entry and BEFORE the previousOutput fold, so a step
+    // that goes on to halt below (Ralph exhaustion / quality early-stop)
+    // still leaves its record anchored. Best-effort: never halts, never
+    // changes a halt reason or the returned quality (T-347-04-01).
+    const chainStateRecord = _writeStepRecord({
+      db: chainStateDb,
+      opts: o,
+      runId: chainRunId,
+      stepIndex: i + stepIndexOffset,
+      step: step,
+      chainOutput: chainOutput,
+      quality: quality,
+      predecessorNodeId: lastChainStateNodeId,
+    });
+    if (chainStateRecord) {
+      lastChainStateNodeId = chainStateRecord.node_id;
+    } else if (chainStateDb) {
+      chainStateWriteFailures += 1;
+    }
+
+    // EXEC-06: this step plus any L1 verify+retry re-runs, plus a SHARED-10
+    // reviewer dispatch (if one fired above), count against the budget.
+    stepsRun += 1 + ralphAttempts + reviewerDispatchCharge;
+
+    // SEED-033 L1 (201-02, Task 3): an EXHAUSTED opt-in safe-step retry HALTS with a
+    // DISTINCT reason so the halt is observable as a Ralph-loop exhaustion rather than a
+    // plain low-quality stop. retry_exhausted = the cap bound; budget_brake = the EXEC-06
+    // budget bound below the cap. Either way the step HALTS (falls through to the gate,
+    // never silently proceeds) -- this branch precedes the generic quality_early_stop so
+    // the specific reason wins. Material steps never reach here (guarded above; B3 intact).
+    if (ralphHaltReason) {
+      completed = false;
+      haltedAt = { step: step, reason: ralphHaltReason, quality: quality, ralphAttempts: ralphAttempts };
+      break;
+    }
+
+    // EXEC-06 quality early-stop: a step that returns quality:low on a gate-passed
+    // path terminates the chain with a recorded reason (the downstream gate would
+    // halt on it anyway; stopping now avoids dispatching a doomed next step) --
+    // UNLESS the step declares a bounded on_fail back-edge (SHARED-08), in which
+    // case resolveSuccessor below routes to it instead of halting. Absent
+    // on_fail this branch is byte-identical to before this plan.
+    const hasOnFail = !!(step && step.on_fail !== undefined && step.on_fail !== null);
+    if (quality === LOW_QUALITY && !hasOnFail) {
+      completed = false;
+      haltedAt = { step: step, reason: 'quality_early_stop', quality: quality };
+      break;
+    }
+
+    // EXEC-02: this step's chain_output becomes the next step's previousOutput,
+    // carrying the quality forward so the gate can fire on it next hop.
+    previousOutput = chainOutput;
+
+    // SHARED-06 / SHARED-08: resolveSuccessor is the ONE named function that
+    // drives this loop -- no bare i + 1 successor arithmetic remains here. A
+    // declared on_fail is the bounded conditional back-edge (module header
+    // above); a declared on_pass routes on a passing verdict; absent both,
+    // the default is the exact i + 1 floor SHARED-06 requires.
+    const nextId = resolveSuccessor(step, quality, list, i);
+    if (nextId === null) break;
+    const nextIndex = _stepIndexById(list, nextId);
+    if (nextIndex === -1) break; // T-347-07-04: an id outside the list completes, never loops/throws.
+    i = nextIndex;
+  }
+
+  _closeChainStateDb(chainStateDbHandle);
+
+  return {
+    trace: trace,
+    completed: completed,
+    haltedAt: haltedAt,
+    run_id: chainRunId,
+    record_write_failures: chainStateWriteFailures,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// _computeResumePlan -- SYS-09 (Phase 354-03, CTX-RESUME). Positional step
+// identity for resume, computed ONCE from a single journal read, instead of
+// the old per-iteration `journal.chain` lookup keyed on `step.command`. A
+// command NAME is not step identity: a repeated command (research, validate,
+// research) collapses onto one `indexOf` hit, so the old per-iteration check
+// wrongly treated a later occurrence of an already-run command as also
+// already done. The two layers that disagreed: the executor's notion of
+// "already done" (a command name) versus the journal's (pipeline-state.cjs
+// chain_position, the SOLE chain-state truth per D-166-02). This function
+// makes them agree by first PROVING the executing step list and the
+// journal's chain describe the SAME chain (same length, same commands, same
+// order) before trusting the journal's position as a list INDEX.
+//
+// Returns one of:
+//   { skipThroughIndex: -1, predecessor: null, mismatch: null }
+//     -- no journal, or no journal.chain array: nothing to resume from.
+//   { skipThroughIndex: -1, predecessor: null, mismatch: 'resume_journal_mismatch', detail }
+//     -- the journal's chain does not match the list being executed; the
+//        caller must halt named rather than guess which steps already ran.
+//        detail carries ONLY command slugs and lengths, never user content
+//        (Part 8: bodies never leave onStep).
+//   { skipThroughIndex: <index>, predecessor: <ref|null>, mismatch: null }
+//     -- agreement proven; skipThroughIndex is the journal's chain_position
+//        (a list index, valid because of the agreement check), and
+//        predecessor is the restored { restored_from:'journal', output_path,
+//        step_index, command } reference for the first resumed step's
+//        fan-in input (never null when a predecessor step exists).
+function _chainMatchesList(chainArr, list) {
+  if (!Array.isArray(chainArr) || chainArr.length !== list.length) return false;
+  for (let idx = 0; idx < list.length; idx += 1) {
+    const cmd = list[idx] && list[idx].command;
+    if (chainArr[idx] !== cmd) return false;
+  }
+  return true;
+}
+
+function _firstDivergentIndex(chainArr, list) {
+  const chainLen = Array.isArray(chainArr) ? chainArr.length : 0;
+  const shorterLen = Math.min(chainLen, list.length);
+  for (let idx = 0; idx < shorterLen; idx += 1) {
+    const cmd = list[idx] && list[idx].command;
+    if (chainArr[idx] !== cmd) return idx;
+  }
+  return shorterLen; // the two agree up to the shorter length; divergence is the length mismatch itself
+}
+
+function _computeResumePlan(list, ps, roomDir) {
+  let journal = null;
+  try {
+    journal = (ps && typeof ps.read === 'function') ? ps.read(roomDir) : null;
+  } catch (_e) {
+    journal = null;
+  }
+
+  if (!journal || !Array.isArray(journal.chain)) {
+    return { skipThroughIndex: -1, predecessor: null, mismatch: null };
+  }
+
+  if (!_chainMatchesList(journal.chain, list)) {
+    return {
+      skipThroughIndex: -1,
+      predecessor: null,
+      mismatch: 'resume_journal_mismatch',
+      detail: {
+        journal_chain_length: journal.chain.length,
+        list_length: list.length,
+        first_divergent_index: _firstDivergentIndex(journal.chain, list),
+      },
+    };
+  }
+
+  const cursor = (typeof journal.chain_position === 'number') ? journal.chain_position : -1;
+  let predecessor = null;
+  if (cursor >= 0 && cursor < journal.chain.length) {
+    const cursorCommand = journal.chain[cursor];
+    let outputPath = null;
+    if (journal.last_tool === cursorCommand && typeof journal.output_path === 'string') {
+      outputPath = journal.output_path;
+    } else if (Array.isArray(journal.history)) {
+      for (let h = journal.history.length - 1; h >= 0; h -= 1) {
+        const entry = journal.history[h];
+        if (entry && entry.tool === cursorCommand) {
+          outputPath = (typeof entry.output_path === 'string') ? entry.output_path : null;
+          break;
+        }
+      }
+    }
+    predecessor = {
+      restored_from: 'journal',
+      output_path: outputPath,
+      step_index: cursor,
+      command: cursorCommand,
+    };
+  }
+
+  return { skipThroughIndex: cursor, predecessor: predecessor, mismatch: null };
+}
+
+// ---------------------------------------------------------------------------
+// _runChainResilient -- the EXEC-05 / D-166-01 async path (graceful partial).
+// ---------------------------------------------------------------------------
+/**
+ * Same six-callback contract as runChain, PLUS the reliability opts:
+ *   retries     bounded retries on a transient 5xx (default chain-retry default)
+ *   baseDelayMs / maxDelayMs   the exponential-with-cap backoff knobs
+ *   sleep       injectable sleep (tests pass a no-op recorder; default real timer)
+ *   roomDir     the room for the pipeline-state journal (resume/journal substrate)
+ *   journal     when true, recordStep journals each completed step (D-166-02)
+ *   resume      when true, honor the pipeline-state isNext hard gate and SKIP any
+ *               step already past the journaled position (re-enter at the failed
+ *               step; do NOT re-run upstream)
+ *
+ * Returns (async): { trace, completed, haltedAt, partial }
+ *   - On a clean run: { completed:true, haltedAt:null, partial:false }.
+ *   - On retry exhaustion (transient) OR a non-transient onStep fault: a GRACEFUL
+ *     PARTIAL -- the upstream trace is PRESERVED, a { step, failure:{code,reason},
+ *     partial:true } marker is folded into the ONE trace, the position is
+ *     journaled, and the return carries { completed:false, partial:true,
+ *     haltedAt:{ step, reason } }. NEVER null, NEVER a silent drop (SEED-028 /
+ *     the AION failure mode).
+ *
+ * The onStep dispatch is wrapped in chain-retry.withBackoff(isTransient): a
+ * transient 5xx retries with bounded backoff; a non-transient error fails fast.
+ * Reuses the Wave-1 pipeline-state.recordStep / isNext hard gate -- builds NO new
+ * orchestration path (Canon Part 7).
+ *
+ * fable-mode (HARN-02 / D-167-04, MEDIUM-3): the SAME selfCritiqueFn opt rides
+ * this async path. The seam is MIRRORED here at the same logical position --
+ * AFTER the post-withBackoff result.quality capture (so the dispatchError
+ * graceful-partial marker is never double-handled) and BEFORE the previousOutput
+ * fold -- via the ONE shared _applySelfCritique helper, so the sync and async
+ * seams cannot drift. A material step that fails self-critique gets quality
+ * augmented to LOW_QUALITY, feeding the identical quality_early_stop / LOW_QUALITY
+ * halt.
+ */
+async function _runChainResilient(list, o) {
+  const onStep = (typeof o.onStep === 'function') ? o.onStep : null;
+  if (!onStep) {
+    return { trace: [], completed: false, haltedAt: { step: null, reason: 'no_onStep_callback' }, partial: false };
+  }
+
+  const postureFn = (typeof o.postureFn === 'function') ? o.postureFn : _defaultPostureFn;
+  const gateFn = (typeof o.gateFn === 'function') ? o.gateFn : makeGateFn({ postureFn: postureFn, roomDir: o.roomDir, targetSection: o.targetSection, runId: o.runId });
+  const onHalt = (typeof o.onHalt === 'function') ? o.onHalt : function () { return 'defer'; };
+  const provenanceFn = (typeof o.provenanceFn === 'function') ? o.provenanceFn : null;
+  // Phase 237-03 (REACH-01): NO default, mirroring the sync path above (both
+  // sites must change identically; see the sync site's comment for the full
+  // rationale). Absent a caller-injected decideFn, decision_trace stays null.
+  const decideFn = (typeof o.decideFn === 'function') ? o.decideFn : null;
+  // fable-mode (HARN-02 / D-167-04): the SAME opt as the sync path; default no-op
+  // so an absent selfCritiqueFn keeps this path byte-identical to Wave-166.
+  const selfCritiqueFn = (typeof o.selfCritiqueFn === 'function') ? o.selfCritiqueFn : null;
+  const maxSteps = (typeof o.maxSteps === 'number' && o.maxSteps > 0)
+    ? Math.floor(o.maxSteps)
+    : DEFAULT_MAX_STEPS;
+
+  // Reliability knobs.
+  const retry = _loadRetry();
+  const sleep = (typeof o.sleep === 'function') ? o.sleep : undefined;
+  const retries = (typeof o.retries === 'number' && o.retries >= 0) ? Math.floor(o.retries) : undefined;
+  const baseDelayMs = (typeof o.baseDelayMs === 'number') ? o.baseDelayMs : undefined;
+  const maxDelayMs = (typeof o.maxDelayMs === 'number') ? o.maxDelayMs : undefined;
+
+  // Journal/resume substrate (Wave-1 pipeline-state.cjs, D-166-02).
+  const roomDir = (typeof o.roomDir === 'string') ? o.roomDir : null;
+  const doJournal = o.journal === true && roomDir;
+  const doResume = o.resume === true && roomDir;
+  const ps = (doJournal || doResume) ? _loadPipelineState() : false;
+
+  const trace = [];
+  let completed = true;
+  let haltedAt = null;
+  let partial = false;
+  let previousOutput = null;
+  let stepsRun = 0;
+
+  // Phase 347-04 (SHARED-03): the mirror of the sync path's run_id mint and
+  // db-handle resolution (see the sync runChain above for the full
+  // rationale). A missing database degrades the write helper to a no-op.
+  // CR-01 / CR-02 (347 code review): the SAME opts.runId / opts.stepIndexOffset
+  // overrides the sync path honors above, mirrored here so both loops share
+  // one contract (see the sync runChain's identical comment for the full
+  // rationale).
+  const chainRunId = (typeof o.runId === 'string' && o.runId.length > 0) ? o.runId : _mintChainRunId();
+  const stepIndexOffset = (typeof o.stepIndexOffset === 'number' && o.stepIndexOffset >= 0)
+    ? Math.floor(o.stepIndexOffset) : 0;
+  const chainStateDbHandle = _resolveChainStateDb(o);
+  const chainStateDb = chainStateDbHandle.db;
+  let chainStateWriteFailures = 0;
+  let lastChainStateNodeId = null;
+
+  // SYS-09 (354-03, CTX-RESUME): compute the resume plan ONCE, before the
+  // loop, from a single journal read -- not an indexOf-by-command-name lookup
+  // re-evaluated per iteration. A mismatch between the journal's chain and the
+  // list being executed halts named (resume_journal_mismatch) rather than
+  // guessing which steps already ran; the chain-state db handle is closed
+  // before this early return, mirroring every other exit path below.
+  let resumePlan = { skipThroughIndex: -1, predecessor: null, mismatch: null };
+  if (doResume && ps) {
+    resumePlan = _computeResumePlan(list, ps, roomDir);
+    if (resumePlan.mismatch) {
+      _closeChainStateDb(chainStateDbHandle);
+      return {
+        trace: [],
+        completed: false,
+        haltedAt: { step: list[0] || null, reason: resumePlan.mismatch, detail: resumePlan.detail },
+        partial: false,
+        run_id: chainRunId,
+        record_write_failures: 0,
+      };
+    }
+  }
+  if (resumePlan.predecessor) {
+    // Seed the first dispatched step's fan-in input with the restored
+    // predecessor reference (output_path 'a.md'-style, never null).
+    previousOutput = resumePlan.predecessor;
+  }
+  // resumePassActive stays true only through the journaled skip-window; it is
+  // permanently retired the moment the loop reaches its first non-skipped
+  // index (see the loop body below), so a LATER on_fail back-edge to an
+  // earlier index is never silently re-skipped as if it were still the
+  // original resume pass.
+  let resumePassActive = doResume && resumePlan.skipThroughIndex >= 0;
+
+  for (let i = 0; i < list.length;) {
+    const step = list[i];
+
+    // EXEC-06 budget brake (unchanged contract).
+    if (stepsRun >= maxSteps) {
+      completed = false;
+      haltedAt = { step: step, reason: 'budget_brake', maxSteps: maxSteps };
+      break;
+    }
+
+    // D-166-02 resume: re-enter at the journaled failed step, do NOT re-run
+    // upstream. Step identity is the LIST INDEX i (SYS-09, 354-03), valid
+    // because _computeResumePlan's agreement check above already proved the
+    // list and the journal describe the SAME chain -- a positional cursor,
+    // never a command-name lookup that collapses on a repeated command.
+    // resumePassActive is retired (set false) the instant the loop reaches
+    // its first non-skipped index, so a later on_fail back-edge to an
+    // earlier index is never silently skipped a second time.
+    if (resumePassActive) {
+      if (i <= resumePlan.skipThroughIndex) {
+        // Already journaled as completed: skip without re-dispatching onStep.
+        i += 1;
+        continue;
+      }
+      resumePassActive = false;
+    }
+
+    // EXEC-01 + B2: re-call decide() per loop; record decision_trace UNCHANGED.
+    // Phase 237-03 (REACH-01): decideFn has NO default -- see the sync path's
+    // comment above the identical block for the full rationale (unadapted
+    // shape, dead default, preserved seam for scripts/act-command.cjs).
+    let decisionTrace = null;
+    if (typeof decideFn === 'function') {
+      try {
+        const decision = decideFn({ step: step, index: i }, { previousOutput: previousOutput });
+        decisionTrace = (decision && decision.decision_trace) ? decision.decision_trace : null;
+      } catch (_e) {
+        decisionTrace = null;
+      }
+    }
+
+    // EXEC-03 gate (unchanged): fail-closed halt on a gate fault.
+    let posture = null;
+    try { posture = postureFn(step && step.command); } catch (_e) { posture = null; }
+    let verb = 'halt';
+    try { verb = gateFn(step, posture, previousOutput); } catch (_e) { verb = 'halt'; }
+
+    if (verb !== 'run') {
+      let userVerb = 'defer';
+      try {
+        userVerb = onHalt(step, { previousOutput: previousOutput, posture: posture, decisionTrace: decisionTrace });
+      } catch (_e) {
+        userVerb = 'defer';
+      }
+      completed = false;
+      haltedAt = {
+        step: step,
+        reason: isIrreversibleStep(step) ? 'forced_material' : _haltReasonFor(step),
+        verb: userVerb,
+        stopped: _isStopVerb(userVerb),
+      };
+      if (_haltConstraintFor(step)) {
+        const _ce = _haltConstraintFor(step);
+        haltedAt.constraint = { kind: _ce.kind, value: _ce.value, why: _ce.why };
+      }
+      break;
+    }
+
+    // SHARED-08 fan-in: collect declared predecessor step outputs through a
+    // CLOSED reducer enum handle, never a function carried in data
+    // (T-347-07-03). A malformed declaration or an unknown handle halts
+    // named rather than silently picking a default.
+    let fanInInput = previousOutput;
+    if (step && step.fan_in && typeof step.fan_in === 'object') {
+      const fanInResult = _applyFanIn(step.fan_in, trace);
+      if (!fanInResult.ok) {
+        completed = false;
+        haltedAt = { step: step, reason: fanInResult.reason };
+        break;
+      }
+      fanInInput = fanInResult.value;
+    }
+
+    // RUN: dispatch the per-step brick. A declared fan_out (SHARED-08,
+    // WD-347-1) is declared here and its execution is delegated to the
+    // lazily-loaded cell-fanout engine through the translation-only adapter
+    // above (see this file's own fan-out header paragraph). Absent fan_out,
+    // dispatch THROUGH bounded retry-with-backoff (EXEC-05) exactly as
+    // before this plan. A transient 5xx retries with backoff; a
+    // non-transient error fails fast inside withBackoff and surfaces here
+    // as a throw.
+    let result = null;
+    let dispatchError = null;
+    let fanOutOutcome = null;
+    const hasFanOut = Array.isArray(step && step.fan_out) && step.fan_out.length > 0;
+    if (hasFanOut) {
+      const fanOutFn = (typeof o.fanOutFn === 'function') ? o.fanOutFn : _defaultFanOutFn;
+      const stepId = _stepIdOf(step);
+      const inputRecordId = (fanInInput && typeof fanInInput === 'object' && typeof fanInInput.record_id === 'string')
+        ? fanInInput.record_id
+        : (stepId !== undefined ? ('input:' + stepId) : null);
+      try {
+        fanOutOutcome = await _dispatchFanOut(step, inputRecordId, fanOutFn);
+      } catch (_e) {
+        fanOutOutcome = { entries: [], cellResult: { cells: [], dropped: [], plan: { requested: step.fan_out.length, dispatched: 0, capped: false } } };
+      }
+      result = {
+        chain_output: { fan_out: fanOutOutcome.entries, plan: fanOutOutcome.cellResult && fanOutOutcome.cellResult.plan },
+        quality: 'high',
+      };
+    } else {
+      try {
+        if (retry && typeof retry.withBackoff === 'function') {
+          result = await retry.withBackoff(
+            function () { return onStep(step, fanInInput); },
+            {
+              retries: retries,
+              baseDelayMs: baseDelayMs,
+              maxDelayMs: maxDelayMs,
+              sleep: sleep,
+              // We want the loop -- not withBackoff -- to author the graceful
+              // partial, so ask for the thrown marker on exhaustion and catch it.
+              returnMarkerOnExhaust: false,
+            }
+          );
+        } else {
+          // Degrade gracefully when chain-retry is unavailable: a single attempt.
+          result = await onStep(step, fanInInput);
+        }
+      } catch (err) {
+        dispatchError = err;
+      }
+    }
+
+    if (dispatchError) {
+      // GRACEFUL PARTIAL (SEED-028 / the AION failure mode). The chain is NEVER
+      // silently dropped: fold a failure marker into the ONE trace, journal the
+      // position, and return the upstream trace preserved with partial:true.
+      const transient = !!(retry && typeof retry.isTransient === 'function' && retry.isTransient(dispatchError));
+      const code = (typeof dispatchError.code === 'number')
+        ? dispatchError.code
+        : _codeFromError(dispatchError);
+      const reason = dispatchError.exhausted === true
+        ? 'transient_retry_exhausted'
+        : (transient ? 'transient_failure' : 'non_transient_hard_failure');
+
+      trace.push({
+        step: step,
+        chain_output: null,
+        quality: null,
+        decision_trace: decisionTrace,
+        failure: {
+          code: (typeof code === 'number') ? code : null,
+          reason: reason,
+          message: (dispatchError && dispatchError.message) ? String(dispatchError.message) : null,
+          attempts: (typeof dispatchError.attempts === 'number') ? dispatchError.attempts : 1,
+        },
+        partial: true,
+      });
+
+      // Journal the failed position so a resume re-enters HERE (D-166-02). The
+      // journal cursor stays at the last SUCCEEDED step; the failed step is
+      // recorded only in the trace, so checkPosition still names it as next.
+      completed = false;
+      partial = true;
+      haltedAt = {
+        step: step,
+        reason: reason,
+        partial: true,
+        code: (typeof code === 'number') ? code : null,
+      };
+      break;
+    }
+
+    result = result || {};
+    const chainOutput = (result.chain_output !== undefined) ? result.chain_output : null;
+    let quality = (typeof result.quality === 'string') ? result.quality : null;
+
+    // SHARED-10 (Phase 347-10): MIRROR of the sync path's opt-in independent-
+    // reviewer dispatch. Fires ONLY when the step declares reviewer.kind ===
+    // 'subagent'; reuses the SAME selfCritiqueFn seam _applySelfCritique
+    // below uses. A reviewer dispatch charges the same EXEC-06 brake below.
+    let reviewerInfo = null;
+    let reviewerDispatchCharge = 0;
+    if (step && _stepWantsReviewerDispatch(step) && typeof selfCritiqueFn === 'function' &&
+        !_isMaterialStep(step, posture)) {
+      const rd = _applyReviewerDispatch(selfCritiqueFn, step, result, quality);
+      quality = rd.quality;
+      reviewerInfo = rd.reviewer;
+      if (rd.dispatched) reviewerDispatchCharge = 1;
+    }
+
+    // fable-mode seam (HARN-02 / D-167-04, MEDIUM-3): MIRROR of the sync seam.
+    // Runs AFTER the post-withBackoff dispatchError guard (so a graceful-partial
+    // failure marker is never touched by the critique) and BEFORE the
+    // previousOutput fold. Shared with the sync path via _applySelfCritique.
+    const critiqueOutcome = _applySelfCritique(selfCritiqueFn, step, posture, result, quality);
+    quality = critiqueOutcome.quality;
+    if (critiqueOutcome.reviewer) reviewerInfo = critiqueOutcome.reviewer;
+
+    if (provenanceFn) {
+      try { provenanceFn(step, result); } catch (_e) { /* best-effort */ }
+    }
+
+    trace.push({
+      step: step,
+      chain_output: chainOutput,
+      quality: quality,
+      decision_trace: decisionTrace,
+      reviewer: reviewerInfo,
+    });
+    stepsRun += 1 + reviewerDispatchCharge;
+
+    // SHARED-08: map the delegated fan-out engine's returned cells back onto
+    // individual trace entries, one per declared step id, immediately after
+    // the parent step's own entry. quality:null -- a fanned cell is a
+    // declared shape, not a gated dispatch; it carries no verdict of its own.
+    if (fanOutOutcome) {
+      for (const entry of fanOutOutcome.entries) {
+        trace.push({
+          step: { step: entry.fan_out_step, fan_out_of: _stepIdOf(step) },
+          chain_output: {
+            stance: entry.stance,
+            evidence: entry.evidence,
+            confidence: entry.confidence,
+            input_record_id: entry.input_record_id,
+          },
+          quality: null,
+          decision_trace: null,
+        });
+      }
+    }
+
+    // Phase 347-04 (SHARED-03): the mirrored per-step record write (see the
+    // sync path above for the full rationale). Runs BEFORE the D-166-02
+    // journal call below and BEFORE the previousOutput fold, so a step that
+    // halts on quality_early_stop still leaves its record anchored.
+    const chainStateRecord = _writeStepRecord({
+      db: chainStateDb,
+      opts: o,
+      runId: chainRunId,
+      stepIndex: i + stepIndexOffset,
+      step: step,
+      chainOutput: chainOutput,
+      quality: quality,
+      predecessorNodeId: lastChainStateNodeId,
+    });
+    if (chainStateRecord) {
+      lastChainStateNodeId = chainStateRecord.node_id;
+    } else if (chainStateDb) {
+      chainStateWriteFailures += 1;
+    }
+
+    // D-166-02: journal the COMPLETED step via the Wave-1 recordStep so a resume
+    // advances the cursor and skips it next time. The artifact path is the
+    // step's chain_output handle (a generic reference, never user content -- the
+    // body never leaves onStep; Part 8).
+    if (doJournal && ps && typeof ps.recordStep === 'function') {
+      try {
+        ps.recordStep(roomDir, step.command, 'chain-output:' + step.command);
+      } catch (_e) { /* journal is best-effort; the trace remains the truth */ }
+    }
+
+    // EXEC-06 quality early-stop -- UNLESS the step declares a bounded on_fail
+    // back-edge (SHARED-08), mirroring the sync path's identical branch above.
+    // Absent on_fail this is byte-identical to before this plan.
+    const hasOnFail = !!(step && step.on_fail !== undefined && step.on_fail !== null);
+    if (quality === LOW_QUALITY && !hasOnFail) {
+      completed = false;
+      haltedAt = { step: step, reason: 'quality_early_stop', quality: quality };
+      break;
+    }
+
+    previousOutput = chainOutput;
+
+    // SHARED-06 / SHARED-08: the mirror of the sync path's resolveSuccessor
+    // wiring -- see that path's comment for the full rationale. One named
+    // function drives both loops; no bare i + 1 successor arithmetic remains
+    // in either.
+    const nextId = resolveSuccessor(step, quality, list, i);
+    if (nextId === null) break;
+    const nextIndex = _stepIndexById(list, nextId);
+    if (nextIndex === -1) break; // T-347-07-04: an id outside the list completes, never loops/throws.
+    i = nextIndex;
+  }
+
+  // SYS-09 (354-03, CTX-RESUME): completion agreement. When journaling is on
+  // and the loop believes it completed, re-read the journal and refuse to
+  // report completed:true if the durable journal's own cursor disagrees --
+  // a step the executor thinks ran but the SOLE chain-state truth (D-166-02)
+  // never recorded must never be reported as a clean completion. Applied
+  // ONLY when the journal's chain agrees with the executed list (same length,
+  // same commands); a caller that journals a list that was never initChain'd
+  // keeps today's behavior unchanged.
+  if (doJournal && completed === true && ps && typeof ps.read === 'function') {
+    let finalJournal = null;
+    try { finalJournal = ps.read(roomDir); } catch (_e) { finalJournal = null; }
+    if (finalJournal && Array.isArray(finalJournal.chain) && _chainMatchesList(finalJournal.chain, list)) {
+      const expectedPosition = list.length - 1;
+      if (finalJournal.chain_position !== expectedPosition) {
+        completed = false;
+        haltedAt = {
+          step: null,
+          reason: 'journal_disagreement',
+          journal_position: finalJournal.chain_position,
+          expected_position: expectedPosition,
+        };
+      }
+    }
+  }
+
+  _closeChainStateDb(chainStateDbHandle);
+
+  return {
+    trace: trace,
+    completed: completed,
+    haltedAt: haltedAt,
+    partial: partial,
+    run_id: chainRunId,
+    record_write_failures: chainStateWriteFailures,
+  };
+}
+
+// Pull a numeric status off an error when chain-retry did not already decorate
+// it with .code (e.g. a non-transient error that failed fast). Mirrors
+// chain-retry's _extractCode minimally for the failure-marker code field.
+function _codeFromError(err) {
+  if (!err || typeof err !== 'object') return null;
+  if (typeof err.status === 'number') return err.status;
+  if (typeof err.statusCode === 'number') return err.statusCode;
+  return null;
+}
+
+module.exports = {
+  runChain: runChain,
+  makeGateFn: makeGateFn,
+  isIrreversibleStep: isIrreversibleStep,
+  IRREVERSIBLE_HINTS: IRREVERSIBLE_HINTS,
+  DEFAULT_MAX_STEPS: DEFAULT_MAX_STEPS,
+  // Phase 347-07 (SHARED-06 / SHARED-08): the ONE named, pure successor
+  // function driving both loops.
+  resolveSuccessor: resolveSuccessor,
+  // CR-02 (347 code review): the ONE additional entry point onto the per-step
+  // record writer, for the one step neither runChain loop's own write call
+  // site ever reaches (a halted-then-approved material step, executed
+  // directly by lib/mcp/tools/chain.cjs's _executeResumedEntry, outside
+  // either loop). Not a second write authority -- see the function's own doc
+  // comment above.
+  writeApprovedStepRecord: writeApprovedStepRecord,
+  // Phase 177 Wave 5 (BCH-09): re-export the LOCKED arming flag (read lazily from
+  // its calibration-gate home; false ALWAYS today) so callers/tests can read the
+  // shipped default WITHOUT re-typing the literal. This getter never mutates the
+  // owner's constant -- arming the live escape hatch is data-gated AND
+  // Canon-Custodian-gated, out of scope for this wave.
+  get BEHAVIORAL_CHANNEL_ARMED() { return _loadBehavioralChannelArmed(); },
+};

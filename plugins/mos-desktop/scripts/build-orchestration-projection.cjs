@@ -1,0 +1,1221 @@
+#!/usr/bin/env node
+'use strict';
+
+/*
+ * Phase 157-02 - Brain orchestration projection generator (the nodes layer +
+ * the cross-domain-analogue seed read + the OPERATES edge scaffold).
+ *
+ * Implements: BOG-02 (methodology_tier on every node), BOG-03 (derived, never
+ * hand-authored), BOG-04 (per-file node grain), BOG-09 (zero live Brain),
+ * BOG-10 (generic machinery metadata only).
+ *
+ * THE GENERATOR IS A PART 7 REUSE SIBLING of
+ * scripts/build-connector-registry.cjs. It mirrors that file wholesale: the
+ * deterministic listSourceFiles() walk (commands/*.md + skills/<dir>/SKILL.md +
+ * agents/*.md, sorted), the build* -> serialize* -> byte-compare discipline, and
+ * the three-branch main(). The ONE structural difference is that this generator
+ * does NOT hand-roll a frontmatter parser: the connector/command registries are
+ * ALREADY committed JSON sources (Part 7 - the registries exist), so it reads
+ * them with fs.readFileSync + JSON.parse instead of re-walking frontmatter. The
+ * skills/agents file walk supplies the per-file node grain for surfaces that the
+ * registries do not enumerate (skills carry no connector frontmatter, D-01).
+ *
+ * Canon Part 8 (The Graph Boundary) + the Phase 157 amendment (Appendix D entry
+ * 19): the projection carries ONLY generic machinery metadata - command slugs,
+ * reach_ids, sub_modes, framework names, methodology_tier, ranking inputs, and
+ * typed edges. EVERY node carries a methodology_tier of exactly "pws" (the
+ * teaching IP frameworks) or "mindrian-operation" (the /mos commands, the 6
+ * frozen reaches + sub_modes, skills, agents, the connector spine). A node
+ * without a methodology_tier is not a legal projection node. The projection
+ * never carries user content. It is a Brain-DERIVED LOCAL cache (Part 9): there
+ * is NO live Brain read and NO live Brain write anywhere in this file - no
+ * brain-client require, no fetch, no http. The Brain is the external cortex the
+ * projection is shaped after, never a runtime dependency.
+ *
+ * This plan (157-02) delivers the nodes[] layer, the cross-domain-analogue seed
+ * read (which mints the analogue-endpoint framework nodes so Wave 3's edges do
+ * not dangle), and the OPERATES edge scaffold (command -> framework). Plan 03
+ * completes the full typed-edge layer (CHAINS / FEEDS_INTO / PREREQUISITE /
+ * CROSS_DOMAIN_ANALOGUE) + the ranking-input exposure; Plan 04 adds the --check
+ * tripwire (STALE / UN-WIRED / UN-RANKED). main() is structured so Plan 04 can
+ * add the --check branch with no refactor.
+ *
+ * Usage:
+ *   node scripts/build-orchestration-projection.cjs
+ *       read the registries + walk skills/agents + read cross-domain-analogues
+ *       -> write data/brain-orchestration-projection.json
+ */
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+// The 6 frozen reaches (Phase 148 D-09) + the 3 postures come from the SINGLE
+// frozen source so the projection's reach nodes can NEVER drift from the dial
+// doctrine. This require is sync, zero-I/O, and makes ZERO Brain/network calls
+// (Part 8). We NEVER redefine the frozen 6 here.
+const { REACH_IDS } = require(
+  path.join(REPO_ROOT, 'lib', 'core', 'sensors', 'sensor-types.cjs')
+);
+
+const DATA_DIR = path.join(REPO_ROOT, 'data');
+const COMMANDS_DIR = path.join(REPO_ROOT, 'commands');
+const SKILLS_DIR = path.join(REPO_ROOT, 'skills');
+const AGENTS_DIR = path.join(REPO_ROOT, 'agents');
+
+const CONNECTOR_REGISTRY_PATH = path.join(DATA_DIR, 'connector-registry.json');
+// The connector-layer coverage ledger (Phase 172-03 / 143.3). The CONNECTOR
+// generator (build-connector-registry.cjs) is the authority for whether a
+// SURFACE is WIRED or EXCLUDED at the connector layer. Phase 172-13 reconciles
+// the projection to it: a command counterpart whose surface is EXCLUDED in the
+// connector layer is EXCLUDED in the projection command-ledger too (the
+// connector EXCLUDE decision PROPAGATES down), so a deprecated/utility surface
+// excluded once (in its own connector:{excluded} frontmatter, distilled into
+// this ledger) is never re-surfaced as an un-ranked projection gap. Read-only,
+// zero Brain/network (Part 8).
+const CONNECTOR_COVERAGE_LEDGER_PATH = path.join(DATA_DIR, 'connector-coverage-ledger.json');
+const COMMAND_REGISTRY_PATH = path.join(DATA_DIR, 'command-registry.json');
+const ANALOGUES_PATH = path.join(DATA_DIR, 'cross-domain-analogues.json');
+const PROJECTION_PATH = path.join(DATA_DIR, 'brain-orchestration-projection.json');
+// The wired-XOR-allowlisted ledger (Phase 144.1 out-of-spine allow-list idiom),
+// read ONLY by the --check UN-WIRED leg (BOG-06). A framework named here is
+// intentionally not reach-wired and does NOT fire UN-WIRED. A bare JSON array of
+// { framework, reason }. Plan 04 Task 0 resolved the live orphan set down to a
+// single allowlisted entry (MECE, a component under The Pyramid Principle).
+const UNWIRED_ALLOWLIST_PATH = path.join(DATA_DIR, 'orchestration-unwired-allowlist.json');
+// The command-grained wired-XOR-excluded ledger (Phase 172-03, INV-04/05/06).
+// Mirrors the wired-XOR-allowlisted framework ledger above, but at the COMMAND
+// grain: every command node is classified ranked | excluded | gap. The ledger is
+// the EXCLUDED source of truth - a non-framework utility command (doctor,
+// dashboard, setup, help, ...) is listed here with state:excluded + a reason, so
+// it is a first-class conformant terminal state (Canon Part 11 R1), never a
+// silent dark command. The ledger is GENERATED (serializeCommandLedger) on the
+// default run and STALE-byte-checked in --check; it is the R5 gate source of
+// truth for command counterparts. A bare JSON object
+// { generated_note, counts, commands:[{command, source, state}] }.
+const COMMAND_LEDGER_PATH = path.join(DATA_DIR, 'orchestration-command-ledger.json');
+
+const GENERATED_NOTE =
+  'GENERATED by scripts/build-orchestration-projection.cjs - do not edit by hand';
+
+// The two legal methodology_tier values (Canon Part 8, Phase 157 amendment).
+// pws = teaching IP frameworks; mindrian-operation = the machinery.
+const TIER_PWS = 'pws';
+const TIER_OP = 'mindrian-operation';
+
+// ---------------------------------------------------------------------------
+// The EXCLUDED-command table (Phase 172-03, INV-04/05; Canon Part 11 R1).
+// Because the command ledger is GENERATED (never hand-authored, mirroring the
+// projection itself, BOG-03), the EXCLUDED dispositions live HERE as the
+// authoritative source: a /mos: command slug -> the documented reason it warrants
+// NO mindrian-operation counterpart node. These are the utility commands that
+// neither trigger, chain, nor monitor a thinking surface (doctor/dashboard/setup
+// /help and the like, plus the destructive-admin + render-only + system-status
+// utilities). A command listed here is classified `excluded` (a first-class
+// conformant terminal state, NEVER dark, R1); every OTHER bare command (no
+// reach_id, not excluded) is classified `gap`. EXCLUDED REQUIRES a reason
+// (T-172-06 tampering mitigation): the table value IS the reason, so a command
+// can never be silently both-excluded-and-reasonless. The warranted-dark
+// thinking commands (the rs-* family, causal, ...) are NOT excluded here - they
+// are gaps to be wired in Wave 2/3. WARN-only at this stage (D-172-e); the
+// hard-FAIL flip is Wave 4 / Plan 172-13.
+const EXCLUDED_COMMANDS = Object.freeze({
+  '/mos:doctor': 'Health-check / diagnostic utility; runs the install + acceptance gates. Pure machinery with no thinking-surface trigger, chain, or monitor; warrants no mindrian-operation counterpart.',
+  '/mos:dashboard': 'Render-only De Stijl dashboard view over the room folder. A presentation utility, not a reach-dispatched thinking surface.',
+  '/mos:admin': 'Destructive administrative utility (room and registry maintenance). System plumbing, never a context-triggered reach.',
+  '/mos:models': 'Model-profile inspection utility. Configuration surface, not a thinking-surface trigger.',
+  '/mos:setup': 'One-time setup / connection utility (graph, brain). Bootstrap plumbing, not a reach.',
+  '/mos:help': 'Help / command-listing utility. Discovery surface, not a thinking-surface trigger.',
+  '/mos:export': 'Export / snapshot utility (room -> vault/file). I/O plumbing, not a reach-dispatched surface.',
+  '/mos:publish': 'Publish / deploy utility. Release plumbing, not a thinking surface.',
+  '/mos:rooms': 'Multi-room registry / switching utility. Navigation plumbing, not a reach.',
+  '/mos:snapshot': 'Snapshot export utility. I/O plumbing, not a thinking surface.',
+  '/mos:ingest-methodology': 'Methodology-ingest pipeline entry (Phase 171). It is the PROMOTION-PATH machinery (dark -> counterpart -> pws frontier), not itself a reach-dispatched thinking surface.',
+  '/mos:update': 'Plugin self-update utility. Lifecycle plumbing, not a thinking surface.',
+  '/mos:status': 'Session / room status readout utility. Status surface, not a reach.',
+  '/mos:hmi-status': 'HMI / dial status readout utility. Diagnostic surface, not a reach.',
+  '/mos:splash': 'Splash / banner render utility. Presentation-only, not a thinking surface.',
+  '/mos:dogfood-flush': 'Dogfood telemetry flush utility. Internal bookkeeping, not a reach.',
+  '/mos:scheduled-tasks': 'Scheduled-task management utility. Scheduling plumbing, not a thinking surface.',
+  '/mos:mos': 'Top-level command-group alias / router. Dispatch plumbing, not a reach.',
+});
+
+// ---------------------------------------------------------------------------
+// loadConnectorExcludedCommands() -- the projection-exclude RECONCILIATION
+// (Phase 172-13, the navigator-approved "full flip" 2026-06-23). Reads the
+// connector-layer coverage ledger (data/connector-coverage-ledger.json, the
+// distillation of every surface's connector:{excluded:true,reason} frontmatter)
+// and returns the Set of COMMAND surfaces classified `excluded` there. This is
+// the source of truth for PROPAGATING the connector EXCLUDE decision into the
+// projection: a command excluded at the connector layer (a deprecated redirect,
+// a render/utility surface) is excluded in the projection command-ledger too,
+// never re-counted as a bare-command gap. The projection's own EXCLUDED_COMMANDS
+// table stays the AUTHORITATIVE local reason source for projection-native
+// exclusions (doctor/setup/help and the like); the connector-excluded set is an
+// ADDITIVE propagation on top of it (their union is the projection-excluded
+// set). Degrades to an empty Set on any read failure (mirrors readJson). ZERO
+// Brain/network (Part 8).
+// ---------------------------------------------------------------------------
+function loadConnectorExcludedCommands() {
+  const ledger = readJson(CONNECTOR_COVERAGE_LEDGER_PATH);
+  const out = new Set();
+  if (!ledger || !Array.isArray(ledger.surfaces)) return out;
+  for (const s of ledger.surfaces) {
+    if (
+      s &&
+      s.source === 'command' &&
+      s.state === 'excluded' &&
+      typeof s.surface === 'string'
+    ) {
+      out.add(s.surface);
+    }
+  }
+  return out;
+}
+
+// Memoized connector-excluded command Set, lazily loaded once per process so the
+// repeated classifier calls (commandCoverageReport + validateProjection) do not
+// re-read the ledger file. A test may pass an explicit Set to the classifier to
+// bypass the cache.
+let _connectorExcludedCache = null;
+function connectorExcludedCommands() {
+  if (_connectorExcludedCache === null) {
+    _connectorExcludedCache = loadConnectorExcludedCommands();
+  }
+  return _connectorExcludedCache;
+}
+
+// The closed set of node kinds (file-level grain, BOG-04). framework nodes are
+// pws; every other kind is mindrian-operation machinery.
+const NODE_KINDS = Object.freeze([
+  'command',
+  'skill',
+  'agent',
+  'framework',
+  'reach',
+  'sub_mode',
+]);
+
+// The documented CLOSED set of edge types the projection emits (BOG-05). Exactly
+// these five, frozen. Mirrors the frozen-bank idiom of
+// lib/core/sensors/sensor-types.cjs REACH_IDS and
+// lib/core/navigation/edges.cjs ALLOWED_EDGE_TYPES. An undocumented edge type is
+// rejected at build by the addEdge() chokepoint. The set is a CEILING, not a
+// floor: OPERATES (>=1 per framework-declaring command) and CROSS_DOMAIN_ANALOGUE
+// (one per analogue pair, >=2) are hard floors; the three chaining types
+// (CHAINS / FEEDS_INTO / PREREQUISITE) are emitted ONLY from a populated
+// curated_chains source, which is empty today (see generated_note).
+const ALLOWED_EDGE_TYPES = Object.freeze(new Set([
+  // command -> framework. The connector/command registries' framework_index
+  // inverse map, promoted to a typed edge.
+  'OPERATES',
+  // framework -> framework sequential chaining (from curated_chains kind=chain).
+  'CHAINS',
+  // framework -> framework OR reach -> reach progression (curated_chains
+  // kind=feeds_into).
+  'FEEDS_INTO',
+  // framework -> framework prerequisite relation (curated_chains
+  // kind=prerequisite).
+  'PREREQUISITE',
+  // framework <-> framework cross-domain analogy (the 150.10 hand-wired pairs
+  // read from data/cross-domain-analogues.json).
+  'CROSS_DOMAIN_ANALOGUE',
+]));
+
+// Backwards-compatible alias retained for the Plan 02 export surface + tests.
+const EDGE_TYPES = Object.freeze(Array.from(ALLOWED_EDGE_TYPES));
+
+// ---------------------------------------------------------------------------
+// The Part 8 boundary-scan field allowlists (Plan 05, BOG-10). These are the
+// SINGLE SOURCE OF TRUTH the docs/ORCHESTRATION-PROJECTION-CONTRACT.md cache
+// contract documents AND the boundary scan
+// (tests/test-orchestration-projection-part8-boundary.cjs) asserts against. A
+// node key outside NODE_FIELD_ALLOWLIST or an edge key outside
+// EDGE_FIELD_ALLOWLIST is a Part 8 breach (a candidate user-content field), and
+// the scan fails the build before the artifact lands. Every name here is a
+// GENERIC machinery field (an id, a kind, a tier, a name, a ranking enum/scalar,
+// a typed-edge endpoint); NONE is a user-content channel.
+//
+// The list mirrors the node schema in docs/ORCHESTRATION-PROJECTION-CONTRACT.md
+// section 2 EXACTLY: { id, kind, methodology_tier, name } on every node, plus the
+// connector-derived ranking inputs (reach_id, sub_mode, hierarchy_rank, posture,
+// sensor_triggers, framework), plus the two provenance blocks (chain_provenance,
+// ranking). chain_provenance + ranking are sub-objects whose KEYS are themselves
+// restricted to this same generic set (the scan descends into them); they carry
+// NO new field name beyond the allowlist.
+const NODE_FIELD_ALLOWLIST = Object.freeze([
+  // The mandatory four (every node).
+  'id',
+  'kind',
+  'methodology_tier',
+  'name',
+  // Connector-derived ranking inputs (BOG-07; enum/scalar/id only).
+  'reach_id',
+  'sub_mode',
+  'hierarchy_rank',
+  'posture',
+  'sensor_triggers',
+  'framework',
+  // The chain-provenance sub-block + its inner keys (all generic handles).
+  'chain_provenance',
+  'command',
+  'firing_sensors',
+  // The Plan 02 ranking sub-block (same scalars as the top-level fields).
+  'ranking',
+]);
+
+// Every edge is { type, from, to } where from/to are node ids and type is one of
+// the closed ALLOWED_EDGE_TYPES set, OPTIONALLY carrying the two earned-chain
+// scalars `confidence` (a curated float) and `transform` (a SHORT generic
+// handoff descriptor -- a chain-step machinery string, never user content), which
+// mirror the verified Brain FEEDS_INTO {confidence, transform} edge schema
+// (research/172-SPFO-CHAIN-MODEL-REFERENCE.md, Plan 172-15, Canon Part 11 R6 /
+// INV-08). `transform` is enum/scalar machinery metadata (Part 8) -- the
+// forbidden-value heuristic still fences any room/ path, email, or over-cap body.
+// An edge key OUTSIDE this set is a Part 8 breach.
+const EDGE_FIELD_ALLOWLIST = Object.freeze([
+  'type',
+  'from',
+  'to',
+  'confidence',
+  'transform',
+]);
+
+// The curated_chains kind -> edge type mapping (documented in
+// docs/ORCHESTRATION-PROJECTION-CONTRACT.md). A curated_chains entry declares a
+// `kind`; this maps it to one of the three chaining edge types. Anything else is
+// rejected by addEdge() (the type would not be in ALLOWED_EDGE_TYPES).
+const CHAIN_KIND_TO_EDGE_TYPE = Object.freeze({
+  chain: 'CHAINS',
+  feeds_into: 'FEEDS_INTO',
+  prerequisite: 'PREREQUISITE',
+});
+
+// ---------------------------------------------------------------------------
+// readJson(p) -- read a committed JSON source. Returns null on any failure so
+// the generator degrades rather than throwing (mirrors the connector
+// generator's try/catch-yields-empty discipline).
+// ---------------------------------------------------------------------------
+function readJson(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_e) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// listSourceFiles() -- walk commands/*.md AND skills/<dir>/SKILL.md AND
+// agents/*.md, deterministically sorted (commands, then skills, then agents),
+// so the projection is byte-stable across machines. Byte-mirrors
+// build-connector-registry.cjs listSourceFiles() (same readdirSync + .md filter
+// + sort + try/catch-yields-[] when a dir is absent). Returns
+// [{ kind, file, base }].
+// ---------------------------------------------------------------------------
+function listSourceFiles() {
+  const out = [];
+
+  let cmdFiles = [];
+  try {
+    cmdFiles = fs.readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.md')).sort();
+  } catch (_e) {
+    cmdFiles = [];
+  }
+  for (const f of cmdFiles) {
+    out.push({ kind: 'command', file: path.join(COMMANDS_DIR, f), base: f.replace(/\.md$/, '') });
+  }
+
+  let skillDirs = [];
+  try {
+    skillDirs = fs
+      .readdirSync(SKILLS_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+  } catch (_e) {
+    skillDirs = [];
+  }
+  for (const d of skillDirs) {
+    const skillFile = path.join(SKILLS_DIR, d, 'SKILL.md');
+    if (fs.existsSync(skillFile)) {
+      out.push({ kind: 'skill', file: skillFile, base: d });
+    }
+  }
+
+  let agentFiles = [];
+  try {
+    agentFiles = fs.readdirSync(AGENTS_DIR).filter((f) => f.endsWith('.md')).sort();
+  } catch (_e) {
+    agentFiles = [];
+  }
+  for (const f of agentFiles) {
+    out.push({ kind: 'agent', file: path.join(AGENTS_DIR, f), base: f.replace(/\.md$/, '') });
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// commandSurfaceId(base) -- the /mos: surface name for a command base, matching
+// the connector-registry surface naming exactly so OPERATES edges line up with
+// the framework_index inverse-index values.
+// ---------------------------------------------------------------------------
+function commandSurfaceId(base) {
+  return '/mos:' + base;
+}
+
+// ---------------------------------------------------------------------------
+// distinctFrameworks(commandReg, connectorReg, analogues) -- the DERIVED
+// distinct-framework set (BOG-03). The union of:
+//   - command-registry.framework_index keys
+//   - connector-registry.framework_index keys
+//   - cross-domain-analogues from/to endpoints
+// Minting the analogue endpoints guarantees Wave 3's CROSS_DOMAIN_ANALOGUE edges
+// resolve to a real framework node even when an endpoint has no command. Sorted
+// for byte-stability.
+// ---------------------------------------------------------------------------
+function distinctFrameworks(commandReg, connectorReg, analogues) {
+  const set = new Set();
+  const cmdFi = commandReg && commandReg.framework_index;
+  if (cmdFi && typeof cmdFi === 'object') {
+    for (const k of Object.keys(cmdFi)) set.add(k);
+  }
+  const connFi = connectorReg && connectorReg.framework_index;
+  if (connFi && typeof connFi === 'object') {
+    for (const k of Object.keys(connFi)) set.add(k);
+  }
+  const list = analogues && Array.isArray(analogues.analogues) ? analogues.analogues : [];
+  for (const e of list) {
+    if (e && typeof e.from === 'string' && e.from) set.add(e.from);
+    if (e && typeof e.to === 'string' && e.to) set.add(e.to);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+// ---------------------------------------------------------------------------
+// connectorBySurface(connectorReg) -- index the connectors[] by surface so a
+// command/agent node can pull its ranking inputs (reach_id, sub_mode,
+// hierarchy_rank, posture, sensor_triggers) directly. The connector spine is the
+// ranking-input source (BOG-07; Plan 03 widens the exposure, this plan attaches
+// the connector-derived fields already available).
+// ---------------------------------------------------------------------------
+function connectorBySurface(connectorReg) {
+  const map = new Map();
+  const connectors = connectorReg && Array.isArray(connectorReg.connectors)
+    ? connectorReg.connectors
+    : [];
+  for (const c of connectors) {
+    if (c && typeof c.surface === 'string') map.set(c.surface, c);
+  }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// rankingInputsFromConnector(conn) -- pull ONLY the generic ranking scalars a
+// connector exposes (Part 8: enums/ids/ints, never user content). Returns an
+// object with the present scalar fields; absent fields are omitted so the
+// serialized node stays minimal + byte-stable.
+// ---------------------------------------------------------------------------
+function rankingInputsFromConnector(conn) {
+  const out = {};
+  if (!conn || typeof conn !== 'object') return out;
+  if (typeof conn.reach_id === 'string' && conn.reach_id) out.reach_id = conn.reach_id;
+  if (typeof conn.sub_mode === 'string' && conn.sub_mode) out.sub_mode = conn.sub_mode;
+  if (typeof conn.hierarchy_rank === 'number') out.hierarchy_rank = conn.hierarchy_rank;
+  if (typeof conn.posture === 'string' && conn.posture) out.posture = conn.posture;
+  if (Array.isArray(conn.sensor_triggers) && conn.sensor_triggers.length) {
+    out.sensor_triggers = conn.sensor_triggers.filter((s) => typeof s === 'string');
+  }
+  if (typeof conn.framework === 'string' && conn.framework) out.framework = conn.framework;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// buildOperationNode(id, kind, name, conn) -- build a mindrian-operation node
+// (command or agent) that, WHEN it declares a connector, exposes its ranking
+// inputs at the TOP LEVEL (BOG-07): reach_id, sub_mode, hierarchy_rank, posture,
+// sensor_triggers -- plus a chain-provenance block. When there is no connector,
+// the node is name + tier only (no ranking fields). Each field is copied verbatim
+// from the connector as an enum/scalar (Part 8: generic machinery, never user
+// content). A `ranking` block (the Plan 02 shape) is RETAINED alongside the
+// top-level fields for backwards compatibility with any Plan-02 consumer.
+// ---------------------------------------------------------------------------
+function buildOperationNode(id, kind, name, conn) {
+  const node = { id, kind, methodology_tier: TIER_OP, name };
+  const ranking = rankingInputsFromConnector(conn);
+  if (!Object.keys(ranking).length) return node;
+
+  // Top-level ranking inputs (BOG-07): the nav engine reads these directly from
+  // the node without descending into a sub-object.
+  if (typeof ranking.reach_id === 'string') node.reach_id = ranking.reach_id;
+  if (typeof ranking.sub_mode === 'string') node.sub_mode = ranking.sub_mode;
+  if (typeof ranking.hierarchy_rank === 'number') node.hierarchy_rank = ranking.hierarchy_rank;
+  if (typeof ranking.posture === 'string') node.posture = ranking.posture;
+  if (Array.isArray(ranking.sensor_triggers)) node.sensor_triggers = ranking.sensor_triggers;
+  if (typeof ranking.framework === 'string') node.framework = ranking.framework;
+
+  // Chain provenance (BOG-07 elevated): the framework -> command (OPERATES) ->
+  // reach chain + the firing sensor list, so a rejection-reason or a why-block
+  // could later cite the FULL chain, not just the score signals. All generic
+  // machinery handles (framework name, command surface, reach id, SENS ids).
+  const provenance = {};
+  if (typeof ranking.framework === 'string') provenance.framework = ranking.framework;
+  provenance.command = name;
+  if (typeof ranking.reach_id === 'string') provenance.reach_id = ranking.reach_id;
+  if (typeof ranking.sub_mode === 'string') provenance.sub_mode = ranking.sub_mode;
+  if (Array.isArray(ranking.sensor_triggers)) provenance.firing_sensors = ranking.sensor_triggers;
+  node.chain_provenance = provenance;
+
+  // Retain the Plan 02 ranking block for backwards compatibility.
+  node.ranking = ranking;
+  return node;
+}
+
+// ---------------------------------------------------------------------------
+// rankReachesForProblem(projection, opts) -- a PURE fixture query proving "a
+// fixture query can rank candidate reaches from the projection alone" (BOG-07
+// acceptance). It reads ONLY the projection (no registry, no Brain, no fs) and
+// returns the candidate reaches ranked. The ranking key is the BEST (lowest)
+// hierarchy_rank of any mindrian-operation node wired to that reach (lower rank
+// wins; mirrors the connector spine's one-reach-per-beat lower-rank-wins
+// arbitration). Ties break deterministically by reach_id ascending. A reach with
+// no wired ranked node sorts last (Infinity rank) but still appears, so the full
+// frozen-6 set is rankable. opts.problemType / opts.stage are accepted for the
+// documented call shape; this fixture ranks by the projection's exposed
+// hierarchy_rank (the deferred nav engine layers problem/stage weighting on top).
+// Returns [{ reach_id, best_rank, wired_count }] in ranked order.
+// ---------------------------------------------------------------------------
+function rankReachesForProblem(projection, opts) {
+  void opts; // problemType / stage accepted for the call shape; see header.
+  const nodes = projection && Array.isArray(projection.nodes) ? projection.nodes : [];
+  const reachIds = nodes
+    .filter((n) => n && n.kind === 'reach' && typeof n.name === 'string')
+    .map((n) => n.name);
+
+  const best = new Map();
+  const count = new Map();
+  for (const id of reachIds) {
+    best.set(id, Infinity);
+    count.set(id, 0);
+  }
+  for (const n of nodes) {
+    if (!n || n.methodology_tier !== TIER_OP) continue;
+    if (typeof n.reach_id !== 'string' || !best.has(n.reach_id)) continue;
+    count.set(n.reach_id, count.get(n.reach_id) + 1);
+    if (typeof n.hierarchy_rank === 'number' && n.hierarchy_rank < best.get(n.reach_id)) {
+      best.set(n.reach_id, n.hierarchy_rank);
+    }
+  }
+
+  return reachIds
+    .map((id) => ({ reach_id: id, best_rank: best.get(id), wired_count: count.get(id) }))
+    .sort((a, b) => {
+      if (a.best_rank !== b.best_rank) return a.best_rank - b.best_rank;
+      return a.reach_id.localeCompare(b.reach_id);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// distinctSubModes(connectorReg) -- the DERIVED sub_mode set: the distinct
+// sub_modes seen across the connector spine. Each becomes a mindrian-operation
+// sub_mode node. Sorted for byte-stability.
+// ---------------------------------------------------------------------------
+function distinctSubModes(connectorReg) {
+  const set = new Set();
+  const connectors = connectorReg && Array.isArray(connectorReg.connectors)
+    ? connectorReg.connectors
+    : [];
+  for (const c of connectors) {
+    if (c && typeof c.sub_mode === 'string' && c.sub_mode) set.add(c.sub_mode);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+// ---------------------------------------------------------------------------
+// makeAddEdge(nodeIds, edges, seen) -- the referential-integrity chokepoint.
+// Returns an addEdge(type, from, to) closure that THROWS if:
+//   - type is not in ALLOWED_EDGE_TYPES (an undocumented edge type, BOG-05), or
+//   - from or to is absent from nodeIds (a dangling endpoint).
+// Deduplicates on (type, from, to) so a re-declared pair lands once. Mirrors the
+// frozen-bank-membership-throws idiom of lib/core/navigation/edges.cjs writeEdge
+// (which returns instead of throwing; here we throw because a malformed edge in
+// a GENERATED artifact is a build error, not a runtime input error).
+// ---------------------------------------------------------------------------
+// props (optional, 4th arg) may carry the earned-chain scalars { confidence,
+// transform } (Plan 172-15, Canon Part 11 R6 / INV-08). Only `confidence` (a
+// number) and `transform` (a SHORT generic handoff string) are copied onto the
+// edge, mirroring the verified Brain FEEDS_INTO {confidence, transform} schema;
+// any other prop key is IGNORED (the EDGE_FIELD_ALLOWLIST boundary scan would
+// otherwise fail the build -- a key outside the allowlist is a Part 8 breach).
+function makeAddEdge(nodeIds, edges, seen) {
+  return function addEdge(type, from, to, props) {
+    if (!ALLOWED_EDGE_TYPES.has(type)) {
+      throw new Error('addEdge: undocumented edge type ' + JSON.stringify(type));
+    }
+    if (!nodeIds.has(from)) {
+      throw new Error('addEdge: dangling edge endpoint (from) ' + JSON.stringify(from));
+    }
+    if (!nodeIds.has(to)) {
+      throw new Error('addEdge: dangling edge endpoint (to) ' + JSON.stringify(to));
+    }
+    const key = type + '\n' + from + '\n' + to;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const edge = { type, from, to };
+    if (props && typeof props === 'object') {
+      if (typeof props.confidence === 'number') edge.confidence = props.confidence;
+      if (typeof props.transform === 'string' && props.transform) edge.transform = props.transform;
+    }
+    edges.push(edge);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// curatedChainEdges(commandReg, ..., addEdge) -- emit CHAINS / FEEDS_INTO /
+// PREREQUISITE edges from command-registry.curated_chains, where present. Each
+// curated_chains entry is { kind, from, to } with kind in CHAIN_KIND_TO_EDGE_TYPE
+// (chain -> CHAINS, feeds_into -> FEEDS_INTO, prerequisite -> PREREQUISITE) and
+// from/to being:
+//   - a framework name (framework -> framework), OR
+//   - a reach id (reach -> reach, for FEEDS_INTO progressions), OR
+//   - a COMMAND / counterpart endpoint (Phase 172-08 cross-class chaining,
+//     navigator directive 2026-06-23): an EXPLICIT `command:/mos:<slug>` id
+//     (the exact counterpart-node id the projection already carries from Plan
+//     03), so a curated_chains entry may connect a command/pipeline counterpart
+//     to a framework -- realizing command -> pipeline -> framework.
+// The from/to strings are mapped to node ids: a bareword known framework name ->
+// framework:<name>, a bareword known reach id -> reach:<id>, an EXPLICIT
+// `command:<slug>` that matches a real command node -> that node id. addEdge
+// THROWS on a dangling endpoint, so a curated_chains entry that references an
+// unknown framework/reach/command STILL FAILS the build (referential integrity
+// is PRESERVED, not weakened: only the set of resolvable endpoint KINDS grows;
+// an endpoint that resolves to no projection node still throws). Returns the
+// count emitted.
+// ---------------------------------------------------------------------------
+function curatedChainEdges(commandReg, frameworkNodeIds, reachNodeIds, commandNodeIds, addEdge) {
+  const chains = commandReg && Array.isArray(commandReg.curated_chains)
+    ? commandReg.curated_chains
+    : [];
+  const cmdIds = (commandNodeIds && typeof commandNodeIds.has === 'function')
+    ? commandNodeIds
+    : new Set();
+  let emitted = 0;
+  // Resolve an endpoint string to a node id. An EXPLICIT `command:` prefix
+  // resolves against the command counterpart node set (cross-class endpoint);
+  // a bareword resolves as a framework name, then a reach id (back-compat). An
+  // endpoint that resolves to no node returns the raw string so addEdge throws a
+  // clear dangling-endpoint error (referential integrity preserved).
+  const resolve = (s) => {
+    if (typeof s !== 'string' || !s) return null;
+    // Cross-class: an explicit command/counterpart endpoint id.
+    if (s.indexOf('command:') === 0) {
+      if (cmdIds.has(s)) return s;
+      return s; // unknown command counterpart -> addEdge throws (dangling)
+    }
+    const fwId = 'framework:' + s;
+    if (frameworkNodeIds.has(fwId)) return fwId;
+    const reachId = 'reach:' + s;
+    if (reachNodeIds.has(reachId)) return reachId;
+    // Unresolved: return the raw string so addEdge throws a clear dangling error.
+    return s;
+  };
+  for (const c of chains) {
+    if (!c || typeof c !== 'object') continue;
+    const type = CHAIN_KIND_TO_EDGE_TYPE[c.kind];
+    if (!type) {
+      throw new Error('curatedChainEdges: unknown chain kind ' + JSON.stringify(c.kind));
+    }
+    // Carry the earned-chain scalars onto the materialized edge where the source
+    // curated_chains entry has them: `confidence` (a curated float) and
+    // `transform` (a SHORT generic handoff descriptor). This mirrors the verified
+    // Brain FEEDS_INTO {confidence, transform} schema (Plan 172-15, Canon Part 11
+    // R6 / INV-08); transform is enum/scalar machinery metadata only (Part 8).
+    const props = {};
+    if (typeof c.confidence === 'number') props.confidence = c.confidence;
+    if (typeof c.transform === 'string' && c.transform) props.transform = c.transform;
+    addEdge(type, resolve(c.from), resolve(c.to), props);
+    emitted += 1;
+  }
+  return emitted;
+}
+
+// ---------------------------------------------------------------------------
+// crossDomainAnalogueEdges(analogues, frameworkNodeIds, addEdge) -- emit one
+// CROSS_DOMAIN_ANALOGUE edge per data/cross-domain-analogues.json analogue pair
+// (the 150.10 seeds). Both endpoints are framework names; the node-derivation
+// union already minted a framework node for each endpoint, so they resolve.
+// addEdge throws if an endpoint somehow does not resolve. Returns the count.
+// ---------------------------------------------------------------------------
+function crossDomainAnalogueEdges(analogues, addEdge) {
+  const list = analogues && Array.isArray(analogues.analogues) ? analogues.analogues : [];
+  let emitted = 0;
+  for (const a of list) {
+    if (!a || typeof a !== 'object') continue;
+    if (typeof a.from !== 'string' || !a.from) continue;
+    if (typeof a.to !== 'string' || !a.to) continue;
+    addEdge('CROSS_DOMAIN_ANALOGUE', 'framework:' + a.from, 'framework:' + a.to);
+    emitted += 1;
+  }
+  return emitted;
+}
+
+// ---------------------------------------------------------------------------
+// chainLayerNote(curatedChainCount) -- the top-level generated_note string for
+// the chain layer. When curated_chains is source-empty (zero chaining edges),
+// the note states the chain layer is source-empty pending a populated
+// curated_chains, so the empty chain layer is LEGIBLE not silent (per the plan
+// PLAN-CHECK note). When chains exist, the note reflects the count.
+// ---------------------------------------------------------------------------
+function chainLayerNote(curatedChainCount) {
+  if (curatedChainCount === 0) {
+    return (
+      'Chain layer (CHAINS / FEEDS_INTO / PREREQUISITE) is SOURCE-EMPTY: ' +
+      'data/command-registry.json curated_chains is [] (an empty array), so the ' +
+      'generator legitimately emits ZERO chaining edges. The closed edge set is a ' +
+      'CEILING not a floor; only OPERATES (>=1 per framework-declaring command) and ' +
+      'CROSS_DOMAIN_ANALOGUE (one per analogue pair) are hard floors. Populate ' +
+      'curated_chains (kind in chain|feeds_into|prerequisite; from/to a framework ' +
+      'name or reach id) and regenerate to materialize the chain layer. The empty ' +
+      'state is intentional and legible, never fabricated to fill the gap.'
+    );
+  }
+  return (
+    'Chain layer emitted ' + curatedChainCount + ' edge(s) from ' +
+    'data/command-registry.json curated_chains (kind -> CHAINS / FEEDS_INTO / ' +
+    'PREREQUISITE).'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// buildProjection() -- the core. Emits { ontology_ref, generated_note, nodes,
+// edges }. The node list is DERIVED from the file walk + the registry framework
+// union + REACH_IDS + the distinct sub_modes (BOG-03 - zero hand-authored node
+// list). EVERY node carries a methodology_tier (BOG-02): framework -> pws; every
+// command / skill / agent / reach / sub_mode -> mindrian-operation. Per-file
+// grain (BOG-04). The edges[] in this plan is the OPERATES scaffold
+// (command -> framework, promoted from the framework_index inverse maps).
+// ---------------------------------------------------------------------------
+function buildProjection() {
+  const connectorReg = readJson(CONNECTOR_REGISTRY_PATH) || {};
+  const commandReg = readJson(COMMAND_REGISTRY_PATH) || {};
+  const analogues = readJson(ANALOGUES_PATH) || {};
+
+  const sources = listSourceFiles();
+  const connBySurface = connectorBySurface(connectorReg);
+
+  const nodes = [];
+
+  // command / skill / agent nodes -- per-file (BOG-04), all mindrian-operation.
+  // A command/agent that DECLARES A CONNECTOR exposes its ranking inputs at the
+  // TOP LEVEL of the node (BOG-07): reach_id, sub_mode, hierarchy_rank, posture,
+  // sensor_triggers -- copied verbatim as enum/scalar values from the connector
+  // entry (Part 8: generic machinery signals, never user content). It also
+  // carries a chain-provenance block (the framework -> command (OPERATES) -> reach
+  // chain + the firing sensor list) so the deferred nav engine can both RANK and
+  // EXPLAIN (BOG-07 elevated). A skill carries NO connector (D-01): name + tier
+  // only, no ranking fields (exempt from the ranking gate; Plan 04 enforces the
+  // exemption).
+  for (const src of sources) {
+    if (src.kind === 'command') {
+      const surface = commandSurfaceId(src.base);
+      const conn = connBySurface.get(surface);
+      nodes.push(buildOperationNode('command:' + surface, 'command', surface, conn));
+    } else if (src.kind === 'skill') {
+      // Skills carry NO connector frontmatter (D-01): name + tier only.
+      nodes.push({
+        id: 'skill:' + src.base,
+        kind: 'skill',
+        methodology_tier: TIER_OP,
+        name: src.base,
+      });
+    } else if (src.kind === 'agent') {
+      const surface = 'agent:' + src.base;
+      const conn = connBySurface.get(surface);
+      nodes.push(buildOperationNode('agent:' + src.base, 'agent', src.base, conn));
+    }
+  }
+
+  // framework nodes -- the DERIVED union (command + connector framework_index +
+  // analogue endpoints). All pws. Minting the analogue endpoints keeps Wave 3's
+  // CROSS_DOMAIN_ANALOGUE edges from dangling.
+  const frameworks = distinctFrameworks(commandReg, connectorReg, analogues);
+  for (const fw of frameworks) {
+    nodes.push({
+      id: 'framework:' + fw,
+      kind: 'framework',
+      methodology_tier: TIER_PWS,
+      name: fw,
+    });
+  }
+
+  // reach nodes -- the frozen 6 (REACH_IDS), never redefined. All
+  // mindrian-operation. hats is one of the 6 and is NOT dropped.
+  for (const r of REACH_IDS) {
+    nodes.push({
+      id: 'reach:' + r,
+      kind: 'reach',
+      methodology_tier: TIER_OP,
+      name: r,
+    });
+  }
+
+  // sub_mode nodes -- the DERIVED distinct sub_modes from the connector spine.
+  // All mindrian-operation.
+  for (const sm of distinctSubModes(connectorReg)) {
+    nodes.push({
+      id: 'sub_mode:' + sm,
+      kind: 'sub_mode',
+      methodology_tier: TIER_OP,
+      name: sm,
+    });
+  }
+
+  // ---- typed edge layer (BOG-05): the 5 closed types, every edge routed
+  // through the addEdge() referential-integrity chokepoint. ----
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const frameworkNodeIds = new Set(frameworks.map((fw) => 'framework:' + fw));
+  const reachNodeIds = new Set(REACH_IDS.map((r) => 'reach:' + r));
+  const commandNodeIds = new Set(
+    sources.filter((s) => s.kind === 'command').map((s) => 'command:' + commandSurfaceId(s.base))
+  );
+
+  const edges = [];
+  const seenEdge = new Set();
+  const addEdge = makeAddEdge(nodeIds, edges, seenEdge);
+
+  // OPERATES: command -> framework, promoted from the union of the
+  // command-registry + connector-registry framework_index inverse maps. The
+  // (from, to) pairs are collected + sorted FIRST so the emission order (hence
+  // the serialized artifact) is byte-stable; addEdge dedupes + enforces
+  // referential integrity.
+  const operatesPairs = [];
+  for (const reg of [commandReg, connectorReg]) {
+    const fi = reg && reg.framework_index;
+    if (!fi || typeof fi !== 'object') continue;
+    for (const fwName of Object.keys(fi)) {
+      const surfaces = Array.isArray(fi[fwName]) ? fi[fwName] : [];
+      const toId = 'framework:' + fwName;
+      if (!frameworkNodeIds.has(toId)) continue;
+      for (const surface of surfaces) {
+        if (typeof surface !== 'string' || !surface.startsWith('/mos:')) continue;
+        const fromId = 'command:' + surface;
+        if (!commandNodeIds.has(fromId)) continue;
+        // Join on a newline: node ids contain spaces (framework names like
+        // "Jobs to Be Done (JTBD)"), so a space separator would corrupt the
+        // split. A newline can never appear in a node id, so it is a safe
+        // delimiter for the sort-then-split byte-stability pass.
+        operatesPairs.push(fromId + '\n' + toId);
+      }
+    }
+  }
+  operatesPairs.sort((a, b) => a.localeCompare(b));
+  for (const pair of operatesPairs) {
+    const idx = pair.indexOf('\n');
+    addEdge('OPERATES', pair.slice(0, idx), pair.slice(idx + 1));
+  }
+
+  // CHAINS / FEEDS_INTO / PREREQUISITE: from command-registry.curated_chains
+  // (EMPTY today -> zero edges + the chain-layer note below). Never fabricated.
+  const curatedChainCount = curatedChainEdges(
+    commandReg, frameworkNodeIds, reachNodeIds, commandNodeIds, addEdge
+  );
+
+  // CROSS_DOMAIN_ANALOGUE: one edge per cross-domain-analogues.json pair (>=2,
+  // the 150.10 seeds). The endpoints are minted framework nodes, so they resolve.
+  crossDomainAnalogueEdges(analogues, addEdge);
+
+  return {
+    ontology_ref: 'data/connector-registry.json + data/command-registry.json',
+    generated_note: GENERATED_NOTE,
+    chain_layer_note: chainLayerNote(curatedChainCount),
+    nodes,
+    edges,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// serializeProjection(proj) -- deterministic JSON + trailing newline (byte-stable
+// across machines), mirroring build-connector-registry.cjs serializeRegistry.
+// Emits ONLY the serialized fields in a stable key order.
+// ---------------------------------------------------------------------------
+function serializeProjection(proj) {
+  const clean = {
+    ontology_ref: proj.ontology_ref,
+    generated_note: proj.generated_note,
+    chain_layer_note: proj.chain_layer_note,
+    nodes: proj.nodes,
+    edges: proj.edges,
+  };
+  return JSON.stringify(clean, null, 2) + '\n';
+}
+
+// ---------------------------------------------------------------------------
+// loadUnwiredAllowlist() -- read data/orchestration-unwired-allowlist.json (the
+// wired-XOR-allowlisted ledger). Returns a Set of allowlisted framework names. A
+// framework in this set is intentionally NOT reach-wired and is EXEMPT from the
+// UN-WIRED leg (BOG-06, Phase 144.1 idiom). Degrades to an empty Set on any read
+// failure (a missing/malformed allowlist means NOTHING is exempted, which is the
+// strict-by-default posture: a real orphan would then fire UN-WIRED rather than
+// be silently waved through). Zero Brain/network (Part 8).
+// ---------------------------------------------------------------------------
+function loadUnwiredAllowlist() {
+  const raw = readJson(UNWIRED_ALLOWLIST_PATH);
+  const set = new Set();
+  if (!Array.isArray(raw)) return set;
+  for (const e of raw) {
+    if (e && typeof e.framework === 'string' && e.framework) set.add(e.framework);
+  }
+  return set;
+}
+
+// ---------------------------------------------------------------------------
+// classifyCommandNode(node) -- the command-grained classifier (Phase 172-03,
+// INV-04). Returns 'ranked' | 'excluded' | 'gap' for a command-kind node:
+//   ranked   -- carries reach_id + hierarchy_rank + posture (a wired counterpart).
+//   excluded -- listed in EXCLUDED_COMMANDS with a reason (a first-class
+//               conformant terminal state, Canon Part 11 R1; NEVER dark).
+//   gap      -- a bare command (no reach_id) that is NOT excluded: a dark
+//               command that warrants a mindrian-operation counterpart but has
+//               none yet. THIS is the inversion of the old :824 early-continue -
+//               a bare command no longer silently ships; it surfaces as a gap.
+// A ranked-BUT-excluded command is impossible by construction here (a connector
+// surface declares a reach_id; the utility commands declare none), but ranked
+// wins if both ever held, so the XOR stays a true partition.
+//
+// Phase 172-13 (the navigator-approved "full flip" 2026-06-23) PROPAGATES the
+// connector EXCLUDE decision: a command counterpart whose surface is EXCLUDED in
+// the connector layer (in the connector-coverage-ledger excluded set) is
+// `excluded` in the projection too, even if it is not in the projection-native
+// EXCLUDED_COMMANDS table. The projection-excluded set is therefore the UNION of
+// (a) EXCLUDED_COMMANDS (projection-native reasons: doctor/setup/help) and
+// (b) the connector-excluded command set (deprecated redirects, render/utility
+// surfaces excluded in their own connector frontmatter). `connectorExcluded` is
+// an optional Set override for tests; it defaults to the memoized ledger read.
+// ---------------------------------------------------------------------------
+function classifyCommandNode(node, connectorExcluded) {
+  if (!node || node.kind !== 'command') return null;
+  if (typeof node.reach_id === 'string' && node.reach_id) return 'ranked';
+  if (Object.prototype.hasOwnProperty.call(EXCLUDED_COMMANDS, node.name)) return 'excluded';
+  const excludedSet =
+    connectorExcluded instanceof Set ? connectorExcluded : connectorExcludedCommands();
+  if (excludedSet.has(node.name)) return 'excluded';
+  return 'gap';
+}
+
+// ---------------------------------------------------------------------------
+// commandCoverageReport(projection) -- walk every command-kind node and classify
+// it ranked | excluded | gap (Phase 172-03, INV-04). Returns
+// { commands:[{command, source, state}], counts:{ranked, excluded, gap, total} }
+// sorted by command for determinism. `source` is the command surface file path
+// fragment so the ledger is self-describing. The XOR invariant holds by
+// construction: every command lands in EXACTLY one bucket (classifyCommandNode
+// returns exactly one state), so counts.ranked + counts.excluded + counts.gap
+// === counts.total === the command-node count. Reads ONLY the projection (no
+// Brain, no network; Part 8).
+// ---------------------------------------------------------------------------
+function commandCoverageReport(projection) {
+  const nodes = projection && Array.isArray(projection.nodes) ? projection.nodes : [];
+  const commands = [];
+  const counts = { ranked: 0, excluded: 0, gap: 0, total: 0 };
+  for (const n of nodes) {
+    if (!n || n.kind !== 'command') continue;
+    const state = classifyCommandNode(n);
+    counts.total += 1;
+    counts[state] += 1;
+    // The command base (strip the /mos: prefix) -> commands/<base>.md is the
+    // source file. Keep it generic-machinery only (a slug, never user content).
+    const base = typeof n.name === 'string' ? n.name.replace(/^\/mos:/, '') : '';
+    commands.push({ command: n.name, source: 'commands/' + base + '.md', state });
+  }
+  commands.sort((a, b) => String(a.command).localeCompare(String(b.command)));
+  return { commands, counts };
+}
+
+// ---------------------------------------------------------------------------
+// serializeCommandLedger(projection) -- emit data/orchestration-command-ledger
+// .json (Phase 172-03 INV-04), the command-grained wired-XOR-excluded ledger
+// mirroring data/orchestration-unwired-allowlist.json but at the command grain.
+// Shape: { generated_note, counts:{ranked, excluded, gap, total},
+// commands:[{command, source, state}] } sorted by command. Deterministic JSON +
+// trailing newline (byte-stable), so --check can STALE-byte-check it. GENERATED,
+// never hand-authored (BOG-03): the EXCLUDED dispositions come from
+// EXCLUDED_COMMANDS, the ranked/gap split from the projection's command nodes.
+// ---------------------------------------------------------------------------
+function serializeCommandLedger(projection) {
+  const { commands, counts } = commandCoverageReport(projection);
+  const clean = {
+    generated_note:
+      'GENERATED by scripts/build-orchestration-projection.cjs (serializeCommandLedger) - ' +
+      'do not edit by hand. The command-grained wired-XOR-excluded ledger (Phase 172-03, ' +
+      'Canon Part 11 R1/R5): every /mos command is ranked (a wired counterpart), excluded ' +
+      '(a utility command with a documented reason, a first-class terminal state, never ' +
+      'dark), or gap (a dark command warranting a mindrian-operation counterpart, to be ' +
+      'wired in a later 172 wave). Regenerate: node scripts/build-orchestration-projection.cjs',
+    counts,
+    commands,
+  };
+  return JSON.stringify(clean, null, 2) + '\n';
+}
+
+// ---------------------------------------------------------------------------
+// validateProjection(projection) -- the 3-mode drift taxonomy (D-04, BOG-08).
+// Returns { stale, unwired, unranked }: three categorized arrays of error
+// strings (each empty = that mode is clean). PURE with respect to the Brain:
+// reads ONLY the passed projection + the committed on-disk projection file (for
+// the byte-compare) + the allowlist file + the frozen REACH_IDS require. ZERO
+// Brain/network calls (Part 8). Mirrors validateConnectors in
+// build-connector-registry.cjs (categorized error arrays, exercised directly by
+// the test without spawning a subprocess).
+//
+//   STALE     -- the serialized regeneration of the LIVE sources differs
+//                byte-for-byte from the committed data/brain-orchestration
+//                -projection.json (someone edited a surface without
+//                regenerating). The passed `projection` is serialized and
+//                compared to the on-disk file.
+//   UN-WIRED  -- FRAMEWORK-GRAINED (plan-check, matches BOG-06 "every framework
+//                is reachable"): a FRAMEWORK is missing from nodes[] OR not
+//                reachable to one of the 6 frozen REACH_IDS via any
+//                OPERATES->reach chain, UNLESS the framework is in
+//                data/orchestration-unwired-allowlist.json with a reason
+//                (wired-XOR-allowlisted). A framework reachable via a SIBLING
+//                command's connector counts as wired. Skills are EXEMPT (D-01):
+//                the gate is framework-grained, never a skill-node check.
+//   UN-RANKED -- a connector-derived mindrian-operation node (one that declares
+//                a reach_id) lacks reach_id, hierarchy_rank, or posture. Skills
+//                (name-only, no reach_id) are EXEMPT (D-01).
+//
+// Phase 172-03 (INV-04/05/06) ADDS the command-grained coverage pass. The return
+// gains a fourth array, `command_gaps`: every command-kind node is classified
+// ranked | excluded | gap, and a `gap` (a bare command not in EXCLUDED_COMMANDS)
+// is collected into command_gaps. THIS INVERTS the old early-continue: a bare
+// command is no longer silently skipped - it surfaces as a gap UNLESS excluded.
+// The command-ledger STALE check is ALSO folded in (a hand-edit of
+// data/orchestration-command-ledger.json fires STALE). At this stage command_gaps
+// is reported WARN-only (D-172-e); the hard-FAIL flip is Wave 4 / Plan 172-13.
+// Skills stay EXEMPT from the command pass (they are not command-kind).
+// ---------------------------------------------------------------------------
+function validateProjection(projection) {
+  const stale = [];
+  const unwired = [];
+  const unranked = [];
+  const command_gaps = [];
+
+  const proj = projection && typeof projection === 'object' ? projection : { nodes: [], edges: [] };
+  const nodes = Array.isArray(proj.nodes) ? proj.nodes : [];
+  const edges = Array.isArray(proj.edges) ? proj.edges : [];
+
+  const RECOVERY = 'Run: node scripts/build-orchestration-projection.cjs';
+
+  // ---- STALE: byte-compare the serialized projection vs the committed file. ----
+  const serialized = serializeProjection({
+    ontology_ref: proj.ontology_ref,
+    generated_note: proj.generated_note,
+    chain_layer_note: proj.chain_layer_note,
+    nodes,
+    edges,
+  });
+  const onDisk = fs.existsSync(PROJECTION_PATH)
+    ? fs.readFileSync(PROJECTION_PATH, 'utf8')
+    : '';
+  if (onDisk !== serialized) {
+    stale.push(
+      'STALE: data/brain-orchestration-projection.json diverges from the ' +
+        'regenerated projection (a surface changed without regenerating). ' +
+        RECOVERY
+    );
+  }
+
+  // ---- STALE (command ledger): byte-compare the serialized command ledger vs
+  // the committed data/orchestration-command-ledger.json (Phase 172-03). A
+  // hand-edit of the command ledger out of sync with the projection fires STALE,
+  // exactly as the projection STALE check does for the projection file. ----
+  const ledgerSerialized = serializeCommandLedger(proj);
+  const ledgerOnDisk = fs.existsSync(COMMAND_LEDGER_PATH)
+    ? fs.readFileSync(COMMAND_LEDGER_PATH, 'utf8')
+    : '';
+  if (ledgerOnDisk !== ledgerSerialized) {
+    stale.push(
+      'STALE: data/orchestration-command-ledger.json diverges from the ' +
+        'regenerated command ledger (a command surface changed, or the ledger ' +
+        'was hand-edited, without regenerating). ' + RECOVERY
+    );
+  }
+
+  // ---- UN-WIRED: framework-grained reachability to a frozen reach. ----
+  const allowlist = loadUnwiredAllowlist();
+  const frozenReach = new Set(REACH_IDS);
+
+  // Build the command -> framework (OPERATES) map and the command -> reach map so
+  // a framework is "wired" iff SOME command that OPERATES it ALSO declares a
+  // reach_id in the frozen 6. A framework wired via a sibling command counts.
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const commandReachById = new Map();
+  for (const n of nodes) {
+    if (n && n.kind === 'command' && typeof n.reach_id === 'string') {
+      commandReachById.set(n.id, n.reach_id);
+    }
+  }
+  // framework id -> does ANY OPERATES-source command reach a frozen reach?
+  const frameworkReaches = new Map();
+  for (const n of nodes) {
+    if (n && n.kind === 'framework') frameworkReaches.set(n.id, false);
+  }
+  for (const e of edges) {
+    if (!e || e.type !== 'OPERATES') continue;
+    const fromReach = commandReachById.get(e.from);
+    if (fromReach && frozenReach.has(fromReach) && frameworkReaches.has(e.to)) {
+      frameworkReaches.set(e.to, true);
+    }
+  }
+  for (const n of nodes) {
+    if (!n || n.kind !== 'framework') continue;
+    if (allowlist.has(n.name)) continue; // wired-XOR-allowlisted
+    if (!frameworkReaches.get(n.id)) {
+      unwired.push(
+        'UN-WIRED: framework "' + n.name + '" (node ' + n.id + ') is not ' +
+          'reachable to any of the 6 frozen reaches via an OPERATES->reach ' +
+          'chain and is not in data/orchestration-unwired-allowlist.json. ' +
+          'Wire a connector (or allowlist it with a reason). ' + RECOVERY
+      );
+    }
+  }
+  void nodeById;
+
+  // ---- UN-RANKED: a connector-derived mindrian-operation node missing ranking
+  // inputs. A node is connector-derived iff it declares a reach_id. Skills carry
+  // no reach_id (D-01) and never enter this loop. ----
+  for (const n of nodes) {
+    if (!n || n.methodology_tier !== TIER_OP) continue;
+    if (typeof n.reach_id !== 'string' || !n.reach_id) continue; // not connector-derived
+    const missing = [];
+    if (typeof n.reach_id !== 'string' || !n.reach_id) missing.push('reach_id');
+    if (typeof n.hierarchy_rank !== 'number') missing.push('hierarchy_rank');
+    if (typeof n.posture !== 'string' || !n.posture) missing.push('posture');
+    if (missing.length) {
+      unranked.push(
+        'UN-RANKED: connector-derived node ' + n.id + ' ("' + n.name + '") is ' +
+          'missing ranking input(s): ' + missing.join(', ') + '. ' + RECOVERY
+      );
+    }
+  }
+
+  // ---- COMMAND-GAP: the command-grained coverage pass (Phase 172-03,
+  // INV-04/05). INVERTS the old early-continue: every command-kind node is
+  // classified ranked | excluded | gap, and a `gap` (a bare command - no
+  // reach_id - that is NOT in EXCLUDED_COMMANDS) is collected here rather than
+  // silently shipped. A ranked command (carries reach_id) is wired; an excluded
+  // command (in EXCLUDED_COMMANDS, a first-class terminal state) is conformant.
+  // WARN-only at this stage (D-172-e); the hard-FAIL flip is Wave 4 / Plan
+  // 172-13. ----
+  for (const n of nodes) {
+    if (!n || n.kind !== 'command') continue;
+    if (classifyCommandNode(n) === 'gap') {
+      command_gaps.push(
+        'COMMAND-GAP: command "' + n.name + '" (node ' + n.id + ') is a bare ' +
+          'command (no reach_id) and is not excluded in ' +
+          'data/orchestration-command-ledger.json. Wire a connector counterpart ' +
+          '(mindrian-operation, INV-05) or exclude it with a reason. ' + RECOVERY
+      );
+    }
+  }
+
+  return { stale, unwired, unranked, command_gaps };
+}
+
+// ---------------------------------------------------------------------------
+// runCheck() -- the --check mode. Regenerate the projection from the LIVE
+// sources in memory, run validateProjection, print each named failure mode +
+// its recovery line to stderr, and exit non-zero on ANY failure. Exit 0 + an OK
+// line on a clean repo. Mirrors build-connector-registry.cjs's --check (the
+// byte-compare + categorized-validation + exit-1 + recovery-line idiom). Makes
+// ZERO Brain/network calls (Part 8).
+// ---------------------------------------------------------------------------
+function runCheck() {
+  const proj = buildProjection();
+  const { stale, unwired, unranked, command_gaps } = validateProjection(proj);
+  // Phase 172-13 (the navigator-approved "full flip" 2026-06-23): command_gaps
+  // is now a HARD FAIL, joining STALE / UN-WIRED / UN-RANKED. A bare command
+  // counterpart that is neither ranked NOR excluded (in EXCLUDED_COMMANDS or
+  // propagated from the connector-excluded set) makes --check exit non-zero. The
+  // flip is safe because Plan 172-16 wired/excluded the baseline and this plan
+  // reconciled the projection to gap=0 FIRST, so a clean repo stays exit 0; only
+  // an accidental-dark counterpart trips it. R2/R9/INV-10 step 3.
+  const all = [...stale, ...unwired, ...unranked, ...command_gaps];
+  if (all.length) {
+    console.error(all.join('\n'));
+    console.error(
+      'Recovery: regenerate the projection, then re-stage it: ' +
+        'node scripts/build-orchestration-projection.cjs'
+    );
+    process.exit(1);
+    return;
+  }
+  console.log('orchestration-projection: OK');
+}
+
+// ---------------------------------------------------------------------------
+// main() -- the default write mode + the --check branch (STALE / UN-WIRED /
+// UN-RANKED).
+// ---------------------------------------------------------------------------
+function main() {
+  const argv = process.argv.slice(2);
+
+  if (argv.includes('--check')) {
+    runCheck();
+    return;
+  }
+
+  const proj = buildProjection();
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(PROJECTION_PATH, serializeProjection(proj));
+  console.log(
+    'Wrote data/brain-orchestration-projection.json (' +
+      proj.nodes.length +
+      ' nodes, ' +
+      proj.edges.length +
+      ' edges)'
+  );
+  // Phase 172-03: emit the command-grained wired-XOR-excluded ledger alongside
+  // the projection on the default run, so the two stay in lockstep.
+  const ledger = serializeCommandLedger(proj);
+  fs.writeFileSync(COMMAND_LEDGER_PATH, ledger);
+  const ledgerCounts = commandCoverageReport(proj).counts;
+  console.log(
+    'Wrote data/orchestration-command-ledger.json (' +
+      ledgerCounts.ranked + ' ranked, ' +
+      ledgerCounts.excluded + ' excluded, ' +
+      ledgerCounts.gap + ' gap; total ' + ledgerCounts.total + ')'
+  );
+}
+
+if (require.main === module) {
+  main();
+} else {
+  module.exports = {
+    listSourceFiles,
+    distinctFrameworks,
+    distinctSubModes,
+    rankingInputsFromConnector,
+    buildOperationNode,
+    rankReachesForProblem,
+    makeAddEdge,
+    curatedChainEdges,
+    crossDomainAnalogueEdges,
+    chainLayerNote,
+    buildProjection,
+    serializeProjection,
+    loadUnwiredAllowlist,
+    validateProjection,
+    classifyCommandNode,
+    commandCoverageReport,
+    serializeCommandLedger,
+    NODE_KINDS,
+    EDGE_TYPES,
+    ALLOWED_EDGE_TYPES,
+    EXCLUDED_COMMANDS,
+    CHAIN_KIND_TO_EDGE_TYPE,
+    NODE_FIELD_ALLOWLIST,
+    EDGE_FIELD_ALLOWLIST,
+  };
+}

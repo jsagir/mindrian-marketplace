@@ -1,0 +1,575 @@
+/**
+ * MindrianOS Plugin -- Proactive Intelligence Persistence
+ * Parses analyze-room output, persists insights with repeat suppression,
+ * and tracks cross-room relationships.
+ *
+ * Exports: persistIntelligence, loadIntelligence, shouldSuppress, addCrossRoomRelationship
+ */
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+const INTELLIGENCE_FILE = '.proactive-intelligence.json';
+const SUPPRESS_THRESHOLD = 3;
+
+/**
+ * Load existing intelligence from room directory.
+ * @param {string} roomDir - Absolute path to room directory
+ * @returns {{ insights: Array, cross_room: Array, updated: string }}
+ */
+function loadIntelligence(roomDir) {
+  const filePath = path.join(roomDir, INTELLIGENCE_FILE);
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const data = JSON.parse(raw);
+      return {
+        insights: Array.isArray(data.insights) ? data.insights : [],
+        cross_room: Array.isArray(data.cross_room) ? data.cross_room : [],
+        updated: data.updated || ''
+      };
+    }
+  } catch (_) {
+    // Corrupted file -- start fresh
+  }
+  return { insights: [], cross_room: [], updated: '' };
+}
+
+/**
+ * Parse analyze-room stdout into structured insight objects.
+ * Handles: GAP:STRUCTURAL, GAP:SEMANTIC, GAP:ADJACENT, CONVERGE, CONTRADICT lines.
+ * @param {string} analyzeOutput - Raw stdout from analyze-room script
+ * @returns {Array<{ type: string, section?: string, term?: string, message: string, confidence: string }>}
+ */
+function parseAnalyzeOutput(analyzeOutput) {
+  if (!analyzeOutput || typeof analyzeOutput !== 'string') return [];
+
+  const insights = [];
+  const lines = analyzeOutput.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // GAP:STRUCTURAL:{section}:{confidence}:{message}
+    // GAP:SEMANTIC:{section}:{confidence}:{message}
+    // GAP:ADJACENT:{section}:{confidence}:{message}
+    const gapMatch = trimmed.match(/^GAP:(STRUCTURAL|SEMANTIC|ADJACENT):([^:]+):([^:]+):(.+)$/);
+    if (gapMatch) {
+      insights.push({
+        type: 'gap',
+        subtype: gapMatch[1].toLowerCase(),
+        section: gapMatch[2],
+        confidence: gapMatch[3],
+        message: gapMatch[4]
+      });
+      continue;
+    }
+
+    // CONVERGE:{term}:{count}:{confidence}:{message}
+    const convergeMatch = trimmed.match(/^CONVERGE:([^:]+):(\d+):([^:]+):(.+)$/);
+    if (convergeMatch) {
+      insights.push({
+        type: 'convergence',
+        term: convergeMatch[1],
+        count: parseInt(convergeMatch[2], 10),
+        confidence: convergeMatch[3],
+        message: convergeMatch[4]
+      });
+      continue;
+    }
+
+    // CONTRADICT:{section1}:{section2}:{confidence}:{message}
+    const contradictMatch = trimmed.match(/^CONTRADICT:([^:]+):([^:]+):([^:]+):(.+)$/);
+    if (contradictMatch) {
+      insights.push({
+        type: 'contradiction',
+        section: contradictMatch[1],
+        section2: contradictMatch[2],
+        confidence: contradictMatch[3],
+        message: contradictMatch[4]
+      });
+      continue;
+    }
+  }
+
+  return insights;
+}
+
+/**
+ * Match key for deduplication: type + section (for gaps/contradictions) or type + term (for convergence).
+ * @param {{ type: string, section?: string, term?: string, section2?: string }} insight
+ * @returns {string}
+ */
+function insightKey(insight) {
+  // Phase 365-11: the two verification signals carry their own stable key.
+  if (insight.type === 'verification') {
+    return insight.key || 'verification:';
+  }
+  if (insight.type === 'convergence') {
+    return `convergence:${insight.term || ''}`;
+  }
+  if (insight.type === 'contradiction') {
+    return `contradiction:${insight.section || ''}:${insight.section2 || ''}`;
+  }
+  return `gap:${insight.subtype || ''}:${insight.section || ''}`;
+}
+
+/**
+ * Read recent semantic findings from the lazygraph and map them to insight
+ * records that match parseAnalyzeOutput()'s shape exactly so insightKey()
+ * dedup folds graph and bash-script findings together.
+ *
+ * Queries CONTRADICTS, CONVERGES, INVALIDATES edges with created_at
+ * greater than sinceTimestamp, walks INFORMS edges to Stakeholder nodes,
+ * and emits one insight per edge in the same shape as parseAnalyzeOutput.
+ * Empty array on any failure path. Never throws.
+ *
+ * @param {string} roomDir - Absolute path to room directory
+ * @param {number} sinceTimestamp - Unix ms; only edges with created_at greater than this
+ * @returns {Array<object>} insights in parseAnalyzeOutput() shape
+ */
+function readGraphFindings(roomDir, sinceTimestamp) {
+  try {
+    const lazygraph = require('./lazygraph-ops.cjs');
+    let handle;
+    try {
+      // Direct sync open of the room.db so we can run inside the cascade
+      // without await. If the file is missing, return empty findings.
+      const fsLocal = require('fs');
+      const pathLocal = require('path');
+      const { DatabaseSync } = require('node:sqlite');
+      const dbPath = pathLocal.join(pathLocal.resolve(roomDir), '.mindrian', 'room.db');
+      if (!fsLocal.existsSync(dbPath)) return [];
+      const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+      handle = { db, conn: db, _opened: 'sync' };
+    } catch (_) {
+      return [];
+    }
+
+    const db = handle.db || handle.conn;
+    // Reference lazygraph to silence linters and signal contract dependency
+    void lazygraph;
+    const sinceMs = typeof sinceTimestamp === 'number' ? sinceTimestamp : 0;
+    const insights = [];
+
+    let edges = [];
+    try {
+      edges = db.prepare(
+        `SELECT source, target, type, properties FROM edges
+         WHERE type IN ('CONTRADICTS', 'CONVERGES', 'INVALIDATES')
+         LIMIT 50`
+      ).all();
+    } catch (_) {
+      edges = [];
+    }
+
+    for (const edge of edges) {
+      // Filter by created_at when present in properties JSON
+      let createdAt = 0;
+      try {
+        const props = edge.properties ? JSON.parse(edge.properties) : {};
+        if (typeof props.created_at === 'number') createdAt = props.created_at;
+      } catch (_) {
+        createdAt = 0;
+      }
+      if (sinceMs > 0 && createdAt > 0 && createdAt <= sinceMs) continue;
+
+      // Resolve endpoint section names for shape-compatible insight keys
+      let sourceSection = '';
+      let targetSection = '';
+      try {
+        const srcNode = db.prepare("SELECT properties FROM nodes WHERE id = ?").get(edge.source);
+        const tgtNode = db.prepare("SELECT properties FROM nodes WHERE id = ?").get(edge.target);
+        if (srcNode && srcNode.properties) {
+          try { sourceSection = (JSON.parse(srcNode.properties).section) || edge.source.split('/')[0] || ''; } catch (_) { sourceSection = edge.source.split('/')[0] || ''; }
+        } else {
+          sourceSection = edge.source.split('/')[0] || '';
+        }
+        if (tgtNode && tgtNode.properties) {
+          try { targetSection = (JSON.parse(tgtNode.properties).section) || edge.target.split('/')[0] || ''; } catch (_) { targetSection = edge.target.split('/')[0] || ''; }
+        } else {
+          targetSection = edge.target.split('/')[0] || '';
+        }
+      } catch (_) {
+        sourceSection = edge.source.split('/')[0] || '';
+        targetSection = edge.target.split('/')[0] || '';
+      }
+
+      // Cap stakeholder context to 5 other claims to bound injection noise
+      let stakeholderContext = '';
+      try {
+        const stakeholders = lazygraph.findStakeholdersByClaim
+          ? db.prepare(
+              `SELECT s.id, s.name FROM stakeholders s
+               WHERE s.id IN (
+                 SELECT source FROM edges WHERE target = ? AND type = 'INFORMS'
+                 UNION
+                 SELECT target FROM edges WHERE source = ? AND type = 'INFORMS'
+               ) LIMIT 5`
+            ).all(edge.source, edge.source)
+          : [];
+        if (stakeholders && stakeholders.length > 0) {
+          stakeholderContext = ' (stakeholders: ' + stakeholders.map(s => s.name).join(', ') + ')';
+        }
+      } catch (_) {
+        stakeholderContext = '';
+      }
+
+      if (edge.type === 'CONTRADICTS') {
+        insights.push({
+          type: 'contradiction',
+          section: sourceSection,
+          section2: targetSection,
+          confidence: 'medium',
+          message: `Graph contradiction: ${edge.source} vs ${edge.target}${stakeholderContext}`
+        });
+      } else if (edge.type === 'CONVERGES') {
+        insights.push({
+          type: 'convergence',
+          term: `${sourceSection}+${targetSection}`,
+          count: 2,
+          confidence: 'medium',
+          message: `Graph convergence: ${edge.source} and ${edge.target}${stakeholderContext}`
+        });
+      } else if (edge.type === 'INVALIDATES') {
+        insights.push({
+          type: 'gap',
+          subtype: 'structural',
+          section: targetSection,
+          confidence: 'medium',
+          message: `Graph invalidation: ${edge.source} invalidates ${edge.target}${stakeholderContext}`
+        });
+      }
+    }
+
+    // Close the db handle if we opened it ourselves
+    try {
+      if (handle && handle._opened === 'sync' && handle.db) {
+        handle.db.close();
+      }
+    } catch (_) { /* ignore */ }
+
+    return insights;
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Persist intelligence from analyze-room output with repeat suppression.
+ * Phase 84-05: also reads graph findings via readGraphFindings() and merges
+ * them into the same insight stream before shouldSuppress() dedup.
+ * @param {string} roomDir - Absolute path to room directory
+ * @param {string} analyzeOutput - Raw stdout from analyze-room script
+ * @returns {{ persisted: number, new: number, suppressed: number }}
+ */
+function persistIntelligence(roomDir, analyzeOutput) {
+  const bashParsed = parseAnalyzeOutput(analyzeOutput);
+
+  // Phase 84-05: pull graph-sourced insights using the previous run's
+  // updated timestamp as the high-water mark. Failures fall through to [].
+  let graphParsed = [];
+  try {
+    const prior = loadIntelligence(roomDir);
+    let sinceMs = 0;
+    if (prior && prior.updated) {
+      const t = Date.parse(prior.updated);
+      if (!Number.isNaN(t)) sinceMs = t;
+    }
+    graphParsed = readGraphFindings(roomDir, sinceMs) || [];
+  } catch (_) {
+    graphParsed = [];
+  }
+
+  // Phase 365-11: the two unsolicited verification signals (D-17) and the
+  // weekly distribution snapshot (D-18). The db is opened through navigation
+  // (Canon Part 9), not directly; a fault anywhere in this block leaves the
+  // existing insight stream untouched and never breaks the post-filing cascade.
+  let verificationParsed = [];
+  let verificationRan = false;
+  try {
+    const navigation = require('./navigation.cjs');
+    const vdb = navigation.openRoomDbForCaller(roomDir);
+    if (vdb) {
+      try {
+        navigation.snapshotVerificationWeek(vdb, Date.now());
+        verificationParsed = navigation.readVerificationSignals(vdb, navigation.readVerificationSnapshots(vdb)) || [];
+        verificationRan = true;
+      } finally {
+        try { navigation.closeRoomDbForCaller(vdb); } catch (_) { /* ignore */ }
+      }
+    }
+  } catch (_) {
+    verificationParsed = [];
+    verificationRan = false;
+  }
+
+  const parsed = bashParsed.concat(graphParsed, verificationParsed);
+  if (parsed.length === 0 && !verificationRan) {
+    return { persisted: 0, new: 0, suppressed: 0 };
+  }
+
+  const data = loadIntelligence(roomDir);
+  const now = new Date().toISOString();
+
+  // A verification signal that no longer holds is dropped, so the strip never
+  // keeps saying a decision rests on a model's answer after a source is added.
+  let pruned = 0;
+  if (verificationRan) {
+    const liveKeys = new Set(verificationParsed.map(insightKey));
+    const kept = data.insights.filter((ins) => ins && ins.type === 'verification' ? liveKeys.has(insightKey(ins)) : true);
+    pruned = data.insights.length - kept.length;
+    data.insights = kept;
+  }
+  if (parsed.length === 0) {
+    if (pruned > 0) {
+      data.updated = now;
+      const emptyPath = path.join(roomDir, INTELLIGENCE_FILE);
+      const emptyTmp = emptyPath + '.tmp';
+      fs.writeFileSync(emptyTmp, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(emptyTmp, emptyPath);
+    }
+    return { persisted: 0, new: 0, suppressed: 0 };
+  }
+
+  // Build lookup by key
+  const existingMap = new Map();
+  for (let i = 0; i < data.insights.length; i++) {
+    existingMap.set(insightKey(data.insights[i]), i);
+  }
+
+  let newCount = 0;
+  let suppressed = 0;
+
+  for (const insight of parsed) {
+    const key = insightKey(insight);
+    const existingIdx = existingMap.get(key);
+
+    if (existingIdx !== undefined) {
+      // Existing insight -- check for evidence changes, then increment times_shown
+      const existing = data.insights[existingIdx];
+      // Evidence-change detection: if confidence or message changed, reset suppression
+      const evidenceChanged = (existing.confidence !== insight.confidence) || (existing.message !== insight.message);
+      if (evidenceChanged && shouldSuppress(existing)) {
+        existing.times_shown = 0;
+        existing.confidence = insight.confidence;
+        existing.message = insight.message;
+      }
+      existing.times_shown = (existing.times_shown || 0) + 1;
+      existing.last_seen = now;
+      if (existing.times_shown >= SUPPRESS_THRESHOLD) {
+        suppressed++;
+      }
+    } else {
+      // New insight
+      const entry = {
+        ...insight,
+        first_seen: now,
+        last_seen: now,
+        times_shown: 0
+      };
+      data.insights.push(entry);
+      existingMap.set(key, data.insights.length - 1);
+      newCount++;
+    }
+  }
+
+  data.updated = now;
+
+  // Write atomically
+  const filePath = path.join(roomDir, INTELLIGENCE_FILE);
+  const tmpPath = filePath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmpPath, filePath);
+
+  return { persisted: parsed.length, new: newCount, suppressed };
+}
+
+/**
+ * Check if an insight should be suppressed (shown 3+ times).
+ * @param {{ times_shown: number }} insight
+ * @returns {boolean}
+ */
+function shouldSuppress(insight) {
+  return (insight && typeof insight.times_shown === 'number' && insight.times_shown >= SUPPRESS_THRESHOLD);
+}
+
+/**
+ * Add or update a cross-room relationship.
+ * @param {string} roomDir - Absolute path to room directory
+ * @param {string} sourceRoom - Source room name/path
+ * @param {string} targetRoom - Target room name/path
+ * @param {string[]} sharedConcepts - Array of shared concept strings
+ */
+function addCrossRoomRelationship(roomDir, sourceRoom, targetRoom, sharedConcepts) {
+  const data = loadIntelligence(roomDir);
+  const now = new Date().toISOString();
+
+  // Find existing relationship (same source + target)
+  const existing = data.cross_room.find(
+    cr => cr.source_room === sourceRoom && cr.target_room === targetRoom
+  );
+
+  if (existing) {
+    // Union shared concepts
+    const conceptSet = new Set([...(existing.shared_concepts || []), ...sharedConcepts]);
+    existing.shared_concepts = [...conceptSet];
+    existing.detected = now;
+  } else {
+    data.cross_room.push({
+      source_room: sourceRoom,
+      target_room: targetRoom,
+      shared_concepts: [...sharedConcepts],
+      detected: now
+    });
+  }
+
+  data.updated = now;
+
+  // Write atomically
+  const filePath = path.join(roomDir, INTELLIGENCE_FILE);
+  const tmpPath = filePath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmpPath, filePath);
+}
+
+/**
+ * Get new or changed findings not previously seen by the user.
+ * Compares current analyze-room insights against persisted intelligence.
+ * Returns max 5 findings sorted by confidence descending.
+ *
+ * @param {string} roomDir - Absolute path to room directory
+ * @param {Array<{ type: string, section?: string, term?: string, confidence: string, message: string }>} currentInsights - Parsed insights from current analyze-room run
+ * @returns {Array<{ type: string, section?: string, term?: string, confidence: string, message: string, isNew: boolean }>}
+ */
+function getNewFindings(roomDir, currentInsights) {
+  if (!Array.isArray(currentInsights) || currentInsights.length === 0) return [];
+
+  const data = loadIntelligence(roomDir);
+
+  // Build lookup of persisted insights by key
+  const persistedMap = new Map();
+  for (const insight of data.insights) {
+    persistedMap.set(insightKey(insight), insight);
+  }
+
+  const findings = [];
+
+  for (const insight of currentInsights) {
+    const key = insightKey(insight);
+    const existing = persistedMap.get(key);
+
+    // Skip insights that have been decided on
+    if (existing && existing.decided) continue;
+
+    // Skip suppressed insights (shown 3+ times)
+    if (existing && shouldSuppress(existing)) continue;
+
+    let isNew = false;
+    let include = false;
+
+    if (!existing) {
+      // Brand new insight
+      isNew = true;
+      include = true;
+    } else if (existing.confidence !== insight.confidence) {
+      // Confidence has changed -- updated finding
+      isNew = false;
+      include = true;
+    }
+
+    if (include) {
+      findings.push({
+        type: insight.type,
+        subtype: insight.subtype,
+        section: insight.section,
+        term: insight.term,
+        section2: insight.section2,
+        confidence: insight.confidence,
+        message: insight.message,
+        isNew
+      });
+    }
+  }
+
+  // Sort by confidence descending
+  findings.sort((a, b) => parseFloat(b.confidence || '0') - parseFloat(a.confidence || '0'));
+
+  // Return max 5
+  return findings.slice(0, 5);
+}
+
+/**
+ * Record a user decision (approve/reject/defer) for an insight.
+ * Persists to .proactive-intelligence.json and marks insight as decided.
+ *
+ * @param {string} roomDir - Absolute path to room directory
+ * @param {string} key - Insight key (from insightKey())
+ * @param {'approve'|'reject'|'defer'} decision - The user's decision
+ * @param {string} reason - Reason for the decision (especially important for reject)
+ * @returns {{ recorded: boolean, edgeType: string }}
+ */
+function recordDecision(roomDir, key, decision, reason) {
+  const data = loadIntelligence(roomDir);
+  const now = new Date().toISOString();
+
+  // Initialize decisions array if not present
+  if (!Array.isArray(data.decisions)) {
+    data.decisions = [];
+  }
+
+  // Record the decision
+  const decisionEntry = {
+    insight_key: key,
+    decision,
+    reason: reason || '',
+    timestamp: now
+  };
+
+  // If rejection, store reason as separate field for graph enrichment (Decision #13)
+  if (decision === 'reject') {
+    decisionEntry.rejection_reason = reason || '';
+  }
+
+  data.decisions.push(decisionEntry);
+
+  // Mark the corresponding insight as decided so it won't be re-surfaced
+  for (const insight of data.insights) {
+    if (insightKey(insight) === key) {
+      insight.decided = true;
+      insight.decision_type = decision;
+      break;
+    }
+  }
+
+  data.updated = now;
+
+  // Write atomically (tmp + rename pattern)
+  const filePath = path.join(roomDir, INTELLIGENCE_FILE);
+  const tmpPath = filePath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmpPath, filePath);
+
+  // Map decision to SQLite edge type
+  const edgeTypeMap = {
+    approve: 'INVALIDATES',
+    reject: 'CONFIRMS',
+    defer: 'DEFERRED'
+  };
+
+  return { recorded: true, edgeType: edgeTypeMap[decision] || 'DEFERRED' };
+}
+
+module.exports = {
+  persistIntelligence,
+  loadIntelligence,
+  shouldSuppress,
+  addCrossRoomRelationship,
+  parseAnalyzeOutput,
+  insightKey,
+  getNewFindings,
+  recordDecision,
+  readGraphFindings
+};

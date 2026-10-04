@@ -1,0 +1,64 @@
+: << 'CMDBLOCK'
+@echo off
+setlocal enabledelayedexpansion
+REM Cross-platform polyglot wrapper for MindrianOS hook scripts.
+REM On Windows: cmd.exe runs the batch portion, which finds and calls bash.
+REM On Unix: the shell interprets this as a script (: is a no-op in bash).
+REM
+REM Hook scripts use extensionless filenames (e.g. "session-start" not
+REM "session-start.sh") so Claude Code's Windows auto-detection -- which
+REM prepends "bash" to any command containing .sh -- doesn't interfere.
+REM
+REM Usage: run-hook.cmd <script-name> [args...]
+REM
+REM IMPORTANT (v1.10.9 fix for Finding F): delayed expansion is mandatory.
+REM Inside an `if ( ... )` block, %ERRORLEVEL% is expanded at parse time,
+REM not after the command inside the block runs -- so `exit /b %ERRORLEVEL%`
+REM always returned the errorlevel from BEFORE bash.exe ran, which broke
+REM PreToolUse hooks like write-scope-check (blocks silently returned 0,
+REM so Claude Code treated them as "allow"). We capture into !RC! using
+REM delayed expansion and exit with that instead.
+
+if "%~1"=="" (
+    echo run-hook.cmd: missing script name >&2
+    exit /b 1
+)
+
+set "HOOK_DIR=%~dp0"
+set "PLUGIN_ROOT=%HOOK_DIR%.."
+set "SCRIPTS_DIR=%PLUGIN_ROOT%\scripts"
+
+REM Try Git for Windows bash in standard locations
+if exist "C:\Program Files\Git\bin\bash.exe" (
+    set "CLAUDE_PLUGIN_ROOT=%PLUGIN_ROOT%"
+    "C:\Program Files\Git\bin\bash.exe" "%SCRIPTS_DIR%\%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    set "RC=!ERRORLEVEL!"
+    endlocal & exit /b %RC%
+)
+if exist "C:\Program Files (x86)\Git\bin\bash.exe" (
+    set "CLAUDE_PLUGIN_ROOT=%PLUGIN_ROOT%"
+    "C:\Program Files (x86)\Git\bin\bash.exe" "%SCRIPTS_DIR%\%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    set "RC=!ERRORLEVEL!"
+    endlocal & exit /b %RC%
+)
+
+REM Try bash on PATH (e.g. user-installed Git Bash, MSYS2, Cygwin)
+where bash >nul 2>nul
+if !ERRORLEVEL! equ 0 (
+    set "CLAUDE_PLUGIN_ROOT=%PLUGIN_ROOT%"
+    bash "%SCRIPTS_DIR%\%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    set "RC=!ERRORLEVEL!"
+    endlocal & exit /b %RC%
+)
+
+REM No bash found - exit silently rather than error
+REM (plugin still works, just without hook context injection)
+endlocal & exit /b 0
+CMDBLOCK
+
+# Unix: run the named script from scripts/ directory
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_NAME="$1"
+shift
+exec bash "${PLUGIN_ROOT}/scripts/${SCRIPT_NAME}" "$@"

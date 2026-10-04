@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# on-agent-complete: SubagentStop hook handler for MindrianOS
+# Auto-routes framework-runner, grading, research, opportunity-scanner,
+# and persona-analyst agent output through the post-write cascade.
+# This ensures subagent-generated artifacts are classified, indexed in
+# the room graph, and trigger HSI recomputation.
+# Must complete in under 3 seconds.
+
+set -euo pipefail
+
+# Cross-platform find with modification time (outputs: epoch.fractional filepath)
+# Replaces GNU find -printf '%T@ %p\n' which is not available on macOS
+portable_find_mtime() {
+  # All arguments are passed to find, but -printf is NOT used
+  # Instead, use -exec with stat to get modification time
+  if [ "$(uname -s)" = "Darwin" ]; then
+    find "$@" -exec stat -f '%m %N' {} \;
+  else
+    find "$@" -printf '%T@ %p\n'
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Phase 95-04: SubagentStop envelope helper.
+#
+# Allowed top-level keys per Claude Code 2.x SubagentStop schema:
+#   continue, stopReason, suppressOutput, systemMessage, decision, reason,
+#   hookSpecificOutput
+# SubagentStop accepts hookSpecificOutput.additionalContext (with
+# hookEventName: "SubagentStop"). Pre-fix the script emitted
+# {"status": "..."} shapes; `status` is not in the allowed set.
+# ---------------------------------------------------------------------------
+emit_subagent_stop_envelope() {
+  local msg="$1"
+  if [ -z "$msg" ]; then return 0; fi
+  jq -nc --arg m "$msg" '{
+    hookSpecificOutput: {
+      hookEventName: "SubagentStop",
+      additionalContext: $m
+    }
+  }'
+}
+
+# Resolve active room
+WORK_DIR="${PWD}"
+ROOM_DIR=$("${SCRIPT_DIR}/resolve-room" "$WORK_DIR" 2>/dev/null) || ROOM_DIR=""
+
+if [ ! -d "$ROOM_DIR" ]; then
+  # 95-04: silent on diagnostic paths.
+  # silent: no active room
+  exit 0
+fi
+
+# Find files modified by the subagent
+# Strategy: check for recently modified .md files in the room (last 30 seconds)
+CUTOFF=$(date -d '30 seconds ago' +%s 2>/dev/null \
+  || date -v-30S +%s 2>/dev/null \
+  || python3 -c "import time; print(int(time.time()) - 30)" 2>/dev/null \
+  || echo 0)
+
+modified_files=()
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  mod_time=$(echo "$line" | cut -d' ' -f1)
+  file_path=$(echo "$line" | cut -d' ' -f2-)
+
+  # Only process files modified after cutoff
+  mod_epoch=$(echo "$mod_time" | cut -d. -f1)
+  if [ "${mod_epoch:-0}" -ge "$CUTOFF" ]; then
+    modified_files+=("$file_path")
+  fi
+done < <(portable_find_mtime "$ROOM_DIR" -name "*.md" -not -name "STATE.md" -not -name "ROOM.md" -not -name "TEAM-STATE.md" -not -name "MEETINGS-INTELLIGENCE.md" -not -path "*/.mindrian/*" -not -path "*/.intelligence/*" 2>/dev/null | sort -rn | head -20)
+
+if [ ${#modified_files[@]} -eq 0 ]; then
+  # silent: no modified files in cutoff window
+  exit 0
+fi
+
+# Route each modified file through the post-write cascade
+cascade_count=0
+for file_path in "${modified_files[@]}"; do
+  # Active room guard
+  case "$file_path" in
+    "${ROOM_DIR}"/*) ;; # In active room -- proceed
+    *) continue ;;
+  esac
+
+  # Skip hidden files
+  case "$file_path" in
+    */.*) continue ;;
+  esac
+
+  # Run post-write cascade in background for each file. Redirect BOTH
+  # stdout and stderr to /dev/null so the post-write hook's own envelope
+  # (PostToolUse hookSpecificOutput) does not leak into on-agent-complete's
+  # stdout, which carries the SubagentStop envelope. Without this, the
+  # consumer would receive a multi-line stream that no longer parses as a
+  # single JSON object. Rule 3 (Blocking) fix discovered in Plan 95-04
+  # Task 2 GREEN test run.
+  bash "${SCRIPT_DIR}/post-write" "$file_path" >/dev/null 2>&1 &
+
+  # Phase 144.1-06 RETRO-03 (audit item 64): fire SENS-06 through the navigation
+  # chokepoint per cascaded file and emit a memory_event the engine can observe.
+  # on-agent-complete inherits the post-write fix: the post-write call above
+  # routes the cascade through file-evidence-readback (fileEvidenceWithReadback)
+  # and emits artifact_filed; this fire is the sensor-side the engine reads.
+  # The reach is context_block / SENS-06 / cross-relationship-scan / push_forward.
+  # When the cascaded artifact is research-agent output (a deep_research/ or
+  # research/ path), ALSO fire SENS-04 (the external-fact reach). LOCAL only
+  # (Canon Part 8): the fire carries a sha256 of the relative file path plus
+  # generic handles, never the file body. Backgrounded + soft-fail.
+  rel_file_path="${file_path#${ROOM_DIR}/}"
+  ( node "${SCRIPT_DIR}/fire-sensor-event.cjs" "$ROOM_DIR" \
+      "context_block" "SENS-06" "cross-relationship-scan" "push_forward" \
+      "$rel_file_path" >/dev/null 2>&1 || true ) &
+  case "$rel_file_path" in
+    */research/*|*/deep-research/*|*deep_research*)
+      ( node "${SCRIPT_DIR}/fire-sensor-event.cjs" "$ROOM_DIR" \
+          "deep_research" "SENS-04" "research-agent-finding" "push_forward" \
+          "$rel_file_path" >/dev/null 2>&1 || true ) &
+      ;;
+  esac
+
+  cascade_count=$((cascade_count + 1))
+done
+
+# Recompute room state after all cascades are dispatched.
+#
+# Phase 240.1 Plan 03 (CTXL-01): this used to be `compute-state ... >
+# STATE.md`, and the shell truncates STATE.md to ZERO BYTES before
+# compute-state even starts running (240.1-RESEARCH.md Pitfall 3), so any
+# version read at that point saw an empty file -- the version stamp
+# scripts/room-registry seeds at room birth was destroyed on every
+# post-subagent regeneration. Converted to the same capture-then-pipe shape
+# used at scripts/on-stop: capture compute-state's stdout into a variable
+# FIRST, then pipe it into scripts/state-write.cjs (which reads the PRIOR
+# on-disk STATE.md before writing, via lib/core/state-version.cjs::persistState).
+# The `2>/dev/null || true` stderr discard is kept at this one site (unlike
+# on-stop, which intentionally leaves the advisory line visible) because this
+# whole block runs inside a backgrounded `( ... ) &` subshell -- its stderr
+# is not user-visible on any surface regardless of redirection, and the
+# durable record of a version-mismatch survives anyway via the
+# schema-violations.jsonl append that persistState() performs internally.
+(
+  sleep 1  # Wait for cascades to start
+  state_content=$("${SCRIPT_DIR}/compute-state" "$ROOM_DIR" 2>/dev/null || echo "")
+  if [ -n "$state_content" ]; then
+    printf '%s\n' "$state_content" | node "${SCRIPT_DIR}/state-write.cjs" "$ROOM_DIR" 2>/dev/null || true
+  fi
+) &
+
+# Track subagent completion
+bash "${SCRIPT_DIR}/track-analytics" agent-complete 2>/dev/null &
+
+# 95-04: schema-compliant SubagentStop envelope. The cascade summary lives
+# in hookSpecificOutput.additionalContext (allowed for SubagentStop per the
+# Claude Code 2.x schema).
+emit_subagent_stop_envelope "agent cascade: $cascade_count files processed"
+
+exit 0

@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+'use strict';
+
+/*
+ * Copyright (c) 2026 Mindrian. BSL 1.1.
+ *
+ * Phase 130.7-01 Task 1 -- correlation.cjs
+ * ========================================
+ * The single deterministic, embedding-INDEPENDENT hashing chokepoint for the
+ * dual-graph correlation contract. computeCorrelationId(canonicalName,
+ * primaryLabel) returns a stable hex string that is reused by:
+ *   - scripts/backfill-correlation-id.cjs (the Brain backfill, Task 2)
+ *   - lib/brain/chain-recommender.cjs     (the chain-recommender, Plan 02)
+ *   - the local recommender               (Plan 02)
+ * so the Brain value and the local value agree BY CONSTRUCTION.
+ *
+ * CONTRACT INVARIANT -- correlation_id is NAME-BASED, NOT vector-based.
+ * ====================================================================
+ * The id is a hash of (canonical_name, primary_label) ONLY. It reads no
+ * embedding, no vector, no global state, no fs, no db, no network. It takes
+ * EXACTLY two string arguments. This is what makes it embedding-INDEPENDENT
+ * by construction: a Phase 134 (@huggingface/transformers CJS embedding port)
+ * or a Phase 127.1 (Pinecone -> Neo4j HNSW) vector-substrate swap changes the
+ * embedding layer but CANNOT change a single correlation_id, because no
+ * correlation_id was ever derived from an embedding.
+ *
+ * LOCKED CONTRACT OF RECORD (Phase 131 close-out packet, 2026-06-01)
+ * ====================================================================
+ *   correlation_id = sha256( utf8( name + '|' + primary_label ) ).hex().slice(0,16)
+ *
+ * Rules (every one is load-bearing -- the live teaching graph already carries
+ * 721 backfilled correlation_ids under THIS exact scheme):
+ *   - RAW name: NO trim, NO case-fold, NO internal-whitespace collapse. The
+ *     name is hashed EXACTLY AS STORED in the graph. Merging value-distinct or
+ *     whitespace-padded names is a curation/dedup decision that belongs to
+ *     Phase 132, NOT to the hash. A hash that silently canonicalized would
+ *     (a) fork from the 721 ids already on the live Brain, and (b) hide the
+ *     cross-label / near-duplicate problems the Phase 03 CI gates SURFACE.
+ *   - literal '|' delimiter, raw primary_label string.
+ *   - utf8 encoding, lowercase hex, FIRST 16 chars (no version prefix).
+ *
+ * Verified byte-identical between the DB-side APOC backfill and the Python
+ * reference across ASCII, ASCII-apostrophe, U+2019, and UTF-8 inputs; packet
+ * read-back reports 0 true hash collisions across 721 ids, so the 16-char
+ * slice is collision-free at the ~15K-node teaching-graph scale.
+ *
+ *   computeCorrelationId('The Other Way Round', 'Technique') -> '4210289a0ca1596b'
+ *
+ * Changing the hash construction is a CONTRACT BREAK that forks from the live
+ * Brain; it requires a coordinated re-backfill, never a silent local edit.
+ * CORRELATION_VERSION below is metadata only -- it is NOT part of the id.
+ *
+ * License: BSL 1.1.
+ */
+
+const crypto = require('node:crypto');
+
+// The hash algorithm. sha256 is a Node built-in (zero new deps).
+const CORRELATION_ALGO = 'sha256';
+
+// Leading hex chars retained. LOCKED by the contract of record.
+const CORRELATION_ID_LENGTH = 16;
+
+// The literal delimiter joining (raw name, raw primary_label). LOCKED to '|'.
+const DELIMITER = '|';
+
+// Metadata only -- the contract scheme version. NOT part of the id (the id is
+// the bare 16-char hex). Bump only on a deliberate, coordinated re-backfill of
+// the live teaching graph.
+const CORRELATION_VERSION = 1;
+
+/**
+ * computeCorrelationId(canonicalName, primaryLabel) -> 16-char lowercase hex.
+ *
+ * Pure function of its two string arguments. Throws TypeError on non-string
+ * input (fail loud; never silently hash undefined). Takes EXACTLY two formal
+ * parameters -- the arity is part of the embedding-independence contract.
+ *
+ * LOCKED CONTRACT:
+ *   sha256( utf8( name + '|' + primary_label ) ).hex().slice(0, 16)
+ * Raw inputs (no trim / no case-fold), literal '|', utf8, lowercase hex,
+ * first 16 chars. Byte-identical to the live Brain backfill.
+ *
+ * @param {string} canonicalName  - the node's name AS STORED in the graph (raw)
+ * @param {string} primaryLabel   - the node's primary label enum (e.g. 'Framework')
+ * @returns {string} 16-char lowercase hex
+ */
+function computeCorrelationId(canonicalName, primaryLabel) {
+  if (typeof canonicalName !== 'string') {
+    throw new TypeError(
+      'computeCorrelationId: canonicalName must be a string, got ' + typeof canonicalName
+    );
+  }
+  if (typeof primaryLabel !== 'string') {
+    throw new TypeError(
+      'computeCorrelationId: primaryLabel must be a string, got ' + typeof primaryLabel
+    );
+  }
+  // RAW inputs -- no trim, no case-fold (locked contract; see header).
+  return crypto
+    .createHash(CORRELATION_ALGO)
+    .update(canonicalName + DELIMITER + primaryLabel, 'utf8')
+    .digest('hex')
+    .slice(0, CORRELATION_ID_LENGTH);
+}
+
+module.exports = {
+  computeCorrelationId: computeCorrelationId,
+  CORRELATION_ALGO: CORRELATION_ALGO,
+  CORRELATION_ID_LENGTH: CORRELATION_ID_LENGTH,
+  CORRELATION_VERSION: CORRELATION_VERSION,
+};

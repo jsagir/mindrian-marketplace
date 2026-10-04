@@ -1,0 +1,200 @@
+'use strict';
+
+/*
+ * Copyright (c) 2026 Mindrian. BSL 1.1.
+ *
+ * Phase 254 Plan 04 (COMP-01) -- the single enumeration of every
+ * mindrian-os-named tool handler that reaches the Brain.
+ *
+ * (a) RATIFICATION RECORD, NOT AN APPROVAL QUEUE. Both reaching sites named
+ *     below SHIPPED before this phase existed and are released, tested
+ *     production behaviour: the `orchestration` tool's act / act-chain /
+ *     act-dry-run / act-swarm dispatch into brain-router.cjs's Tier 3 live
+ *     brainClient.ask() call, and `suggest_next`'s chain offer via
+ *     chain-recommender.cjs's chainOfferForReach() -> brainClient
+ *     .recommendChain() (Quick 260819-c8j, commit 5278e9cb, 2026-08-19).
+ *     The navigator's D-01 ruling (254-CONTEXT.md, 2026-09-02) is RATIFY,
+ *     not approve-to-start: this file names what already runs and governs
+ *     it, it does not green-light something new.
+ *
+ * (b) PART 8 IS HONORED BY PAYLOAD, NOT BY SEAM. A local MCP handler calling
+ *     the Brain sits in the SAME trust position as a local CLI script
+ *     calling brain-client.cjs -- always sanctioned. SEED-053's
+ *     load-bearing clarification, carried verbatim: "the MindrianOS MCP
+ *     server is LOCAL (stdio, runs on the user's machine, reads the local
+ *     room). Exposing a chain-runner tool there is Part-8-CLEAN -- the wall
+ *     only bites on the eventual REMOTE Brain lift, where only generic
+ *     framework handles cross. There is no Part 8 obstacle to this seed on
+ *     the local server." The seam is not the violation; the payload is --
+ *     and every entry below with reaches_brain: true carries only a
+ *     generic problem-type / complexity enum, never room content.
+ *
+ * (c) THE THREE SEAMS, AND WHICH ENFORCEMENT SEES EACH (254-RESEARCH.md
+ *     Section 3.1). CORRECTED Phase 257 (257-RESEARCH.md, "Which of H1 / H2
+ *     / H3 is Actually Closed"): the original text below claimed the
+ *     callTool belt does not cover Seam A. That claim was FALSE and is
+ *     replaced here with the measured truth, evidence inline:
+ *       Seam A, model-issued (the mindrian-brain MCP server's own tools,
+ *         called by name) -- the host PreToolUse hook sees this. The
+ *         callTool belt ALSO covers it: bin/mindrian-brain-mcp-client.cjs
+ *         is a pure stdio transport wrapper with zero network code; it
+ *         requires lib/core/brain-client.cjs at line 62 and every one of
+ *         its four handlers (brain_ask, brain_query, brain_search,
+ *         brain_write) delegates through callTool, where this belt sits.
+ *         The belt landed in commit ca32b612 (2026-08-19 09:26:51 +0300),
+ *         two and a half hours BEFORE the 2026-08-20 handoff's own base
+ *         commit f566310c (2026-08-19 11:55:23 +0300); the belt was
+ *         already in the tree the handoff branched from. H3 as the
+ *         handoff wrote it (a direct model-issued brain_* call bypassing
+ *         brain-client.cjs entirely) is FALSE for mindrian-brain. The
+ *         genuinely uncovered surface is pws-brain-mcp, registered as
+ *         direct HTTPS with no local plugin code anywhere in the path --
+ *         Desktop's and Cowork's path by design. See
+ *         docs/257-NOTE-part8-enforcement-locus-rulings.md for the ruling
+ *         on that surface. Root cause of the original error, named so it
+ *         is not repeated: a grep for the guard's FILENAME cannot see a
+ *         guard reached by delegation through callTool(); that reasoning
+ *         error is what produced the false sentence this note replaces.
+ *         254-RESEARCH.md's Pitfall 4 warning (a summary claiming Part 8
+ *         coverage without naming the open surface) still applies, restated
+ *         against the CORRECT open surface: a summary claiming Part 8
+ *         coverage without naming pws-brain-mcp as open is the same
+ *         mistake, not the shim, which is now known-covered.
+ *       Seam B, CLI-script -> brain-client.cjs -- no hook, belt-visible.
+ *         Always sanctioned, not this file's concern.
+ *       Seam C, mindrian-os handler -> brain-client.cjs -- no hook (the
+ *         tool name is suggest_next / orchestration, not the Brain
+ *         server's own tool names), belt-visible. This is H1, and this
+ *         file IS its enumeration.
+ *
+ * (d) THE BUILD FAILS CLOSED. tests/test-254-composition-census.cjs
+ *     reconciles COMPOSITION_SITES against a live recursive scan of
+ *     lib/mcp/ in BOTH directions: an undeclared reach site fails the
+ *     build, and a stale declaration (an entry claiming reaches_brain:
+ *     true for a file that no longer contains a reach) also fails. Adding
+ *     a fourth composed call anywhere under lib/mcp/ requires an entry
+ *     here, and that entry MUST state a numeric bound_ms (254-RESEARCH.md
+ *     Section 3.5's explicit APPROVE condition) or validateSites() throws
+ *     at module load.
+ *
+ * This module is a DECLARATION that requires exactly one pure-data leaf
+ * (brain-route-bound.cjs) and nothing else; it still EXECUTES nothing and
+ * OPENS NO WIRE (Quick 260911-ddd, DDD-02: the leaf itself requires nothing
+ * and opens no wire either, so this property still holds transitively).
+ * The scanner that reconciles this declaration against source lives in the
+ * test, not here -- that split is what lets this file hold plain quoted
+ * path strings as DATA without ever matching its own require-expression
+ * scan pattern. The new require names `brain-route-bound.cjs`, which
+ * matches neither the census scan's REACH_RE (brain-client|chain-
+ * recommender) nor its wire-pattern scan, so this file's own scan-safety
+ * property is unaffected.
+ *
+ * No em-dashes. CJS only.
+ */
+
+// Quick 260911-ddd (DDD-02): the single source of the Tier 3 bound. Reading
+// the leaf here (rather than reading brain-router.cjs's own export) keeps
+// the DECLARATION direction correct: this census depends on the constant,
+// never on the implementation, so the declaration cannot silently drift
+// out of sync with a router edit.
+const { BRAIN_ROUTE_TIMEOUT_MS } = require('./brain-route-bound.cjs');
+
+const COMPOSITION_SITES = Object.freeze([
+  Object.freeze({
+    file: 'lib/mcp/brain-router.cjs',
+    handler: 'brainRoute (recommend, Tier 3)',
+    tool: 'orchestration (act, act-chain, act-dry-run, act-swarm)',
+    via: "brainClient.ask(question) -- a generic problem-type/complexity enum question, never room content",
+    reaches_brain: true,
+    belt: 'callTool',
+    // Quick 260911-ddd (DDD-02): bound_ms is the DEFAULT from the single
+    // source (lib/mcp/brain-route-bound.cjs); MINDRIAN_BRAIN_ROUTE_TIMEOUT_MS
+    // can move the APPLIED bound at runtime without editing this file.
+    bound_ms: BRAIN_ROUTE_TIMEOUT_MS,
+    frequency: 'one call per act* invocation, Tier 3 only (Tier 1 cache and Tier 2 local heuristic run first and can short-circuit before this call is made)',
+    reason: "D-01 ratifies this as the orchestration tool's live Brain-grounded recommendation leg, shipped before this phase existed. Desktop and Cowork have no MCP hook surface, so this is their only Brain-grounded enrichment path for act*.",
+    ratified_by: 'D-01',
+  }),
+  Object.freeze({
+    file: 'lib/mcp/brain-router.cjs',
+    handler: 'recommend (SWEEP-01 disclosure leg)',
+    tool: 'orchestration (act, act-chain, act-dry-run, act-swarm)',
+    via: 'availability disclosure only -- gated on whether a Brain key resolved; no tools/call is made on this leg',
+    reaches_brain: false,
+    belt: null,
+    bound_ms: null,
+    frequency: 'best-effort, on the Tier-3-miss fallback path only (never blocks the return)',
+    reason: 'Enumerated precisely BECAUSE it is a brain-client.cjs require that does NOT reach the Brain, so a future reader does not have to re-derive whether this is a third wire. It is the disclosure leg of site 1 above, not a second wire.',
+    ratified_by: 'n/a (no Brain call on this leg)',
+  }),
+  Object.freeze({
+    file: 'lib/mcp/tools/sensors.cjs',
+    handler: 'suggest_next (chainOfferForReach)',
+    tool: 'suggest_next',
+    via: 'chainRecommender.chainOfferForReach(reach, {}) -> brainClient.recommendChain(problemType) -- a generic problem-type enum, never room content',
+    reaches_brain: true,
+    belt: 'callTool',
+    bound_ms: 20000,
+    frequency: 'one call per pull, on the top pick only -- reach_candidates is deliberately NOT wired (fanning the call across the whole candidate set would multiply wire cost by reach breadth for no additional first-offer value)',
+    reason: "D-01 ratifies this as suggest_next's live Brain-grounded chain offer (Quick 260819-c8j, commit 5278e9cb, 2026-08-19). Desktop and Cowork have no MCP hook surface, so this is their only Brain-grounded enrichment path for suggest_next.",
+    ratified_by: 'D-01',
+  }),
+  Object.freeze({
+    file: 'lib/mcp/tool-router.cjs',
+    handler: 'orchestration dispatch (act, act-chain, act-dry-run, act-swarm)',
+    tool: 'orchestration (act, act-chain, act-dry-run, act-swarm)',
+    via: 'dispatch into brain-router.cjs::recommend(), indirect -- this file makes no Brain call itself',
+    reaches_brain: false,
+    belt: null,
+    bound_ms: null,
+    frequency: 'every act* invocation dispatches here first',
+    reason: 'Enumerated because this is the seam that makes site 1 (brain-router.cjs Tier 3) reachable at all -- a reader standing here needs to know the reach exists one hop downstream, not rediscover it by re-reading brain-router.cjs cold.',
+    ratified_by: 'n/a (dispatch only, no direct Brain call)',
+  }),
+]);
+
+/**
+ * validateSites(list) -- throw-at-load discipline, copied in spirit from
+ * scripts/check-plugin-path-anchoring.cjs's validateAllowlist(). THROWS on:
+ *   - a non-array argument
+ *   - any entry missing a non-empty `file` or `tool`
+ *   - any entry with a missing or empty `reason`
+ *   - any entry with `reaches_brain === true` lacking a numeric
+ *     `bound_ms > 0`, or lacking `belt: 'callTool'`
+ * Called at module load below so a malformed declaration fails immediately
+ * rather than at test time.
+ *
+ * @param {Array<object>} list
+ * @returns {void}
+ */
+function validateSites(list) {
+  if (!Array.isArray(list)) {
+    throw new Error('brain-composition-census: validateSites() requires an array');
+  }
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('brain-composition-census: every entry must be an object');
+    }
+    if (typeof entry.file !== 'string' || entry.file.length === 0) {
+      throw new Error('brain-composition-census: entry missing a non-empty file');
+    }
+    if (typeof entry.tool !== 'string' || entry.tool.length === 0) {
+      throw new Error('brain-composition-census: entry ' + entry.file + ' missing a non-empty tool');
+    }
+    if (typeof entry.reason !== 'string' || entry.reason.trim().length === 0) {
+      throw new Error('brain-composition-census: entry ' + entry.file + ' (' + (entry.handler || '?') + ') missing a non-empty reason');
+    }
+    if (entry.reaches_brain === true) {
+      if (typeof entry.bound_ms !== 'number' || !(entry.bound_ms > 0)) {
+        throw new Error('brain-composition-census: reaching entry ' + entry.file + ' (' + (entry.handler || '?') + ') missing a numeric bound_ms > 0');
+      }
+      if (entry.belt !== 'callTool') {
+        throw new Error("brain-composition-census: reaching entry " + entry.file + ' (' + (entry.handler || '?') + ") must declare belt: 'callTool'");
+      }
+    }
+  }
+}
+
+validateSites(COMPOSITION_SITES);
+
+module.exports = { COMPOSITION_SITES, validateSites };

@@ -1,0 +1,866 @@
+#!/usr/bin/env bash
+# room-registry -- Registry CRUD operations for multi-room management
+# Manages .rooms/registry.json with atomic writes (tmp + mv)
+#
+# Default registry location: $MINDRIAN_ROOMS_HOME/.rooms/registry.json
+# (was $WORK_DIR/.rooms/registry.json in v1 -- kept for backward compat)
+#
+# Subcommands:
+#   create <name> <path> [venture_name] [venture_stage]
+#   read <name>
+#   list
+#   update <name> <field> <value>
+#   set-active <name>
+#   archive <name>
+#   get-active
+#   git-config <name> <git_enabled> [git_remote] [auto_push] [vercel_url]
+#
+# First positional argument (before subcommand) can be a directory to override
+# ROOMS_HOME for that invocation. Defaults to $MINDRIAN_ROOMS_HOME or ~/MindrianRooms.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Central rooms location (new default)
+ROOMS_HOME="${MINDRIAN_ROOMS_HOME:-$HOME/MindrianRooms}"
+
+# Parse optional directory override -- if first arg is a directory, use it
+if [ $# -ge 1 ] && [ -d "$1" ]; then
+  ROOMS_HOME="$1"
+  shift
+fi
+
+REGISTRY_DIR="${ROOMS_HOME}/.rooms"
+REGISTRY_FILE="${REGISTRY_DIR}/registry.json"
+
+SUBCMD="${1:-}"
+shift 2>/dev/null || true
+
+# RCA registry-active-session-unbound-inheritance -- ownership stamp for the
+# machine-wide `active` field.
+#
+# `active` is ONE slug shared by every concurrent session on the machine. An
+# UNBOUND session that inherits it cannot tell "I am the only session here, this
+# is my safe default" from "another session that is running RIGHT NOW just set
+# this". Recording WHO set it, and a process id that lives exactly as long as
+# that session, lets the reader (lib/core/resolve-active-room.cjs
+# resolveActiveOwnership) tell those apart with a pid probe instead of guessing.
+#
+# Both values are already in the environment of the only writer, because
+# set-active runs inside the owning session's own process tree:
+#   CLAUDE_CODE_SESSION_ID -- the session UUID the hook reader also resolves
+#                             (same var room_bind falls back to, RCA c123f3d7).
+#   CLAUDE_PID             -- the `claude` CLI process; verified equal to the
+#                             Bash-tool shell's PPID and alive for the whole session.
+# MINDRIAN_ACTIVE_SESSION_ID / _PID are the hermetic-test seams and win when set.
+#
+# Absent session id => the ownership fields are CLEARED, never left stale, so the
+# registry falls back to exactly today's behavior (a manual shell `set-active`
+# must not leave a previous session owning a room it did not choose). Absent pid
+# => the reader cannot probe, treats ownership as stale, and inherits as today.
+# Every gap fails OPEN; the tier-0 single-session promise never depends on this
+# stamp being present.
+_OWNER_SID="${MINDRIAN_ACTIVE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+_OWNER_PID="${MINDRIAN_ACTIVE_SESSION_PID:-${CLAUDE_PID:-}}"
+
+# The two ownership mutators, defined ONCE and interpolated into every stanza
+# that touches reg['active'] (set-active, create, archive). Same single-copy
+# discipline the normwin shim uses. Only CODE is interpolated here; every VALUE
+# still arrives via sys.argv (RCA windows-python-interp-and-shim).
+_OWNER_PY=$(cat <<'OWNER_PY_EOF'
+def stamp_owner(reg, sid, opid, now):
+    if sid:
+        reg['active_session'] = sid
+        reg['active_session_at'] = now
+        if opid.isdigit():
+            reg['active_session_pid'] = int(opid)
+        else:
+            reg.pop('active_session_pid', None)
+    else:
+        clear_owner(reg)
+
+def clear_owner(reg):
+    reg.pop('active_session', None)
+    reg.pop('active_session_pid', None)
+    reg.pop('active_session_at', None)
+OWNER_PY_EOF
+)
+
+# Phase 127.3 Plan 04: auto-trigger retro-bootstrap on first post-127.3
+# invocation. The first time ANY room-registry subcommand runs after this
+# version ships, walk the registry and seed missing USER.md / STATE.md /
+# ROOM.md / .mindrian/ items on every existing room. Subsequent invocations
+# short-circuit via the sentinel file. Does NOT run when the user is
+# explicitly invoking `bootstrap-missing` (would be a tautological
+# self-invocation); also skipped if the registry is absent (nothing to
+# retro-seed yet). Failure does not block the requested subcommand --
+# wrapped in `|| true` so Larry-never-blocks discipline is preserved.
+_BOOTSTRAP_SENTINEL="${ROOMS_HOME}/.rooms/.bootstrap-127.3-done"
+if [ "${SUBCMD}" != "bootstrap-missing" ] && [ -f "${ROOMS_HOME}/.rooms/registry.json" ] && [ ! -f "${_BOOTSTRAP_SENTINEL}" ]; then
+  ( "$0" bootstrap-missing >/dev/null 2>&1 ) || true
+fi
+
+ensure_registry() {
+  mkdir -p "$ROOMS_HOME"
+  mkdir -p "$REGISTRY_DIR"
+  if [ ! -f "$REGISTRY_FILE" ]; then
+    echo '{"version": 1, "active": "", "rooms": {}}' > "$REGISTRY_FILE"
+  fi
+}
+
+# RCA test-birth-registry-leak -- structural guard (fails CLOSED).
+#
+# `create` is the ONLY verb that registers a room path, and every caller reaches
+# it through this script (birthRoom STEP 4, /mos:rooms new, direct invocations).
+# A test that births a room under the OS temp dir while MINDRIAN_ROOMS_HOME / HOME
+# still point at the navigator's real ~/MindrianRooms silently registered that
+# throwaway fixture and flipped the machine-wide `active` pointer onto it; on
+# Claude Desktop (no session id) claim_write then wrote into the fixture.
+#
+# Rule: REFUSE (exit 3, stderr token REGISTRY_GUARD_REFUSED, zero writes) when the
+# REAL location of the room is under a temp root AND the REAL location of the
+# registry file is not. Everything else is allowed: temp room into temp registry
+# (a hermetic test sandbox), non-temp room into non-temp registry (real use), and
+# a non-temp room into a temp registry. Locations are compared after realpath so a
+# symlink or the macOS /var -> /private/var hop cannot hide a temp dir, and with
+# normcase so Windows drive-letter case does not matter.
+#
+# Temp roots = tempfile.gettempdir() + $TMPDIR/$TEMP/$TMP + (POSIX) /tmp, /var/tmp,
+# the same set Node's os.tmpdir() can resolve to. A filesystem root as a temp root
+# is ignored (it would turn every path into "temp" and disarm the guard).
+#
+# Audited opt-out: MINDRIAN_ALLOW_TMP_ROOM=1 (exact value) registers anyway and
+# says so on stderr. If the guard itself errors (not a refusal) the create
+# proceeds, because a guard bug must never block every room creation
+# (Larry-never-blocks); the error is reported as REGISTRY_GUARD_ERROR.
+#
+# Only CODE lives in the python source; every VALUE arrives via sys.argv (RCA
+# windows-python-interp-and-shim). No dollar signs or backticks inside it.
+_registry_leak_guard() {
+  local room_path="$1"
+  if [ "${MINDRIAN_ALLOW_TMP_ROOM:-}" = "1" ]; then
+    echo "[MindrianOS] REGISTRY_GUARD_BYPASSED: MINDRIAN_ALLOW_TMP_ROOM=1 set; registering '${room_path}' without the temp-dir check." >&2
+    return 0
+  fi
+  local rc=0
+  python3 -c "
+import os, sys, tempfile
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+def real(p):
+    return os.path.normcase(os.path.realpath(normwin(p)))
+def temp_roots():
+    raw = []
+    try:
+        raw.append(tempfile.gettempdir())
+    except Exception:
+        pass
+    raw += [os.environ.get('TMPDIR'), os.environ.get('TEMP'), os.environ.get('TMP')]
+    if os.name != 'nt':
+        raw += ['/tmp', '/var/tmp']
+    roots = set()
+    for r in raw:
+        if not r:
+            continue
+        rr = real(r)
+        if os.path.dirname(rr) == rr:
+            continue
+        roots.add(rr)
+    return roots
+def under(p, roots):
+    for r in roots:
+        try:
+            if os.path.commonpath([p, r]) == r:
+                return True
+        except ValueError:
+            continue
+    return False
+rooms_home = sys.argv[1]
+room_path = sys.argv[2]
+reg_real = real(os.path.join(rooms_home, '.rooms', 'registry.json'))
+room_abs = room_path if os.path.isabs(normwin(room_path)) else os.path.join(rooms_home, room_path)
+room_real = real(room_abs)
+roots = temp_roots()
+if under(room_real, roots) and not under(reg_real, roots):
+    sys.stderr.write('[MindrianOS] REGISTRY_GUARD_REFUSED: will not register a temp-dir room in a non-temp registry.\n')
+    sys.stderr.write('  Why: room ' + room_real + ' is under the OS temp dir but registry ' + reg_real + ' is not; the throwaway room would become the machine-wide active room.\n')
+    sys.stderr.write('  Fix: point MINDRIAN_ROOMS_HOME at a temp dir (mkdtemp) for tests, or create the room outside the temp dir. Deliberate override: MINDRIAN_ALLOW_TMP_ROOM=1\n')
+    sys.exit(3)
+" "$ROOMS_HOME" "$room_path" || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    return 3
+  elif [ "$rc" -ne 0 ]; then
+    echo "[MindrianOS] REGISTRY_GUARD_ERROR: temp-dir guard crashed (exit ${rc}); continuing without it." >&2
+  fi
+  return 0
+}
+
+# Phase 127.3 Plan 04: shared room-bootstrap helper used by BOTH the `create`
+# stanza and the `bootstrap-missing` retro-pass. Reads ROOMDIR / NAME / VNAME /
+# VSTAGE from caller scope. Closes the intent_persona = all-null + JTBD-state-
+# never-created symptoms by giving every reader the files it expects.
+#
+# D-02 hard invariant (from 127.3-CONTEXT.md): this helper seeds ONLY four
+# items -- USER.md, STATE.md, ROOM.md, and the .mindrian/ directory. It MUST
+# NOT seed any state file inside .mindrian/. Absent-file is correctly handled
+# by every reader; writing an empty state file would mask the legitimate
+# first-write event in audit logs. Also: do NOT create ~/MindrianRooms/.memory/
+# here -- that is per-USER (not per-room) and lib/hmi/across-session-memory.cjs
+# ensureDir handles it lazily on first promote.
+_seed_room_bootstrap() {
+  mkdir -p "${ROOMDIR}/.mindrian"
+
+  if [ ! -f "${ROOMDIR}/STATE.md" ]; then
+    cat > "${ROOMDIR}/STATE.md" <<'STATE_EOF'
+---
+gsd_state_version: 1.0
+status: active
+---
+
+# State
+
+## Decisions
+
+(none yet)
+STATE_EOF
+  fi
+
+  if [ ! -f "${ROOMDIR}/USER.md" ]; then
+    cat > "${ROOMDIR}/USER.md" <<'USER_EOF'
+---
+canonical_role: null
+journey_stage: null
+---
+
+# User Profile
+
+Run /mos:profile-user to populate.
+USER_EOF
+  fi
+
+  if [ ! -f "${ROOMDIR}/ROOM.md" ]; then
+    cat > "${ROOMDIR}/ROOM.md" <<ROOM_EOF
+---
+room_id: ${NAME}
+venture_name: ${VNAME}
+venture_stage: ${VSTAGE}
+created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+---
+
+# ${VNAME}
+
+Stage: ${VSTAGE}
+ROOM_EOF
+  fi
+}
+
+# Quick 260723-ad9 (STATUSLINE-WRITE-B): upsert `current_room: <slug>` into a
+# room's OWN STATE.md frontmatter so the Phase 94-01 canonical read path
+# (getCurrentRoom -> context-monitor chip) is populated the moment a room is
+# created or switched to. Debug Option B; navigator-approved.
+#
+# Called by BOTH the `create` and `set-active` stanzas. Fire-and-forget: a
+# write failure never aborts the subcommand (Larry-never-blocks, same
+# discipline as the graph-sync background jobs).
+#
+# Safety (threat register T-ad9-01 / T-ad9-02):
+#   - roomdir + slug are passed via sys.argv, NEVER interpolated into the
+#     python source. As of RCA windows-python-interp-and-shim (2026-07-23)
+#     the create/read/list/update/set-active/archive/get-active/git-config
+#     stanzas above ALSO pass every value via sys.argv -- this was the first
+#     stanza to do so and is no longer the sole exception.
+#   - the slug is sanitized to a single-line token; the write is SKIPPED if it
+#     is empty, contains a colon, or any control char, so a crafted slug can
+#     never inject a frontmatter key or break the block. parseCurrentRoomField
+#     rejects colons on read; this refuses to emit them on write.
+_write_current_room() {
+  local roomdir="${1:-}"
+  local slug="${2:-}"
+  [ -z "$roomdir" ] && return 0
+  python3 - "$roomdir" "$slug" <<'PY_EOF' 2>/dev/null || true
+import sys, os, re
+
+def is_current_room_key(line):
+    return re.match(r'^\s*current_room\s*:', line) is not None
+
+def upsert(original, line):
+    lines = original.split('\n')
+    # Case 2: leading frontmatter (first line is a bare ---).
+    if lines and lines[0].strip() == '---':
+        close_idx = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == '---':
+                close_idx = i
+                break
+        if close_idx is not None:
+            fm = lines[1:close_idx]
+            body = lines[close_idx + 1:]
+            replaced = False
+            for j in range(len(fm)):
+                if is_current_room_key(fm[j]):
+                    fm[j] = line
+                    replaced = True
+                    break
+            if not replaced:
+                fm.append(line)
+            return '\n'.join(['---'] + fm + ['---'] + body)
+    # Case 3: content present but no leading frontmatter -> prepend a block.
+    return '---\n' + line + '\n---\n' + original
+
+def main():
+    roomdir = sys.argv[1] if len(sys.argv) > 1 else ''
+    slug = sys.argv[2] if len(sys.argv) > 2 else ''
+    if not roomdir:
+        return
+    # Sanitize: first line only, stripped. Skip on empty / colon / control char.
+    slug = slug.split('\n', 1)[0].strip()
+    if not slug:
+        return
+    if ':' in slug:
+        return
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in slug):
+        return
+    state_path = os.path.join(roomdir, 'STATE.md')
+    line = 'current_room: ' + slug
+    try:
+        if not os.path.exists(state_path):
+            # Case 1: STATE.md absent (do not assume Phase-0 setup ran).
+            os.makedirs(roomdir, exist_ok=True)
+            content = '---\n' + line + '\n---\n\n# State\n'
+        else:
+            with open(state_path, 'r', encoding='utf-8') as f:
+                original = f.read()
+            content = upsert(original, line)
+        tmp = state_path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(content)
+        os.replace(tmp, state_path)
+    except Exception:
+        return
+
+main()
+PY_EOF
+}
+
+case "$SUBCMD" in
+  create)
+    NAME="${1:-}"
+    RPATH="${2:-}"
+    VNAME="${3:-My Venture}"
+    VSTAGE="${4:-Pre-Opportunity}"
+    if [ -z "$NAME" ] || [ -z "$RPATH" ]; then
+      echo "[MindrianOS] Cannot create room -- missing name or path." >&2
+      echo "  Why: Both a room name and path are required to create a room" >&2
+      echo "  Fix: Run /mos:new-project to create a room interactively" >&2
+      exit 1
+    fi
+    # RCA test-birth-registry-leak: refuse BEFORE ensure_registry so a refused
+    # create makes no registry dir, no registry file, no ROOMS_HOME/<abs path>
+    # nesting, and no session-binding or graph-sync side effect downstream.
+    _registry_leak_guard "$RPATH" || exit 3
+    ensure_registry
+    python3 -c "
+import json, os, sys, datetime
+# Phase 127.2 Plan 04 Instance #4: normalize Git Bash POSIX paths (/c/Users/...)
+# to native Windows form (C:\\Users\\...) so Python open() resolves them on
+# Windows. No-op on Linux/macOS or when the path is already native.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+# RCA windows-python-interp-and-shim: values arrive via sys.argv, NEVER
+# interpolated into this source text -- a Windows path's backslashes can no
+# longer be re-parsed as Python escape sequences (matches _write_current_room).
+$_OWNER_PY
+reg_file = normwin(sys.argv[1])
+name = sys.argv[2]
+rpath = sys.argv[3]
+vname = sys.argv[4]
+vstage = sys.argv[5]
+with open(reg_file) as f:
+    reg = json.load(f)
+# Park currently active room
+old_active = reg.get('active', '')
+if old_active and old_active in reg.get('rooms', {}):
+    reg['rooms'][old_active]['status'] = 'parked'
+now = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+reg['rooms'][name] = {
+    'path': rpath,
+    'created': now,
+    'last_opened': now,
+    'status': 'active',
+    'venture_name': vname,
+    'venture_stage': vstage,
+    'git_enabled': 'false',
+    'git_remote': '',
+    'auto_push': 'off',
+    'vercel_url': ''
+}
+reg['active'] = name
+stamp_owner(reg, sys.argv[6], sys.argv[7], now)
+tmp = reg_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_file)
+print(json.dumps(reg['rooms'][name], indent=2))
+" "$REGISTRY_FILE" "$NAME" "$RPATH" "$VNAME" "$VSTAGE" "$_OWNER_SID" "$_OWNER_PID"
+    # Create the room directory under ROOMS_HOME
+    mkdir -p "${ROOMS_HOME}/${RPATH}"
+    # Phase 127.3 Plan 04: seed downstream-pipeline files on room creation
+    # (USER.md + STATE.md + ROOM.md + .mindrian/) via the shared helper.
+    # Closes the intent_persona=all-null + JTBD-state-never-created symptoms.
+    # Idempotent via `if [ ! -f ]` guards inside the helper -- re-running
+    # `create` on an existing room preserves user-edited content.
+    ROOMDIR="${ROOMS_HOME}/${RPATH}"
+    _seed_room_bootstrap
+    # Quick 260723-ad9: wire the canonical current_room WRITE half. Resolve the
+    # REAL room dir (RPATH is ABSOLUTE from birthRoom STEP 4, RELATIVE from
+    # /mos:rooms new Step 4) WITHOUT reusing the ${ROOMS_HOME}/${RPATH} concat
+    # that doubles an absolute path. Covers both room-creation paths.
+    case "$RPATH" in
+      /*) REAL_ROOMDIR="$RPATH" ;;
+      *)  REAL_ROOMDIR="${ROOMS_HOME}/${RPATH}" ;;
+    esac
+    _write_current_room "${REAL_ROOMDIR}" "${NAME}"
+    # Fire-and-forget local SQLite graph sync (D-16: never blocks). The Brain half
+    # was removed 2026-09-10 as a Canon Part 8 breach (quick task 260910-h32).
+    node "${SCRIPT_DIR}/sync-rooms-graph" "$ROOMS_HOME" >/dev/null 2>&1 &
+    ;;
+
+  read)
+    NAME="${1:-}"
+    if [ -z "$NAME" ]; then
+      echo "[MindrianOS] Cannot read room -- no name provided." >&2
+      echo "  Why: You need to specify which room to read" >&2
+      echo "  Fix: Run /mos:rooms to see your rooms, then try again with a name" >&2
+      exit 1
+    fi
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo "[MindrianOS] No room registry found." >&2
+      echo "  Why: No rooms have been created yet at ${ROOMS_HOME}/" >&2
+      echo "  Fix: Run /mos:new-project to create your first room" >&2
+      echo "{}" ; exit 1
+    fi
+    python3 -c "
+import json, os, sys
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+# Quick 260723-0de: port the exact 3-tier path-resolution precedence from the
+# bootstrap-missing heredoc so a path-less registry entry can never again be
+# misread as an orphaned or never-built room. Output-only: nothing is written
+# back to registry.json.
+def resolve_room_path(entry, slug, home):
+    abs_path = entry.get('abs_path')
+    if not abs_path:
+        p = entry.get('path')
+        if p and os.path.isabs(p):
+            abs_path = p
+        elif p:
+            abs_path = os.path.join(home, p)
+        else:
+            abs_path = os.path.join(home, slug)
+    return abs_path
+home = normwin(sys.argv[1])
+name = sys.argv[3]
+with open(normwin(sys.argv[2])) as f:
+    reg = json.load(f)
+room = reg.get('rooms', {}).get(name)
+if room:
+    out = dict(room)
+    resolved = resolve_room_path(room, name, home)
+    if not room.get('path'):
+        out['path'] = resolved
+    out['path_exists'] = os.path.isdir(normwin(resolved))
+    print(json.dumps(out, indent=2))
+else:
+    print('{}')
+    sys.exit(1)
+" "$ROOMS_HOME" "$REGISTRY_FILE" "$NAME"
+    ;;
+
+  list)
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo "[]" ; exit 0
+    fi
+    python3 -c "
+import json, os, sys
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+# Quick 260723-0de: same 3-tier path-resolution + disk cross-check as the read
+# stanza. A path-less entry now reports a resolved absolute location and an
+# honest path_exists boolean instead of an empty path. Output-only.
+def resolve_room_path(entry, slug, home):
+    abs_path = entry.get('abs_path')
+    if not abs_path:
+        p = entry.get('path')
+        if p and os.path.isabs(p):
+            abs_path = p
+        elif p:
+            abs_path = os.path.join(home, p)
+        else:
+            abs_path = os.path.join(home, slug)
+    return abs_path
+home = normwin(sys.argv[1])
+with open(normwin(sys.argv[2])) as f:
+    reg = json.load(f)
+result = []
+for name, room in reg.get('rooms', {}).items():
+    resolved = resolve_room_path(room, name, home)
+    stored_path = room.get('path')
+    result.append({
+        'name': name,
+        'path': stored_path if stored_path else resolved,
+        'path_exists': os.path.isdir(normwin(resolved)),
+        'status': room.get('status', 'unknown'),
+        'venture_name': room.get('venture_name', ''),
+        'venture_stage': room.get('venture_stage', ''),
+        'last_opened': room.get('last_opened', ''),
+        'git_enabled': room.get('git_enabled', 'false'),
+        'auto_push': room.get('auto_push', 'off')
+    })
+print(json.dumps(result, indent=2))
+" "$ROOMS_HOME" "$REGISTRY_FILE"
+    ;;
+
+  update)
+    NAME="${1:-}"
+    FIELD="${2:-}"
+    VALUE="${3:-}"
+    if [ -z "$NAME" ] || [ -z "$FIELD" ]; then
+      echo "[MindrianOS] Cannot update room -- missing name or field." >&2
+      echo "  Why: Both a room name and field name are required" >&2
+      echo "  Fix: Run /mos:rooms to see your rooms" >&2
+      exit 1
+    fi
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo "[MindrianOS] No room registry found." >&2
+      echo "  Why: No rooms have been created yet" >&2
+      echo "  Fix: Run /mos:new-project to create your first room" >&2
+      exit 1
+    fi
+    # RCA test-birth-registry-leak: `update <name> path|abs_path <value>` re-points a
+    # room, so it gets the same temp-dir check as `create` (no bypass by registering a
+    # safe path first and moving it into the temp dir afterwards).
+    case "$FIELD" in
+      path|abs_path) _registry_leak_guard "$VALUE" || exit 3 ;;
+    esac
+    python3 -c "
+import json, os, sys
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+reg_file = normwin(sys.argv[1])
+name = sys.argv[2]
+field = sys.argv[3]
+value = sys.argv[4]
+with open(reg_file) as f:
+    reg = json.load(f)
+if name not in reg.get('rooms', {}):
+    print('[MindrianOS] Room not found: ' + name, file=sys.stderr); print('  Fix: Run /mos:rooms to see available rooms', file=sys.stderr)
+    sys.exit(1)
+reg['rooms'][name][field] = value
+tmp = reg_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_file)
+print(json.dumps(reg['rooms'][name], indent=2))
+" "$REGISTRY_FILE" "$NAME" "$FIELD" "$VALUE"
+    ;;
+
+  set-active)
+    NAME="${1:-}"
+    if [ -z "$NAME" ]; then
+      echo "[MindrianOS] Cannot activate room -- no name provided." >&2
+      echo "  Why: You need to specify which room to switch to" >&2
+      echo "  Fix: Run /mos:rooms to see available rooms" >&2
+      exit 1
+    fi
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo "[MindrianOS] No room registry found." >&2
+      echo "  Why: No rooms have been created yet" >&2
+      echo "  Fix: Run /mos:new-project to create your first room" >&2
+      exit 1
+    fi
+    python3 -c "
+import json, os, sys, datetime
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+$_OWNER_PY
+reg_file = normwin(sys.argv[1])
+name = sys.argv[2]
+with open(reg_file) as f:
+    reg = json.load(f)
+if name not in reg.get('rooms', {}):
+    print('[MindrianOS] Room not found: ' + name, file=sys.stderr); print('  Fix: Run /mos:rooms to see available rooms', file=sys.stderr)
+    sys.exit(1)
+# Park currently active room
+old_active = reg.get('active', '')
+if old_active and old_active in reg.get('rooms', {}) and old_active != name:
+    reg['rooms'][old_active]['status'] = 'parked'
+now = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+reg['rooms'][name]['status'] = 'active'
+reg['rooms'][name]['last_opened'] = now
+reg['active'] = name
+stamp_owner(reg, sys.argv[3], sys.argv[4], now)
+tmp = reg_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_file)
+print(name)
+" "$REGISTRY_FILE" "$NAME" "$_OWNER_SID" "$_OWNER_PID"
+    # Quick 260723-ad9: after the registry flip, write current_room: $NAME into
+    # the switched room's OWN STATE.md (the /mos:rooms open path). Resolve the
+    # room dir from the just-flipped registry via the SAME 3-tier precedence the
+    # read/list/bootstrap-missing stanzas use. The resolver is a follow-on read;
+    # the primary stdout contract of set-active (the bare `$NAME` line above,
+    # consumed by commands/rooms.md) is unchanged.
+    RESOLVED_DIR=$(python3 -c "
+import json, os, sys
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+home = normwin(sys.argv[1])
+name = sys.argv[3]
+with open(normwin(sys.argv[2])) as f:
+    reg = json.load(f)
+entry = reg.get('rooms', {}).get(name, {})
+if not isinstance(entry, dict):
+    entry = {}
+abs_path = entry.get('abs_path')
+if not abs_path:
+    p = entry.get('path')
+    if p and os.path.isabs(p):
+        abs_path = p
+    elif p:
+        abs_path = os.path.join(home, p)
+    else:
+        abs_path = os.path.join(home, name)
+print(abs_path)
+" "$ROOMS_HOME" "$REGISTRY_FILE" "$NAME" 2>/dev/null || true)
+    if [ -n "$RESOLVED_DIR" ]; then
+      _write_current_room "$RESOLVED_DIR" "$NAME"
+    fi
+    ;;
+
+  archive)
+    NAME="${1:-}"
+    if [ -z "$NAME" ]; then
+      echo "[MindrianOS] Cannot archive room -- no name provided." >&2
+      echo "  Why: You need to specify which room to archive" >&2
+      echo "  Fix: Run /mos:rooms to see your rooms" >&2
+      exit 1
+    fi
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo "[MindrianOS] No room registry found." >&2
+      echo "  Why: No rooms have been created yet" >&2
+      echo "  Fix: Run /mos:new-project to create your first room" >&2
+      exit 1
+    fi
+    python3 -c "
+import json, os, sys
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+$_OWNER_PY
+reg_file = normwin(sys.argv[1])
+name = sys.argv[2]
+with open(reg_file) as f:
+    reg = json.load(f)
+if name not in reg.get('rooms', {}):
+    print('[MindrianOS] Room not found: ' + name, file=sys.stderr); print('  Fix: Run /mos:rooms to see available rooms', file=sys.stderr)
+    sys.exit(1)
+reg['rooms'][name]['status'] = 'archived'
+if reg.get('active') == name:
+    reg['active'] = ''
+    clear_owner(reg)
+tmp = reg_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_file)
+print('archived')
+" "$REGISTRY_FILE" "$NAME"
+    # Fire-and-forget local SQLite graph sync (D-16: never blocks). The Brain half
+    # was removed 2026-09-10 as a Canon Part 8 breach (quick task 260910-h32).
+    node "${SCRIPT_DIR}/sync-rooms-graph" "$ROOMS_HOME" >/dev/null 2>&1 &
+    ;;
+
+  get-active)
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo ""; exit 0
+    fi
+    python3 -c "
+import json, os, sys
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+with open(normwin(sys.argv[1])) as f:
+    reg = json.load(f)
+print(reg.get('active', ''))
+" "$REGISTRY_FILE"
+    ;;
+
+  git-config)
+    NAME="${1:-}"
+    GIT_ENABLED="${2:-false}"
+    GIT_REMOTE="${3:-}"
+    AUTO_PUSH="${4:-off}"
+    VERCEL_URL="${5:-}"
+    if [ -z "$NAME" ]; then
+      echo "[MindrianOS] Cannot configure git -- no room name provided." >&2
+      echo "  Why: You need to specify which room to configure" >&2
+      echo "  Fix: Run /mos:rooms to see your rooms" >&2
+      exit 1
+    fi
+    if [ ! -f "$REGISTRY_FILE" ]; then
+      echo "[MindrianOS] No room registry found." >&2
+      echo "  Why: No rooms have been created yet" >&2
+      echo "  Fix: Run /mos:new-project to create your first room" >&2
+      exit 1
+    fi
+    python3 -c "
+import json, os, sys
+# Phase 127.2 Plan 04 Instance #4: see scripts/room-registry create stanza.
+def normwin(p):
+    if sys.platform == 'win32' and len(p) >= 3 and p[0] == '/' and p[2] == '/':
+        return p[1].upper() + ':' + p[2:].replace('/', os.sep)
+    return p
+reg_file = normwin(sys.argv[1])
+name = sys.argv[2]
+git_enabled = sys.argv[3]
+git_remote = sys.argv[4]
+auto_push = sys.argv[5]
+vercel_url = sys.argv[6]
+with open(reg_file) as f:
+    reg = json.load(f)
+if name not in reg.get('rooms', {}):
+    print('[MindrianOS] Room not found: ' + name, file=sys.stderr); print('  Fix: Run /mos:rooms to see available rooms', file=sys.stderr)
+    sys.exit(1)
+reg['rooms'][name]['git_enabled'] = git_enabled
+reg['rooms'][name]['git_remote'] = git_remote
+reg['rooms'][name]['auto_push'] = auto_push
+reg['rooms'][name]['vercel_url'] = vercel_url
+tmp = reg_file + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_file)
+print(json.dumps(reg['rooms'][name], indent=2))
+" "$REGISTRY_FILE" "$NAME" "$GIT_ENABLED" "$GIT_REMOTE" "$AUTO_PUSH" "$VERCEL_URL"
+    ;;
+
+  bootstrap-missing)
+    # Phase 127.3 Plan 04 Task 2: retro-seed the 4 bootstrap items
+    # (USER.md / STATE.md / ROOM.md / .mindrian/) on EVERY existing room in
+    # `~/MindrianRooms/.rooms/registry.json` that lacks them. Closes the
+    # iteration-1 plan-check B-02 silent-no-op gap: without this, Plan 05's
+    # first-touch JTBD nudge fires only on rooms created AFTER Plan 04 lands,
+    # silently skipping every pre-existing room (Jonathan's MindrianRooms
+    # canonical rooms, every tester's room, every CI fixture). Auto-triggered
+    # once on first post-127.3 invocation by the sentinel guard at top-of-file.
+    ensure_registry
+    SENTINEL="${ROOMS_HOME}/.rooms/.bootstrap-127.3-done"
+    if [ -f "${SENTINEL}" ]; then
+      echo "[MindrianOS] bootstrap-missing already ran (sentinel: ${SENTINEL}); skipping."
+      exit 0
+    fi
+    # Walk the registry tolerating both Object and Array `rooms` shape
+    # (mirrors Plan 00's chokepoint dual-shape pattern). Emit `slug<TAB>abs_path`
+    # per room. abs_path resolution precedence:
+    #   1. entry.abs_path if set (absolute);
+    #   2. ROOMS_HOME / entry.path if entry.path is set (root-relative or absolute);
+    #   3. ROOMS_HOME / slug as fallback.
+    # Skip rooms with sealed === true OR status in {sealed, archived}.
+    # On registry parse error / unexpected shape, emit zero lines and exit 0
+    # (graceful degradation; sentinel still gets touched below so we don't
+    # retry forever on a broken registry).
+    ROOM_LINES=$(ROOMS_HOME="${ROOMS_HOME}" python3 - <<'PY_EOF'
+import json, os, sys
+home = os.environ.get('ROOMS_HOME', '')
+reg_path = os.path.join(home, '.rooms', 'registry.json')
+try:
+    with open(reg_path) as f:
+        reg = json.load(f)
+except Exception:
+    sys.exit(0)
+if not isinstance(reg, dict):
+    sys.exit(0)
+rooms = reg.get('rooms')
+entries = []
+if isinstance(rooms, dict):
+    for slug, entry in rooms.items():
+        entries.append((slug, entry if isinstance(entry, dict) else {}))
+elif isinstance(rooms, list):
+    for entry in rooms:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get('slug') or entry.get('name')
+        if slug:
+            entries.append((slug, entry))
+for slug, entry in entries:
+    if entry.get('sealed') is True:
+        continue
+    status = entry.get('status')
+    if status in ('sealed', 'archived'):
+        continue
+    abs_path = entry.get('abs_path')
+    if not abs_path:
+        p = entry.get('path')
+        if p and os.path.isabs(p):
+            abs_path = p
+        elif p:
+            abs_path = os.path.join(home, p)
+        else:
+            abs_path = os.path.join(home, slug)
+    print(f"{slug}\t{abs_path}")
+PY_EOF
+)
+    # Iterate each emitted line and seed missing bootstrap items via the
+    # shared helper from Task 1. Per-room idempotency: each seed inside
+    # _seed_room_bootstrap is guarded by `if [ ! -f ]`, so already-seeded
+    # rooms are left byte-identical.
+    SEEDED=0
+    SKIPPED=0
+    while IFS=$'\t' read -r SLUG ABS_PATH; do
+      [ -z "${SLUG:-}" ] && continue
+      if [ ! -d "${ABS_PATH}" ]; then
+        SKIPPED=$((SKIPPED + 1))
+        continue
+      fi
+      ROOMDIR="${ABS_PATH}"
+      NAME="${SLUG}"
+      VNAME="${SLUG}"
+      VSTAGE="foundation"
+      _seed_room_bootstrap
+      SEEDED=$((SEEDED + 1))
+    done <<< "${ROOM_LINES}"
+    # Touch sentinel on completion (even if zero rooms seeded -- prevents
+    # retry loops on a broken or empty registry).
+    touch "${SENTINEL}"
+    echo "[MindrianOS] bootstrap-missing complete; seeded=${SEEDED} skipped=${SKIPPED}; sentinel: ${SENTINEL}"
+    ;;
+
+  *)
+    echo "[MindrianOS] Unknown room-registry command: '${SUBCMD}'" >&2
+    echo "  Why: '${SUBCMD}' is not a valid subcommand" >&2
+    echo "  Fix: Valid commands are: create, read, list, update, set-active, archive, get-active, git-config, bootstrap-missing" >&2
+    exit 1
+    ;;
+esac

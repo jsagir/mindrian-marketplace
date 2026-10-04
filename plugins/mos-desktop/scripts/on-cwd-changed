@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# on-cwd-changed: CwdChanged hook handler for MindrianOS
+# Auto-switches the active room when the user changes directory to a
+# registered room path. Updates the registry and injects new room context.
+# Must complete in under 2 seconds.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Phase 95-04: CwdChanged envelope helper.
+#
+# Allowed top-level keys per Claude Code 2.x CwdChanged schema:
+#   continue, stopReason, suppressOutput, systemMessage
+# CwdChanged does NOT accept hookSpecificOutput. Pre-fix the success path
+# emitted `{hookSpecificOutput: {hookEventName: "SessionStart", ...}}`
+# which violates the per-event allowed key set.
+# ---------------------------------------------------------------------------
+emit_cwd_changed_envelope() {
+  local msg="$1"
+  if [ -z "$msg" ]; then return 0; fi
+  jq -nc --arg m "$msg" '{
+    systemMessage: $m,
+    suppressOutput: false
+  }'
+}
+
+# New working directory (passed by hook or use PWD)
+NEW_DIR="${1:-$PWD}"
+
+# Try to resolve a room at the new directory
+NEW_ROOM=$("${SCRIPT_DIR}/resolve-room" "$NEW_DIR" 2>/dev/null) || NEW_ROOM=""
+
+# Also check if new dir IS inside a room (walk up to find STATE.md)
+if [ -z "$NEW_ROOM" ]; then
+  check_dir="$NEW_DIR"
+  while [ "$check_dir" != "/" ] && [ "$check_dir" != "." ]; do
+    if [ -f "$check_dir/STATE.md" ]; then
+      # Found a room -- try to resolve from parent
+      parent_dir=$(dirname "$check_dir")
+      NEW_ROOM=$("${SCRIPT_DIR}/resolve-room" "$parent_dir" 2>/dev/null) || NEW_ROOM=""
+      if [ -z "$NEW_ROOM" ]; then
+        # Legacy room without registry -- adopt it
+        NEW_ROOM=$("${SCRIPT_DIR}/resolve-room" "$parent_dir" --adopt 2>/dev/null) || NEW_ROOM=""
+      fi
+      break
+    fi
+    check_dir=$(dirname "$check_dir")
+  done
+fi
+
+if [ -z "$NEW_ROOM" ]; then
+  # 95-04: silent on diagnostic paths. CwdChanged does not accept
+  # status at root. No message needed for the no-room case.
+  # silent: no room at new directory
+  exit 0
+fi
+
+# Check if this is different from the currently active room
+OLD_ROOM=$("${SCRIPT_DIR}/resolve-room" "$PWD" 2>/dev/null) || OLD_ROOM=""
+
+if [ "$NEW_ROOM" = "$OLD_ROOM" ]; then
+  # silent: same room - no switch needed
+  exit 0
+fi
+
+# Update registry to point to the new room
+# Find the registry that contains this room
+REGISTRY_FILE=""
+for reg_candidate in "${NEW_DIR}/.rooms/registry.json" "$(dirname "$NEW_ROOM")/.rooms/registry.json"; do
+  if [ -f "$reg_candidate" ]; then
+    REGISTRY_FILE="$reg_candidate"
+    break
+  fi
+done
+
+if [ -n "$REGISTRY_FILE" ]; then
+  python3 -c "
+import json, os, sys
+# RCA windows-python-interp-and-shim: paths arrive via sys.argv, never
+# interpolated into this source text (a Windows backslash path would otherwise
+# be re-parsed as a Python escape sequence and SyntaxError before this runs).
+reg_path = sys.argv[1]
+new_room = sys.argv[2]
+
+with open(reg_path) as f:
+    reg = json.load(f)
+
+# Find which room entry matches the new room path
+for name, room in reg.get('rooms', {}).items():
+    abs_path = os.path.normpath(os.path.join(os.path.dirname(reg_path).replace('/.rooms', ''), room['path']))
+    if abs_path == new_room:
+        reg['active'] = name
+        import datetime
+        room['last_opened'] = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+        break
+
+tmp = reg_path + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(reg, f, indent=2)
+os.replace(tmp, reg_path)
+" "$REGISTRY_FILE" "$NEW_ROOM" 2>/dev/null || true
+fi
+
+# Compute state for the new room
+state_output=$("${SCRIPT_DIR}/compute-state" "$NEW_ROOM" 2>/dev/null || echo "Error computing state")
+
+# Read plugin version via platform.cjs (plan 85-06 sweep).
+PLUGIN_VERSION=$(node -e "try{process.stdout.write(require('$PLUGIN_ROOT/lib/core/platform.cjs').readPluginJsonVersion('$PLUGIN_ROOT'))}catch(e){process.stdout.write('unknown')}" 2>/dev/null || echo "unknown")
+
+# Build context for the new room
+room_name=$(basename "$NEW_ROOM")
+context="[MindrianOS Room Switch] Switched to room: ${room_name}\n\n${state_output}\n\nYou are Larry. MindrianOS v${PLUGIN_VERSION}. The user switched to a different Data Room. Greet them with awareness of this room's state."
+
+# Escape for JSON
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+escaped_context=$(escape_for_json "$context")
+
+# Track room switch in analytics
+bash "${SCRIPT_DIR}/track-analytics" room-switch 2>/dev/null &
+
+# Phase 95-04: CwdChanged does NOT accept hookSpecificOutput per the
+# Claude Code 2.x schema. Stdout carries only systemMessage. The full
+# room state is no longer surfaced through stdout, but the next
+# SessionStart fires anyway and re-injects active-room context.
+#
+# Phase 95-01 audit: this Cursor branch (CURSOR_PLUGIN_ROOT-gated) is
+# invalid for Claude Code 2.x but valid for Cursor's hook system. The
+# divergence is intentional. See .planning/phases/95-bash-hook-envelope-and-cascade-side-channel/95-01-AUDIT.md row #9.
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  # Cursor branch: kept for compatibility. See 95-01-AUDIT.md row #9.
+  printf '{\n  "additional_context": "%s"\n}\n' "$escaped_context"
+else
+  # Claude path: schema-compliant CwdChanged envelope (systemMessage only).
+  emit_cwd_changed_envelope "Switched to room: ${room_name}"
+fi
+
+exit 0

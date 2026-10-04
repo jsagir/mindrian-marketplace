@@ -1,0 +1,205 @@
+'use strict';
+// Phase 189-02 (HITL Memory Governance; SEED-040 / HMG-02) -- the F.8 governance
+// BASKET renderer. This COMPOSES the shipped Phase-188 F.8 selector
+// (shape-f8-renderer.cjs). It mints NO new selector shape and NO new frozen scalar
+// -- it clones the renderUmbilicalBasket structural template (Phase 195-05) exactly,
+// supplying only the domain-specific mapping (a governance candidate -> a toggle).
+//
+// Each candidate becomes a toggle whose LABEL is the candidate's claim text,
+// truncated (Phase 298-04, D-01), with the candidate_id surviving as the
+// toggle's structural id (not its label) so a downstream host never derives a
+// slug from prose. Confidence rides the toggle too. A candidate whose
+// confidence >= the frozen PRE_CHECK_THRESHOLD (0.70, imported from the
+// renderer, never re-minted) renders PRE-CHECKED -- display-only, NEVER
+// auto-applied. Rendering writes ZERO edges; nothing lands until the single
+// confirm the closer consumes.
+//
+// Only a candidate that passes governance-candidate.validateCandidate renders; a
+// malformed candidate is dropped, never rendered, never crashes the basket.
+//
+// Canon Part 8 (corrected 298-04, D-01a): Part 8 fences Brain EGRESS -- nothing
+// in this path ever reaches a Brain MCP tool call (lib/mcp/gate-render.cjs:39).
+// This card is composed and rendered LOCALLY with zero Brain tokens, so a row
+// MAY carry the claim text; what Part 8 forbids is the claim reaching Brain,
+// which nothing here does.
+// Canon Part 9: only a human confirms a truth claim, and a human cannot confirm
+// what they cannot read -- so the row must be readable, never an opaque handle.
+// House rule: CJS only, hyphens only (no em-dashes).
+
+const shapeF8 = require('../../hmi/shape-f8-renderer.cjs');
+const governanceCandidate = require('./governance-candidate.cjs');
+
+// The HITL shape this basket declares. It COMPOSES F.8; it mints no new shape.
+const HITL_SHAPE = 'F.8';
+
+// The frozen pre-check threshold, REUSED from the shipped renderer -- NOT minted
+// here. This module never defines its own 0.7x scalar.
+const PRE_CHECK_THRESHOLD = shapeF8.PRE_CHECK_THRESHOLD;
+
+// _enrich(cand) -> a full candidate the validateCandidate contract accepts.
+// The findGovernanceCandidates query hands us { candidate_id, kind, confidence,
+// source_path, claim_text, knowledge_type } (the target_section /
+// affected_sections / layer are filled HERE, per the Task 1 contract note). We
+// derive a defensible default: the target section is the candidate's
+// source_path when present, affected_sections is the single-element list of
+// that section (or the candidate_id when no section is known), and layer stays
+// null (WHO/WHERE is decided later, never silently defaulted -- validateCandidate
+// accepts null layer at raise time). claim_text and knowledge_type (298-04,
+// D-01) are carried straight through unmodified so the readable-row build below
+// can read them off the enriched object; they are additive fields
+// validateCandidate does not inspect, so passing them through never changes its
+// verdict. A candidate that already carries the enriched fields is passed
+// through with defaults filled only where missing.
+function _enrich(cand) {
+  if (!cand || typeof cand !== 'object') return cand;
+  const section = (typeof cand.target_section === 'string' && cand.target_section.length > 0)
+    ? cand.target_section
+    : ((typeof cand.source_path === 'string' && cand.source_path.length > 0) ? cand.source_path : null);
+  let affected = cand.affected_sections;
+  if (!Array.isArray(affected) || affected.length < 1) {
+    const fallback = section || (typeof cand.candidate_id === 'string' ? cand.candidate_id : null);
+    affected = fallback ? [fallback] : [];
+  }
+  return {
+    candidate_id: cand.candidate_id,
+    kind: cand.kind,
+    confidence: (cand.confidence === undefined) ? null : cand.confidence,
+    target_section: section,
+    affected_sections: affected,
+    layer: (cand.layer === undefined) ? null : cand.layer,
+    claim_text: (typeof cand.claim_text === 'string') ? cand.claim_text : null,
+    knowledge_type: (typeof cand.knowledge_type === 'string') ? cand.knowledge_type : null,
+    source_path: (typeof cand.source_path === 'string') ? cand.source_path : null,
+    preview: (typeof cand.preview === 'string' && cand.preview.length > 0) ? cand.preview : null,
+  };
+}
+
+// CLAIM_LABEL_MAX -- the toggle LABEL's max character length. AskUserQuestion's
+// elicitation rung constrains the option LABEL (not the description) to a
+// short, single-line, scannable string; 80 characters is long enough to carry
+// one full claim-sentence fragment without wrapping across the ~4-5-option
+// ceiling F.8 already pages against, and short enough to stay a label rather
+// than becoming the description's job.
+const CLAIM_LABEL_MAX = 80;
+
+// _truncateLabel(text) -> a label-safe string, or null if text is not usable.
+// Truncates at CLAIM_LABEL_MAX with a three-ASCII-period ellipsis (never a
+// Unicode ellipsis character).
+function _truncateLabel(text) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  if (text.length <= CLAIM_LABEL_MAX) return text;
+  return text.slice(0, CLAIM_LABEL_MAX - 3) + '...';
+}
+
+// _composeDescription(cand) -> "<knowledge_type> -> <target_section>, conf 0.xx,
+// from <source_path>" with any missing part OMITTED (never the word "null").
+function _composeDescription(cand) {
+  const kt = (typeof cand.knowledge_type === 'string' && cand.knowledge_type.length > 0)
+    ? cand.knowledge_type : null;
+  const section = (typeof cand.target_section === 'string' && cand.target_section.length > 0)
+    ? cand.target_section : null;
+  let head = null;
+  if (kt && section) head = kt + ' -> ' + section;
+  else if (kt) head = kt;
+  else if (section) head = section;
+
+  const segments = [];
+  if (head) segments.push(head);
+  if (typeof cand.confidence === 'number' && Number.isFinite(cand.confidence)) {
+    segments.push('conf ' + cand.confidence.toFixed(2));
+  }
+  if (typeof cand.source_path === 'string' && cand.source_path.length > 0) {
+    segments.push('from ' + cand.source_path);
+  }
+  return segments.length > 0 ? segments.join(', ') : null;
+}
+
+/**
+ * renderGovernanceBasket(candidates, opts) -> { zones, contract }
+ *
+ * Mirrors renderUmbilicalBasket: map each VALID candidate to a toggle whose
+ * LABEL is the truncated claim text (falling back to candidate_id when
+ * claim_text is unavailable) and whose confidence rides the toggle, call
+ * shapeF8.renderShapeF8 with those options + a header, then declare
+ * rendered.contract.hitl_shape = 'F.8' (composes the shipped shape, mints
+ * nothing). A candidate that fails validateCandidate is silently dropped --
+ * never rendered, never a crash.
+ *
+ * D-01: this ALSO folds the {id, label, description, rank, preview} superset
+ * options list onto the contract directly, mirroring lib/mcp/gate-render.cjs:353-363.
+ * renderShapeF8 is called DIRECTLY here (never through gate-render.cjs), and
+ * its own _normalizeOption keeps only label + confidence -- without this
+ * explicit fold the description would be silently dropped (Pitfall 9).
+ */
+function renderGovernanceBasket(candidates, opts) {
+  opts = opts || {};
+  const list = Array.isArray(candidates) ? candidates : [];
+  const options = [];
+  const supersetOptions = [];
+  for (const raw of list) {
+    const cand = _enrich(raw);
+    const verdict = governanceCandidate.validateCandidate(cand);
+    if (!verdict || verdict.ok !== true) continue; // malformed -> drop, never render
+
+    const confidence = (typeof cand.confidence === 'number' && Number.isFinite(cand.confidence)) ? cand.confidence : null;
+    const truncated = _truncateLabel(cand.claim_text);
+    const label = (truncated !== null) ? truncated : cand.candidate_id;
+    const description = _composeDescription(cand);
+    const rank = supersetOptions.length;
+
+    options.push({
+      label: label,
+      confidence: confidence,
+    });
+    supersetOptions.push({
+      id: cand.candidate_id,
+      label: label,
+      description: description,
+      rank: rank,
+      preview: cand.preview || undefined,
+    });
+  }
+
+  const rendered = shapeF8.renderShapeF8({
+    options: options,
+    header: (typeof opts.header === 'string' && opts.header.length > 0)
+      ? opts.header
+      : '-- mindrianOS -- memory -- govern --',
+    personaContext: opts.personaContext,
+  });
+
+  // Declare the composed HITL shape on the contract (F.8; no new shape minted).
+  rendered.contract.hitl_shape = HITL_SHAPE;
+
+  // D-01: the readable-row fold (see function doc above). rank stays the
+  // build-order index; preview stays undefined unless the candidate already
+  // carried one -- no new shape, scalar or edge is minted anywhere in this fold.
+  rendered.contract.superset_options = supersetOptions;
+
+  return rendered;
+}
+
+/**
+ * routeCandidate(candidate) -> 'F.8' | 'F.9'
+ *
+ * The ONLY new routing logic 189-04 adds. A single candidate whose cascade touches
+ * MORE THAN ONE section resolves through the ORDERED F.9 cascade (189-03's
+ * memory-cascade-f9-adapter -- array order IS meaning); a single-section candidate
+ * resolves through the flat F.8 basket (189-02). This function only TELLS the caller
+ * which shipped gate to invoke; it invokes neither and mutates nothing. 189-02's
+ * basket and 189-03's cascade both stay untouched. Degrades to 'F.8' (the simplest
+ * gate) on any malformed / missing affected_sections.
+ */
+function routeCandidate(candidate) {
+  const affected = (candidate && Array.isArray(candidate.affected_sections))
+    ? candidate.affected_sections
+    : [];
+  return affected.length > 1 ? 'F.9' : 'F.8';
+}
+
+module.exports = {
+  HITL_SHAPE: HITL_SHAPE,
+  PRE_CHECK_THRESHOLD: PRE_CHECK_THRESHOLD,
+  renderGovernanceBasket: renderGovernanceBasket,
+  routeCandidate: routeCandidate,
+};

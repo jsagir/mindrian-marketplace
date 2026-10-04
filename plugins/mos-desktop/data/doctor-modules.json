@@ -1,0 +1,251 @@
+{
+  "$schema_note": "Hand-maintained module registry for the doctor accumulative engine. NOT generated. New organ module = ONE entry here, no engine code change (mirrors data/deployment-surfaces.json's 'new surface = one entry' discipline). The selector in scripts/doctor.cjs (runAccumulativeEngine) walks this array. CADENCE splits how a module runs (Phase 217 Plan-01): cadence 'always' = a per-invocation DIAGNOSTIC whose check() runs on EVERY doctor invocation, watermark-immune (only an upper introduced_version <= running deferred-guard applies, never a lower watermark bound) -- this is what stops a migrated check from going permanently silent after one run; cadence 'once' = a watermark-gated HEAL (umbilical's semantics) that runs when introduced_version is in the (applied_through, running] window and never re-runs once the persisted watermark at ~/.mindrian/doctor-applied.json advances past it. FLAG names the parseArgs flags key that activates the module: null = the module runs on a bare / --all / --fix run when no class flag is active (the class-A/N gate), and a named flag (e.g. 'roomMd') runs the module only when that flag is set. FIX-THEN-RECHECK: under --fix a module with fix_supported true whose check surfaced a warn/error is passed to the runner fix(), then check() re-runs so the reported result reflects the post-fix state; a fixer's recoveries land in the engine recovered[] array. fix_supported MUST be an explicit boolean (D-03) -- never omitted. Both cadence and flag are gated by introduced_version <= running so an install is NEVER faulted for an organ it predates, and a future-version module (introduced_version > running) is DEFERRED (never run) until the user is on that version. Per-entry contract: { id (stable kebab-case identifier), introduced_version (semver string -- the plugin version that shipped this organ; prerelease labels like 1.13.1-beta.4 compare correctly), cadence ('always' | 'once'), flag (parseArgs flags key | null), fix_supported (explicit boolean -- whether the runner offers a --fix remediation, else check-only), runner (a lib/core/doctor/<id>.cjs-style relative path resolved against the plugin root at run time; its module exports a check(ctx) and optionally a fix(ctx) entry), description (one line) }. SEEDED EMPTY: Plan 03 registers module #1 (umbilical). Do NOT invent organ modules here beyond umbilical -- the 15 remaining SCOUT-2 organs backfill in v1.13.1+ (out_of_scope LOCKED decision).",
+  "schema_version": 1,
+  "phase": "139-doctor-accumulative-engine-skeleton-and-context-fix",
+  "canon_parts": [6, 7, 8],
+  "modules": [
+    {
+      "id": "capability-ledger",
+      "introduced_version": "2.0.0-beta.12",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/capability-ledger-module.cjs",
+      "description": "Capability ledger staleness (Phase 265): warns when data/capability-ledger.json's ledger_covers.to trails the installed claude --version beyond MINDRIAN_LEDGER_MAX_VERSION_LAG. Check-only, cadence always."
+    },
+    {
+      "id": "mcp-surface",
+      "introduced_version": "2.0.0-beta.12",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/mcp-surface-module.cjs",
+      "description": "MCP tool-count and zero-tool check (Phase 265 R-7): spawns both mindrian-os and mindrian-brain over stdio and reports live per-server tool counts, failing on a zero-tool tools/list response or a wedged server. Warns (never caps) when the combined surface exceeds TOTAL_SURFACE_TOKEN_BUDGET. Check-only, cadence always."
+    },
+    {
+      "id": "umbilical",
+      "introduced_version": "1.13.1-beta.4",
+      "cadence": "once",
+      "flag": null,
+      "fix_supported": true,
+      "runner": "lib/core/doctor/umbilical-module.cjs",
+      "description": "Project .umbilical cords into room.db as AFFILIATED_WITH edges; integrity-check cord<->marker bidirectionality (orphan / removed-marker / unprojected). --fix SUGGESTS orphan cords, never auto-creates."
+    },
+    {
+      "id": "card-fire-health",
+      "introduced_version": "1.15.3-beta.12",
+      "cadence": "always",
+      "flag": "cardFireHealth",
+      "fix_supported": false,
+      "runner": "lib/core/doctor/card-fire-health-module.cjs",
+      "description": "check-card-fire.cjs instrument health: intercept log exists/valid JSONL/fresh, library seams intact, session store parseable"
+    },
+    {
+      "id": "voice-style-log",
+      "introduced_version": "2.0.0-beta.28",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/voice-style-log-module.cjs",
+      "description": "Voice-style evidence count since the last release plus the evaluatePromotion verdict per voice policy found in the log (D-04). Never returns warn or error; informational only."
+    },
+    {
+      "id": "mode-select-checkpoint",
+      "introduced_version": "1.15.3-beta.19",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/mode-select-checkpoint-module.cjs",
+      "description": "Session-start mode-selection Decision Gate firing checkpoint: warns when a session has had a user turn but no lane-pick was recorded, a possible silent skip. Check-only, advisory."
+    },
+    {
+      "id": "ui-compliance",
+      "introduced_version": "1.12.1-beta.1",
+      "cadence": "always",
+      "flag": "uiCompliance",
+      "fix_supported": false,
+      "runner": "lib/core/doctor/ui-compliance-module.cjs",
+      "description": "UI Ruling System compliance scan (class F): commands body_shape frontmatter, forbidden box chars / glyphs, renderer Zone 1 + Zone 4 patterns. Check-only (D-13)."
+    },
+    {
+      "id": "stale-first-touch-copy",
+      "introduced_version": "1.13.1-beta.4",
+      "cadence": "always",
+      "flag": "staleFirstTouch",
+      "fix_supported": false,
+      "runner": "lib/core/doctor/stale-first-touch-copy-module.cjs",
+      "description": "First-touch greeting surfaces (class K): stale hardcoded version literals + em-dash violations, via lib/core/stale-copy-scanner.cjs. Check-only."
+    },
+    {
+      "id": "deprecated-usage",
+      "introduced_version": "1.13.0-beta.19",
+      "cadence": "always",
+      "flag": "deprecatedUsage",
+      "fix_supported": false,
+      "runner": "lib/core/doctor/deprecated-usage-module.cjs",
+      "description": "Deprecated /mos:<cmd> usage in recent session transcripts (class L): per-command migration hints. Standard status vocabulary; check-only."
+    },
+    {
+      "id": "plugin-enabled-state",
+      "introduced_version": "1.13.1-beta.4",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/plugin-enabled-state-module.cjs",
+      "description": "Silent-disable watchdog (class N / DRIFT-12): plugin installed but enabledPlugins key false. Default-gated (bare / --all / --fix). Check-only."
+    },
+    {
+      "id": "cascade-rooms",
+      "introduced_version": "1.12.1-beta.1",
+      "cadence": "always",
+      "flag": "cascadeRooms",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/cascade-rooms-module.cjs",
+      "description": "Room .room-root sentinel presence (class B): every registered room carries its sentinel. --fix CREATES missing sentinels for rooms whose dir exists (dry-run honored; dir-missing rooms suggested, never auto-created)."
+    },
+    {
+      "id": "cascade-rooms-active",
+      "introduced_version": "1.12.1-beta.1",
+      "cadence": "always",
+      "flag": "cascadeRooms",
+      "fix_supported": false,
+      "runner": "lib/core/doctor/cascade-rooms-active-module.cjs",
+      "description": "Active-room guard silence detector (class C): a write to a non-active room would be silenced before the cascade side-channel runs. Shares the --cascade-rooms flag with class B. Check-only."
+    },
+    {
+      "id": "room-md",
+      "introduced_version": "1.12.1-beta.1",
+      "cadence": "always",
+      "flag": "roomMd",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/room-md-module.cjs",
+      "description": "ROOM.md + MINTO.md presence under the active room's .room-root (class E). --fix invokes generate-section-intelligence.cjs --recursive then re-checks."
+    },
+    {
+      "id": "statusline-visibility",
+      "introduced_version": "1.12.5",
+      "cadence": "always",
+      "flag": "statuslineVisibility",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/statusline-visibility-module.cjs",
+      "description": "Statusline invisibility probe (class G): stale user-settings path / broken plugin install / statusline-mos isolated execution / disableAllHooks. --fix removes the stale user-settings statusLine override so plugin-level config takes effect."
+    },
+    {
+      "id": "install-incomplete",
+      "introduced_version": "1.13.0-beta.9",
+      "cadence": "always",
+      "flag": "statuslineVisibility",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/install-incomplete-module.cjs",
+      "description": "Silent install-incomplete detector (class H): missing statusLine block / halted .install-receipt.json tail steps. Shares the --statusline-visibility flag with class G (today's behavior). --fix re-stamps the canonical statusLine block idempotently (recoverable path only; halted-tail case is report-only)."
+    },
+    {
+      "id": "verify-surface",
+      "introduced_version": "1.12.1-beta.1",
+      "cadence": "always",
+      "flag": "verifySurface",
+      "fix_supported": false,
+      "runner": "lib/core/doctor/verify-surface-module.cjs",
+      "description": "Live cascade side-channel end-to-end verification (class D): spawns tests/test-cascade-surface-e2e.cjs (30s timeout) and asserts the 8-key shape. Self-skips when bash or the harness is absent (never faults an install for a missing dev harness). Check-only."
+    },
+    {
+      "id": "install-state",
+      "introduced_version": "1.13.0-beta.13",
+      "cadence": "always",
+      "flag": "installState",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/install-state-module.cjs",
+      "description": "Install-state record + topology classification + 6-way version-of-record consistency (class I): reads ~/.mindrian/install-state.json, live-spot-checks record.active_version vs installed_plugins.json, detects legacy-config-pin drift (F11) and legacy-clone-alongside-marketplace-cache migration candidates. --fix returns MULTIPLE recovery records (session-start record write, LV rewrite, legacy-config reconcile, legacy-clone backup-verify-remove with the dev-clone safety belt). Runs BEFORE deployment-surfaces so class J reads its result via ctx.checks."
+    },
+    {
+      "id": "deployment-surfaces",
+      "introduced_version": "1.13.0-beta.13",
+      "cadence": "always",
+      "flag": "installState",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/deployment-surfaces-module.cjs",
+      "description": "Deployment-surface manifest reconciliation (class J): reconciles every owned surface in data/deployment-surfaces.json against disk (marker / exact-value / observed-only), honoring topology_scope + token expansion. Reads topology/activeRoot/activeVersion from ctx.checks['install-state'] (self-derives via shared.cjs when absent). Shares the --install-state flag with class I; ordered AFTER it. --fix re-stamps ok:false session-start-owned surfaces + prunes the marketplace cache."
+    },
+    {
+      "id": "room-graph-density",
+      "introduced_version": "1.15.3-beta.47",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/room-graph-density-module.cjs",
+      "description": "Per-registered-room room.db node-row and edge-row counts, read through the new read-only navigation door so the census never mutates what it measures. Check-only: raw counts and totals, no health or density claim, per SEED-074's hard guard on downstream claims."
+    },
+    {
+      "id": "room-graph-integrity",
+      "introduced_version": "2.0.0-beta.40",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/room-graph-integrity-module.cjs",
+      "description": "Room-graph integrity counts (Phase 343): edge rows whose source or target id has no node row, claim nodes with no SOURCED_FROM or DERIVED_FROM out-edge, proposed nodes past the review window, edge rows carrying a type outside the writeEdge allowlist, unresolved CONTRADICTS edges and self-referencing edges. Reads through the read-only navigation door; scopes to the active room by default and every registered room plus fleet totals under --cascade-rooms. Check-only: raw counts only, no claim in either direction, per SEED-074's hard guard."
+    },
+    {
+      "id": "graph-derive-health",
+      "introduced_version": "1.15.3-beta.49",
+      "cadence": "always",
+      "flag": "graphDeriveHealth",
+      "fix_supported": true,
+      "runner": "lib/core/doctor/graph-derive-health-module.cjs",
+      "description": "Semantic-edge derivation health per room (RCA 4d): BELONGS_TO present with zero cascade edges (derivation never succeeded), a derive queue entry stuck past 3 days, or a graph-derive-failures.json log. Scopes to the active room, or every room with --cascade-rooms. --fix (sugar: --heal-room) re-enqueues each affected room through the existing dedup-by-roomDir sweep."
+    },
+    {
+      "id": "canon-backfill",
+      "introduced_version": "2.0.0-beta.56",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": true,
+      "runner": "lib/core/doctor/canon-backfill-module.cjs",
+      "description": "Canon handle backfill (Phase 366, D-16): for every registered room, things that resolve to a canon framework through the one resolver (frontmatter framework, methodology, title, ratified room translation) but carry no USES_FRAMEWORK edge, and framework edge targets with no node row. --fix mints the framework node first, then the edge, one transaction per thing, and reports counts per room; a second run changes nothing. Exact matches only: no fuzzy matching, no network."
+    },
+    {
+      "id": "graph-derive-heal-retrofit",
+      "introduced_version": "1.15.3-beta.49",
+      "cadence": "once",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/graph-derive-heal-retrofit-module.cjs",
+      "description": "One-time automatic retrofit (RCA 4c) for rooms whose derive queues were silently cleared before Phase 224-02's keep-on-failure fix. Walks every registered room, reuses graph-derive-health's detectRoomHealth, and re-enqueues each zero-cascade-edge room so the next in-session derive rebuilds its semantic layer. The heal runs inside check() because the ONCE pass is not gated behind --fix; the watermark then advances so it never repeats."
+    },
+    {
+      "id": "eureka-fts-health",
+      "introduced_version": "1.15.3-beta.51",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/eureka-fts-health-module.cjs",
+      "description": "Per-registered-room eureka_fts (lexical trigger index) presence, population and staleness census, read through the read-only navigation door so the census never mutates what it measures (RESEARCH BLOCKER B-2). An absent index is reported, not failed: absent is the correct default state of every room today. A stale index (rows pointing at deleted nodes) is a real defect and reports status warn."
+    },
+    {
+      "id": "icm-part-wiring",
+      "introduced_version": "2.0.0-beta.38",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": false,
+      "runner": "lib/core/doctor/icm-part-wiring-module.cjs",
+      "description": "Declaration counts for ICM nested parts, producers resolved against the command registry, consumers resolved on disk, per-layer declaring-surface counts, and an opt-in per-room section-contract heading census behind --cascade-rooms. Check-only: raw counts and totals, no health or completeness claim, per SEED-074's hard guard on downstream claims."
+    },
+    {
+      "id": "room-map",
+      "introduced_version": "2.0.0-beta.48",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": true,
+      "runner": "lib/core/doctor/room-map-module.cjs",
+      "description": "Rebuilds a room's .mindrian/room-map.json from disk and compares it against six drift classes: missing map, stale map fingerprint, a blocked-kind (root/section/structural/sub-room) directory missing ROOM.md, a stale per-node icm_self.fingerprint, an artifact folder wrongly carrying an icm_self block, and a sub-room registry lineage disagreement (report-only, disk wins). No auto_heal key yet (R-353-A; Phase 352 classifies this row and section-ruling together when it lands, proposed TRUE here since a rebuild-from-disk is mechanical and reversible). --fix refuses (recoverable:false) on any room path outside tests/fixtures/icm-rooms/, so a real fleet room is only ever rebuilt as the navigator's explicit act (D-353-9)."
+    },
+    {
+      "id": "section-ruling",
+      "introduced_version": "2.0.0-beta.48",
+      "cadence": "always",
+      "flag": null,
+      "fix_supported": true,
+      "runner": "lib/core/doctor/section-ruling-module.cjs",
+      "description": "Reports four drift classes over a room's section ruling documents: a landed CONTEXT.md ruling_fingerprint disagreeing with a fresh recomputation from data/section-job-canon.json plus the shipped section-command-ledger; a section slug with no canon row (sections_without_job_id); a sub-room node with no declared job_id (subrooms_without_job_id, the parent-fallback case, report-only); and claim nodes filed since this module's introduced date with no SOURCED_FROM edge to a jtbd:* anchor (claims_without_anchor, legacy claims out of scope). No auto_heal key yet (R-353-A; Phase 352 classifies this row alongside room-map, proposed FALSE here since regenerating a ruling document can rewrite a file a human authored prose into, a judgment fix). --fix refuses (recoverable:false) on any room path outside tests/fixtures/icm-rooms/, so a real fleet room's ruling documents are only ever regenerated as the navigator's explicit act (D-353-9)."
+    }
+  ]
+}

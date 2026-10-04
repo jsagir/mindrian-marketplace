@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# pre-compact: PreCompact hook handler for MindrianOS
+# Saves room STATE.md, methodology progress, last 5 artifacts, and MINTO
+# confidence levels to temp file before autocompact wipes context.
+# Must complete in under 2 seconds.
+
+set -euo pipefail
+
+# Cross-platform find with modification time (outputs: epoch.fractional filepath)
+# Replaces GNU find -printf '%T@ %p\n' which is not available on macOS
+portable_find_mtime() {
+  # All arguments are passed to find, but -printf is NOT used
+  # Instead, use -exec with stat to get modification time
+  if [ "$(uname -s)" = "Darwin" ]; then
+    find "$@" -exec stat -f '%m %N' {} \;
+  else
+    find "$@" -printf '%T@ %p\n'
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Phase 95-04: PreCompact envelope helper.
+#
+# Allowed top-level keys per Claude Code 2.x PreCompact schema:
+#   continue, stopReason, suppressOutput, systemMessage, decision, reason,
+#   hookSpecificOutput
+#
+# Recommended emission: { systemMessage: $msg, suppressOutput: false }.
+# Empty input -> silent (zero bytes). Non-empty -> single JSON line.
+# Mirrors Plan 95-02's emit_post_tool_use_envelope pattern; per-event
+# inner shape differs because PreCompact has no required hookEventName
+# additionalContext channel.
+# ---------------------------------------------------------------------------
+emit_pre_compact_envelope() {
+  local msg="$1"
+  if [ -z "$msg" ]; then return 0; fi
+  jq -nc --arg m "$msg" '{
+    systemMessage: $m,
+    suppressOutput: false
+  }'
+}
+
+# Determine working directory and resolve active room
+WORK_DIR="${PWD}"
+ROOM_DIR=$("${SCRIPT_DIR}/resolve-room" "$WORK_DIR") || ROOM_DIR=""
+
+if [ ! -d "$ROOM_DIR" ]; then
+  # No room -- nothing to preserve
+  # 95-04: schema-compliant envelope (systemMessage only; status root key
+  # was rejected by Claude Code 2.x's additionalProperties:false rule).
+  emit_pre_compact_envelope "pre-compact: no active room, nothing to preserve"
+  exit 0
+fi
+
+SAVE_DIR="$HOME/.mindrian/bridge"
+mkdir -p "$SAVE_DIR"
+SAVE_FILE="$SAVE_DIR/pre-compact-state.json"
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# 1. Capture STATE.md content
+state_content=""
+if [ -f "${ROOM_DIR}/STATE.md" ]; then
+  state_content=$(cat "${ROOM_DIR}/STATE.md" 2>/dev/null || true)
+fi
+
+# 2. Capture methodology progress (pipeline stage from STATE.md frontmatter)
+venture_stage=""
+total_entries=""
+if [ -n "$state_content" ]; then
+  venture_stage=$(echo "$state_content" | grep '^venture_stage:' | head -1 | sed 's/^venture_stage: *//' || true)
+  total_entries=$(echo "$state_content" | grep '^total_entries:' | head -1 | sed 's/^total_entries: *//' || true)
+fi
+
+# 3. Capture last 5 artifacts (most recently modified .md files in room)
+last_artifacts=$(portable_find_mtime "$ROOM_DIR" -name "*.md" -not -name "STATE.md" -not -name "ROOM.md" -not -name "TEAM-STATE.md" -not -name "MEETINGS-INTELLIGENCE.md" -not -path "*/.mindrian/*" 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2- || true)
+
+# 4. Capture MINTO confidence (from REASONING.md files if they exist)
+minto_confidence=""
+for reasoning_file in "$ROOM_DIR"/*/REASONING.md; do
+  [ -f "$reasoning_file" ] || continue
+  section=$(dirname "$reasoning_file" | xargs basename)
+  confidence=$(grep -i 'confidence:' "$reasoning_file" 2>/dev/null | head -1 | sed 's/.*confidence: *//i' || true)
+  if [ -n "$confidence" ]; then
+    minto_confidence="${minto_confidence}${section}=${confidence}\n"
+  fi
+done
+
+# 5. Capture active pipeline info
+active_pipeline=""
+for chain_file in "$ROOM_DIR"/.pipeline-state*.json; do
+  [ -f "$chain_file" ] || continue
+  active_pipeline=$(cat "$chain_file" 2>/dev/null || true)
+  break
+done
+
+# 6. Read USER.md if exists
+user_context=""
+if [ -f "${ROOM_DIR}/USER.md" ]; then
+  user_context=$(cat "${ROOM_DIR}/USER.md" 2>/dev/null || true)
+fi
+
+# Write all captured context to temp file
+cat > "$SAVE_FILE" << SAVEFILE
+TIMESTAMP=${TIMESTAMP}
+ROOM_DIR=${ROOM_DIR}
+VENTURE_STAGE=${venture_stage}
+TOTAL_ENTRIES=${total_entries}
+---STATE_MD_START---
+${state_content}
+---STATE_MD_END---
+---LAST_ARTIFACTS_START---
+${last_artifacts}
+---LAST_ARTIFACTS_END---
+---MINTO_CONFIDENCE_START---
+$(printf '%b' "$minto_confidence")
+---MINTO_CONFIDENCE_END---
+---PIPELINE_STATE_START---
+${active_pipeline}
+---PIPELINE_STATE_END---
+---USER_CONTEXT_START---
+${user_context}
+---USER_CONTEXT_END---
+SAVEFILE
+
+# Phase 84-03: memory-lifecycle pre-compact hook. Closes the active session
+# row via endSession but KEEPS the .mindrian/current-session.json pointer
+# because post-compact will overwrite it with a new session id. Graceful
+# no-op when no active room or no pointer.
+if command -v node >/dev/null 2>&1 && [ -f "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" ]; then
+  node "${PLUGIN_ROOT}/scripts/memory-lifecycle.cjs" pre-compact >/dev/null 2>&1 || true
+fi
+
+# --- Phase 88-08: pre-compact triple snapshot (Wave 3, compaction bridge) ---
+# Captures the per-section memory triple (ROOM + STATE + MINTO) via
+# folder-memory.readTriple() and writes .mindrian/pre-compact-snapshot.json
+# BEFORE Claude compresses conversation context. Phase 88-09 post-compact
+# reads this snapshot and re-injects TRIPLE_CONTEXT so session memory
+# survives the compaction boundary.
+#
+# Budget: 2000ms hook timeout per hooks.json line 24. Internal budget
+# MAX_MS=1800 leaves 200ms slack for Claude's own teardown. MAX_SECTIONS=20
+# caps the captured-set so a 50+ section room cannot starve the budget.
+#
+# Truncation ordering: weakest reasoning_health_score first (ascending;
+# null -> -1 for "never generated / parse failed" sections). Highest-score
+# sections are elided first because they are the least-informative ones
+# for Larry after compaction (same algorithm as 88-07 session-start
+# formatter; shared contract).
+#
+# Schema: kind:"pre-compact" distinguishes from 88-06 session-snapshot.json.
+# 88-09 reader routes on snap.kind to pick the correct consumer path.
+#
+# Soft-fail at every step (|| true). The legacy pre-compact-state.json
+# write above is preserved byte-for-byte -- Phase 88-08 is strictly
+# ADDITIVE.
+if [ -n "${ROOM_DIR}" ] && [ -d "${ROOM_DIR}" ] && [ -d "${ROOM_DIR}/.mindrian" ]; then
+  ROOM_DIR_ENV="${ROOM_DIR}" PLUGIN_ROOT_ENV="${PLUGIN_ROOT}" node -e '
+    "use strict";
+    var fs = require("fs");
+    var path = require("path");
+    var roomDir = process.env.ROOM_DIR_ENV;
+    var pluginRoot = process.env.PLUGIN_ROOT_ENV;
+    var START = Date.now();
+    var MAX_SECTIONS = 20;
+    var MAX_MS = 1800;
+    var fm;
+    try {
+      fm = require(path.join(pluginRoot, "lib", "core", "folder-memory.cjs"));
+    } catch (_e) {
+      process.exit(0);
+    }
+    var entries = [];
+    try {
+      entries = fs.readdirSync(roomDir, { withFileTypes: true })
+        .filter(function (d) { return d.isDirectory() && d.name[0] !== "."; });
+    } catch (_e) {
+      entries = [];
+    }
+    // Pass 1: capture triples for every section with ROOM.md, bounded
+    // by MAX_MS so a pathological room cannot blow the 2000ms budget.
+    // Sections beyond the budget count toward truncated_count.
+    var captured = [];
+    var budgetTruncated = 0;
+    for (var i = 0; i < entries.length; i += 1) {
+      var d = entries[i];
+      if ((Date.now() - START) > MAX_MS) {
+        // Remaining sections are time-budget-truncated.
+        budgetTruncated += (entries.length - i);
+        break;
+      }
+      var sp = path.join(roomDir, d.name);
+      try {
+        if (!fs.existsSync(path.join(sp, "ROOM.md"))) continue;
+      } catch (_e) { continue; }
+      var triple;
+      try {
+        triple = fm.readTriple(sp);
+      } catch (_e) {
+        // Quarantine the section; do not crash the walk.
+        triple = null;
+      }
+      if (triple) {
+        captured.push({ name: d.name, triple: triple });
+      }
+    }
+    // Pass 2: sort weakest-first (ascending reasoning_health_score;
+    // null / undefined -> -1 so "never generated" surfaces first, same
+    // as 88-07 formatter contract). Then take first MAX_SECTIONS.
+    captured.sort(function (a, b) {
+      var ka = a.triple && a.triple.reasoning && typeof a.triple.reasoning.reasoning_health_score === "number"
+        ? a.triple.reasoning.reasoning_health_score
+        : -1;
+      var kb = b.triple && b.triple.reasoning && typeof b.triple.reasoning.reasoning_health_score === "number"
+        ? b.triple.reasoning.reasoning_health_score
+        : -1;
+      if (ka !== kb) return ka - kb;
+      return a.name.localeCompare(b.name);
+    });
+    var emitted = captured.slice(0, MAX_SECTIONS);
+    var capTruncated = captured.length - emitted.length;
+    var truncatedCount = capTruncated + budgetTruncated;
+    var sections = {};
+    for (var j = 0; j < emitted.length; j += 1) {
+      sections[emitted[j].name] = emitted[j].triple;
+    }
+    var snapshot = {
+      version: 1,
+      kind: "pre-compact",
+      session_id: process.env.CLAUDE_SESSION_ID || ("sess-" + Date.now()),
+      snapshot_at: new Date().toISOString(),
+      active_room: roomDir,
+      sections: sections,
+      truncated: truncatedCount > 0,
+      truncated_count: truncatedCount
+    };
+    var snapPath = path.join(roomDir, ".mindrian", "pre-compact-snapshot.json");
+    try {
+      var tmp = snapPath + ".tmp." + process.pid;
+      fs.writeFileSync(tmp, JSON.stringify(snapshot, null, 2));
+      fs.renameSync(tmp, snapPath);
+    } catch (_e) { /* soft-fail */ }
+  ' >/dev/null 2>&1 || true
+fi
+# --- end Phase 88-08 ---
+
+# 88.1-03: systemMessage retrofit. Read the snapshot we just wrote to extract
+# the section count and any truncation flag; fall back to "saved" if the
+# snapshot was not written. LOCAL-only (Canon Part 8).
+SECTION_COUNT=0
+if [ -f "${ROOM_DIR}/.mindrian/pre-compact-snapshot.json" ]; then
+  SECTION_COUNT=$(node -e '
+    try {
+      const fs = require("fs");
+      const p = process.argv[1];
+      const j = JSON.parse(fs.readFileSync(p, "utf8"));
+      const n = j && j.sections ? Object.keys(j.sections).length : 0;
+      process.stdout.write(String(n));
+    } catch (_e) { process.stdout.write("0"); }
+  ' "${ROOM_DIR}/.mindrian/pre-compact-snapshot.json" 2>/dev/null || echo 0)
+fi
+ROOM_SLUG=$(basename "${ROOM_DIR}" 2>/dev/null || echo "unknown")
+SYSTEM_MESSAGE="triple snapshot written for ${ROOM_SLUG} (${SECTION_COUNT} sections)"
+
+# 95-04: schema-compliant envelope (systemMessage only). The $SAVE_FILE path
+# is no longer surfaced in stdout because `file` is not in the PreCompact
+# allowed key set. Callers who need the path read STATE.md or grep
+# ~/.mindrian/bridge/.
+emit_pre_compact_envelope "$SYSTEM_MESSAGE"
+
+exit 0

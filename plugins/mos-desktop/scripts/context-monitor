@@ -1,0 +1,943 @@
+#!/usr/bin/env node
+// MindrianOS Statusline - ships with the plugin
+// Shows: project name │ room section context │ venture stage │ gaps │ context window
+// Reads JSON from stdin (Claude Code statusline API)
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const visual = require('../lib/core/visual-ops.cjs');
+
+// Phase 88.1-04: statusline MINTO segment helpers. LOCAL-only per Canon
+// Part 8. Lazy-required inside the resolver so a missing module (unlikely
+// in a properly-installed plugin) leaves the pre-88 statusline unchanged.
+let statuslineCache = null;
+let folderMemory = null;
+try {
+  statuslineCache = require('../lib/core/statusline-cache.cjs');
+} catch (_e) { /* graceful fallback, pre-88 output */ }
+try {
+  folderMemory = require('../lib/core/folder-memory.cjs');
+} catch (_e) { /* graceful fallback, pre-88 output */ }
+
+// Phase 91-06: Larry dial helper (pure resolver + formatter). LOCAL-only
+// per Canon Part 8. Lazy-required so a missing module on a degraded
+// install leaves the pre-91 statusline byte-identical.
+let navDial = null;
+try {
+  navDial = require('../lib/core/nav-dial.cjs');
+} catch (_e) { /* graceful fallback, pre-91 output */ }
+
+const os = require('os');
+const crypto = require('crypto');
+
+// Map room section name to short exploration-stage label plus thematic
+// emoji. Derived from the most recently modified section so the user
+// sees what area they are actively exploring at a glance. Unknown
+// sections map to uppercased hyphen-stripped name with a generic marker.
+// Emoji inclusion per user directive 2026-04-14 overrides the repo-wide
+// no-emoji rule for the statusline surface specifically. See rule doc
+// in ui-system skill for the carve-out.
+const EXPLORATION_LABELS = {
+  'problem-definition':     { label: 'PROBLEM',       emoji: '\u{1F3AF}' }, // target
+  'solution-design':        { label: 'SOLUTION',      emoji: '\u{1F4A1}' }, // lightbulb
+  'business-model':         { label: 'BUSINESSCASE',  emoji: '\u{1F4B0}' }, // money bag
+  'market-analysis':        { label: 'MARKET',        emoji: '\u{1F4CA}' }, // bar chart
+  'competitive-analysis':   { label: 'COMPETITION',   emoji: '\u{2694}\u{FE0F}' }, // crossed swords
+  'financial-model':        { label: 'FINANCE',       emoji: '\u{1F4B5}' }, // dollar banknote
+  'legal-ip':               { label: 'LEGAL',         emoji: '\u{2696}\u{FE0F}' }, // scales of justice
+  'team-execution':         { label: 'TEAM',          emoji: '\u{1F465}' }, // busts in silhouette
+  'team':                   { label: 'TEAM',          emoji: '\u{1F465}' },
+  'assets':                 { label: 'ASSETS',        emoji: '\u{1F3A8}' }, // artist palette
+  'exports':                { label: 'EXPORTS',       emoji: '\u{1F4E4}' }, // outbox tray
+  'meetings':               { label: 'MEETINGS',      emoji: '\u{1F5E3}\u{FE0F}' }, // speaking head
+  'opportunity-bank':       { label: 'OPPORTUNITIES', emoji: '\u{1F381}' }, // wrapped gift
+  'funding':                { label: 'FUNDING',       emoji: '\u{1F48E}' }  // gem stone
+};
+
+/**
+ * Detect whether the Brain MCP is configured for this user. Returns
+ * 'connected', 'disconnected', or 'unknown'. The detection is a proxy,
+ * not a live health check: we look for the MINDRIAN_BRAIN_KEY env var
+ * (which the plugin's brain-connector skill expects) and optionally for
+ * a brain health bridge file if it exists. A real liveness check would
+ * require an MCP round-trip, which the statusline cannot do synchronously.
+ * @returns {'connected'|'disconnected'|'unknown'}
+ */
+function detectBrainStatus() {
+  try {
+    if (process.env.MINDRIAN_BRAIN_KEY && process.env.MINDRIAN_BRAIN_KEY.length > 0) {
+      const health = path.join(os.homedir(), '.mindrian', 'bridge', 'brain-health.json');
+      if (fs.existsSync(health)) {
+        try {
+          const h = JSON.parse(fs.readFileSync(health, 'utf8'));
+          if (h && h.status === 'ok') return 'connected';
+          if (h && h.status === 'error') return 'disconnected';
+        } catch (e) {}
+      }
+      return 'connected';
+    }
+  } catch (e) {}
+  return 'disconnected';
+}
+
+/**
+ * Read the current MindrianOS plugin version from .claude-plugin/plugin.json.
+ * Tries MINDRIAN_OS_ROOT env var first (set by settings.json), then falls
+ * back to the script's parent directory. Returns empty string on any failure.
+ * @returns {string} Version string like "1.10.4" or empty string
+ */
+function readPluginVersion() {
+  // Prefer __dirname-relative path (the plugin.json that ships with
+  // whichever copy of the script is actually running). Fall back to
+  // MINDRIAN_OS_ROOT env var only if the dirname path does not resolve.
+  // This matters in dev: the dev workspace may be ahead of the installed
+  // plugin cache that the env var points at.
+  const candidates = [
+    path.resolve(__dirname, '..'),
+    process.env.MINDRIAN_OS_ROOT
+  ].filter(Boolean);
+  for (const root of candidates) {
+    try {
+      const pluginJson = path.join(root, '.claude-plugin', 'plugin.json');
+      if (fs.existsSync(pluginJson)) {
+        const data = JSON.parse(fs.readFileSync(pluginJson, 'utf8'));
+        if (data && data.version) return data.version;
+      }
+    } catch (e) {}
+  }
+  return '';
+}
+
+/**
+ * Build a high-attention flashing UPDATE banner with per-letter rainbow
+ * coloring, bold, ANSI blink, and a dark background highlight. Used when
+ * the update-check bridge file reports UPDATE_AVAILABLE. Terminals that
+ * ignore blink still render the per-letter bold rainbow on a highlighted
+ * background, which is visually distinctive on its own.
+ * @returns {string} ANSI-wrapped UPDATE banner
+ */
+function flashingUpdate() {
+  const colors = [
+    '\x1b[38;2;255;80;80m',
+    '\x1b[38;2;255;160;60m',
+    '\x1b[38;2;255;230;80m',
+    '\x1b[38;2;80;255;120m',
+    '\x1b[38;2;80;200;255m',
+    '\x1b[38;2;200;120;255m'
+  ];
+  const letters = 'UPDATE'.split('');
+  const blink = '\x1b[5m';
+  const bold = '\x1b[1m';
+  const bg = '\x1b[48;2;20;20;40m';
+  const reset = '\x1b[0m';
+  let out = `${bg} `;
+  for (let i = 0; i < letters.length; i++) {
+    out += `${blink}${bold}${bg}${colors[i % colors.length]}${letters[i]}`;
+  }
+  out += `${bg} ${reset}`;
+  return out;
+}
+
+/**
+ * Detect the active GSD workflow phase from .planning/ state.
+ * Prefers an explicit current-phase marker; falls back to the newest phase
+ * directory under .planning/phases/.
+ * @param {string} dir - Workspace current directory
+ * @returns {string} Phase label like "Phase 81" or empty string
+ */
+function detectActiveWorkflow(dir) {
+  try {
+    const statePath = path.join(dir, '.planning', 'STATE.md');
+    if (fs.existsSync(statePath)) {
+      const content = fs.readFileSync(statePath, 'utf8');
+      const phaseMatch = content.match(/current[_\s-]*phase[:\s]+(\d+(?:\.\d+)?)/i) ||
+                         content.match(/active[_\s-]*phase[:\s]+(\d+(?:\.\d+)?)/i);
+      if (phaseMatch) return 'Phase ' + phaseMatch[1];
+    }
+    const phasesDir = path.join(dir, '.planning', 'phases');
+    if (fs.existsSync(phasesDir)) {
+      // Pick the phase directory with the most recently touched content.
+      // "Newest mtime" is a better proxy for "active phase" than "highest
+      // number" because scaffolded-but-unexecuted future phases can leapfrog
+      // the phase you are actually working on.
+      const phases = fs.readdirSync(phasesDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && /^\d+/.test(d.name))
+        .map(d => {
+          const p = path.join(phasesDir, d.name);
+          let newest = 0;
+          try {
+            const entries = fs.readdirSync(p);
+            for (const e of entries) {
+              try {
+                const st = fs.statSync(path.join(p, e));
+                if (st.mtimeMs > newest) newest = st.mtimeMs;
+              } catch (_) {}
+            }
+            if (newest === 0) newest = fs.statSync(p).mtimeMs;
+          } catch (_) {
+            newest = 0;
+          }
+          return {
+            name: d.name,
+            num: parseFloat(d.name.match(/^(\d+(?:\.\d+)?)/)[1]),
+            mtime: newest
+          };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+      if (phases.length > 0) {
+        return 'Phase ' + phases[0].num;
+      }
+    }
+  } catch (e) {}
+  return '';
+}
+
+/**
+ * Phase 88.1-04 -- resolve the active section path inside a room. Tries in
+ * order:
+ *   1. roomDir/.mindrian/active-section.json (written by Phase 84 smart-
+ *      notebook when it detects a per-section focus). Must carry a
+ *      "section" string field resolvable to an existing directory.
+ *   2. Most-recently-modified direct subdirectory of roomDir that contains
+ *      a MINTO.md file. This matches the "currentSection" heuristic the
+ *      rest of the statusline already uses.
+ *   3. null  -> caller skips the MINTO segment entirely.
+ *
+ * The function is defensive: every fs op is try/catch, every return path
+ * yields either a valid absolute path or null. Never throws.
+ *
+ * @param {string} roomDir - Absolute path to the active room
+ * @returns {string|null} Absolute path to the active section or null
+ */
+function resolveActiveSectionPath(roomDir) {
+  if (!roomDir) return null;
+  try {
+    const activeJson = path.join(roomDir, '.mindrian', 'active-section.json');
+    if (fs.existsSync(activeJson)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(activeJson, 'utf8'));
+        if (data && typeof data.section === 'string' && data.section.length > 0) {
+          // Accept absolute or room-relative path.
+          const candidate = path.isAbsolute(data.section)
+            ? data.section
+            : path.join(roomDir, data.section);
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+            return candidate;
+          }
+        }
+      } catch (_e) { /* fall through to mtime fallback */ }
+    }
+  } catch (_e) {}
+
+  // Fallback: most-recently-modified section containing MINTO.md.
+  try {
+    const entries = fs.readdirSync(roomDir, { withFileTypes: true })
+      .filter(function (d) { return d.isDirectory() && !d.name.startsWith('.'); });
+    let best = null;
+    let bestMtime = 0;
+    for (const d of entries) {
+      const sectionPath = path.join(roomDir, d.name);
+      const mintoPath = path.join(sectionPath, 'MINTO.md');
+      try {
+        if (!fs.existsSync(mintoPath)) continue;
+        const st = fs.statSync(mintoPath);
+        if (st.mtimeMs > bestMtime) {
+          bestMtime = st.mtimeMs;
+          best = sectionPath;
+        }
+      } catch (_e) {}
+    }
+    return best;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Phase 88.1-04 -- build the MINTO segment for the statusline. Wrapped in
+ * try/catch at the caller; this helper itself also defends every path so
+ * any failure yields empty string and leaves the pre-88 output unchanged.
+ *
+ * Flow:
+ *   - Resolve the active section via resolveActiveSectionPath.
+ *   - Hit the 5s TTL cache (lib/core/statusline-cache.cjs).
+ *   - On miss, readTriple via lib/core/folder-memory.cjs + setCached.
+ *   - Extract reasoning.governing_thought + reasoning_health_score + is_stale.
+ *   - If governing_thought null / empty / stale -> empty string (skip segment).
+ *   - Else: "<glyph> <truncated-governing-thought>" in Canon Part 2 vocabulary.
+ *
+ * Canon Part 3: LOCAL-only. No BRAIN read, no SIGNAL read. No external
+ * network. No user-content egress.
+ *
+ * @param {string} roomDir - Absolute path to the active room
+ * @returns {string} The rendered MINTO segment or '' (skip)
+ */
+function buildMintoSegment(roomDir) {
+  if (!statuslineCache || !folderMemory) return '';
+  if (!roomDir) return '';
+
+  const sectionPath = resolveActiveSectionPath(roomDir);
+  if (!sectionPath) return '';
+
+  let triple = null;
+  try {
+    const cached = statuslineCache.getCached(roomDir, sectionPath);
+    if (cached && cached.fresh && cached.value) {
+      triple = cached.value;
+    } else {
+      // Cold path: live read through Phase 88-01 contract.
+      triple = folderMemory.readTriple(sectionPath);
+      try { statuslineCache.setCached(roomDir, sectionPath, triple); } catch (_) {}
+    }
+  } catch (_e) {
+    return '';
+  }
+
+  if (!triple || !triple.reasoning) return '';
+  const reasoning = triple.reasoning;
+
+  // Graceful fallback: if the reasoning block is absent, stale, or the
+  // governing_thought is null/empty, skip the segment entirely. This
+  // preserves the "zero new failure modes" invariant from the PLAN.
+  if (!reasoning.exists) return '';
+  if (reasoning.is_stale) return '';
+  const gt = reasoning.governing_thought;
+  if (gt === null || gt === undefined || typeof gt !== 'string' || gt.length === 0) {
+    return '';
+  }
+
+  const glyph = statuslineCache.classifyHealth(
+    typeof reasoning.reasoning_health_score === 'number'
+      ? reasoning.reasoning_health_score
+      : null
+  );
+  // "--" glyph signals absent/indeterminate score; in that case we still
+  // skip because the PLAN's fallback contract says "stale or null -> skip".
+  if (glyph === '--') return '';
+
+  const truncated = statuslineCache.truncateGoverningThought(gt);
+
+  // Canon Part 2 color vocabulary (matches hook systemMessage + /mos:status):
+  //   check -> green
+  //   warn  -> yellow
+  //   low   -> red
+  let glyphColor = visual.ANSI.muted;
+  if (glyph === 'check') glyphColor = visual.ANSI.green;
+  else if (glyph === 'warn') glyphColor = visual.ANSI.yellow;
+  else if (glyph === 'low') glyphColor = visual.ANSI.red;
+
+  return glyphColor + glyph + visual.ANSI.reset + ' ' +
+    visual.ANSI.dim + truncated + visual.ANSI.reset;
+}
+
+/**
+ * Phase 91-06 -- resolve the active session id for the dial trace read.
+ * Resolution chain (first match wins):
+ *   1. process.env.CLAUDE_SESSION_ID
+ *   2. roomDir/.mindrian/current-session.json {"session_id": "..."}
+ *   3. most-recent .mindrian/decision-traces/*.json by mtime
+ *   4. null  -> caller skips the dial segment entirely
+ *
+ * Defensive: every fs op is try/catch. Never throws.
+ *
+ * @param {string} roomDir - Absolute path to the active room
+ * @returns {string|null} session id or null
+ */
+function resolveSessionIdForDial(roomDir) {
+  try {
+    const env = process.env.CLAUDE_SESSION_ID;
+    if (typeof env === 'string' && env.length > 0) return env;
+  } catch (_e) {}
+  try {
+    const pointer = path.join(roomDir, '.mindrian', 'current-session.json');
+    if (fs.existsSync(pointer)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(pointer, 'utf8'));
+        if (parsed && typeof parsed.session_id === 'string'
+            && parsed.session_id.length > 0) {
+          return parsed.session_id;
+        }
+      } catch (_e) { /* fall through to mtime */ }
+    }
+  } catch (_e) {}
+  // Mtime fallback over decision-traces/*.json.
+  try {
+    const dir = path.join(roomDir, '.mindrian', 'decision-traces');
+    if (!fs.existsSync(dir)) return null;
+    const entries = fs.readdirSync(dir);
+    let best = null;
+    let bestMtime = -1;
+    for (const e of entries) {
+      if (!e.endsWith('.json')) continue;
+      const fp = path.join(dir, e);
+      try {
+        const st = fs.statSync(fp);
+        if (st.isFile() && st.mtimeMs > bestMtime) {
+          bestMtime = st.mtimeMs;
+          best = e.slice(0, -5);
+        }
+      } catch (_e) {}
+    }
+    return best;
+  } catch (_e) { return null; }
+}
+
+/**
+ * Phase 91-06 -- build the Larry dial segment for the statusline. Mirrors
+ * the buildMintoSegment shape (Plan 88.1-04). Wrapped in try/catch at the
+ * caller; this helper itself also defends every path so any failure yields
+ * empty string and leaves the pre-91 statusline output unchanged.
+ *
+ * Flow:
+ *   - Resolve active session via resolveSessionIdForDial.
+ *   - Read .mindrian/decision-traces/<session>.json.
+ *   - Take the last trace entry (traces[traces.length - 1]).
+ *   - Call nav-dial.resolveDialPosition(trace).
+ *   - Call nav-dial.formatDialSegment(position).
+ *   - Return string (or '' on any failure).
+ *
+ * Canon Part 3: LOCAL-only. No BRAIN read, no SIGNAL read. No external
+ * network. No user-content egress. Reads only the same trace file
+ * /mos:explain-decision reads.
+ *
+ * @param {string} roomDir - Absolute path to the active room
+ * @returns {string} The rendered dial segment or '' (skip)
+ */
+function buildDialSegment(roomDir) {
+  if (!navDial) return '';
+  if (!roomDir) return '';
+
+  const sessionId = resolveSessionIdForDial(roomDir);
+  if (!sessionId) return '';
+
+  let trace = null;
+  try {
+    const fp = path.join(roomDir, '.mindrian', 'decision-traces',
+      sessionId + '.json');
+    if (!fs.existsSync(fp)) return '';
+    const raw = fs.readFileSync(fp, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.traces)) {
+      return '';
+    }
+    if (parsed.traces.length === 0) return '';
+    trace = parsed.traces[parsed.traces.length - 1];
+  } catch (_e) {
+    return '';
+  }
+
+  try {
+    const position = navDial.resolveDialPosition(trace);
+    // Suppress dial when no trace was effectively useful (Investigate / --
+    // with no highlight): the caller already shows the pre-engine state by
+    // its absence. Keeps the statusline quiet when the engine has not
+    // spoken yet.
+    if (position && position.glyph === '--' && position.highlight === null) {
+      return '';
+    }
+    return navDial.formatDialSegment(position);
+  } catch (_e) {
+    return '';
+  }
+}
+
+/**
+ * Get per-room bridge file path at ~/.mindrian/bridge/{room-hash}.json
+ * @param {string} [roomDir] - Room directory path for hashing
+ * @returns {string} Bridge file path
+ */
+function getBridgeFile(roomDir) {
+  const bridgeDir = path.join(os.homedir(), '.mindrian', 'bridge');
+  if (!fs.existsSync(bridgeDir)) fs.mkdirSync(bridgeDir, { recursive: true });
+  if (!roomDir) return path.join(bridgeDir, 'default.json');
+  const hash = crypto.createHash('md5').update(roomDir).digest('hex').slice(0, 8);
+  return path.join(bridgeDir, hash + '.json');
+}
+
+// Phase 121.5-03: two-row renderer wiring. The pure-function renderer at
+// lib/statusline/two-row-renderer.cjs composes the locked D-02/D-03/D-04
+// shape from a state object; this script collects the state from local
+// sources (STATE.md, room/, ~/.mindrian/update-check.json, bridge files)
+// and delegates rendering to the renderer module.
+const twoRowRenderer = require('../lib/statusline/two-row-renderer.cjs');
+const versionResolver = require('../lib/statusline/version-resolver.cjs');
+
+// Phase 187 (statusline-navigator-cockpit): the four-tier NAVIGATOR cockpit is
+// the navigator render path. The pure renderer + the LOCAL signal collector +
+// the INV-SL-2 measurement hook are lazy-required so a missing module on a
+// degraded install leaves the pre-187 two-row statusline byte-identical.
+// Canon Part 8 LOCAL-only: all three modules are zero-network, zero-Brain.
+let cockpitRenderer = null;
+let cockpitSignals = null;
+let cockpitTelemetry = null;
+try { cockpitRenderer = require('../lib/statusline/cockpit-renderer.cjs'); } catch (_e) { /* graceful */ }
+try { cockpitSignals = require('../lib/statusline/cockpit-signals.cjs'); } catch (_e) { /* graceful */ }
+try { cockpitTelemetry = require('../lib/statusline/cockpit-telemetry.cjs'); } catch (_e) { /* graceful */ }
+
+/**
+ * Phase 187 -- build the four-tier navigator cockpit line from collected state.
+ * Wrapped defensively: any failure returns '' so the caller keeps the pre-187
+ * two-row output unchanged (never blank, never throw the statusline).
+ *
+ * @param {Object} rowState - the two-row state already collected this render
+ * @param {string} roomName - resolved active room name
+ * @param {number|null} ctxPct - context-budget percentage (null before first API call)
+ * @returns {string} the rendered cockpit line, or '' on any failure
+ */
+/**
+ * The Tier-4 visual gauge: 📊 + a 10-block bar + N%, ANSI-colored by band
+ * (green <50 / yellow 50-79 / red >=80) as progressive enhancement. Empty when
+ * no context data. The chart glyph 📊 is carve-out-reserved to this file +
+ * two-row-renderer (the glyph-isolation fence), so the cockpit renderer never
+ * holds it -- it only PLACES this pre-built string. The adjacent risk dot
+ * (🟢/🟠/🔴) carries the host-independent color; the bar's ANSI is enhancement.
+ * @param {number|null} pct
+ * @returns {string}
+ */
+function buildCtxBar(pct) {
+  if (pct === null || pct === undefined || typeof pct !== 'number' || Number.isNaN(pct)) return '';
+  const used = Math.max(0, Math.min(100, Math.round(pct)));
+  const filled = Math.max(0, Math.min(10, Math.round(used / 10)));
+  const blocks = '█'.repeat(filled) + '░'.repeat(10 - filled);
+  const col = used >= 80 ? '\x1b[31m' : (used >= 50 ? '\x1b[33m' : '\x1b[32m');
+  return '\u{1F4CA} ' + col + blocks + '\x1b[0m ' + used + '%';
+}
+
+function buildCockpitLine(rowState, roomName, ctxPct) {
+  if (!cockpitRenderer || !cockpitSignals) return '';
+  try {
+    const signalOpts = {
+      roomName: roomName,
+      ctxPct: ctxPct,
+      jtbd: rowState && rowState.jtbd,
+      governingThought: rowState && rowState.governing_thought,
+      brainConnected: rowState && rowState.brain_tier === 'BRAIN',
+      who: rowState && rowState.who,
+      agentLabel: rowState && rowState.agent_label,
+    };
+    const cockpitState = cockpitSignals.collectSignals(signalOpts);
+    cockpitState.bar = buildCtxBar(ctxPct); // Tier-4 visual gauge (this file owns 📊; renderer just places it)
+    const line = cockpitRenderer.renderCockpit(cockpitState);
+    // INV-SL-2 measurement hook (best-effort, debounced, LOCAL-only).
+    if (cockpitTelemetry) {
+      try { cockpitTelemetry.recordExposure(cockpitState); } catch (_e) { /* best-effort */ }
+    }
+    return line || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+let input = '';
+const timeout = setTimeout(() => process.exit(0), 3000);
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  clearTimeout(timeout);
+  try {
+    const data = JSON.parse(input);
+    const model = data.model?.display_name || 'Claude';
+    const dir = data.workspace?.current_dir || process.cwd();
+    const remaining = data.context_window?.remaining_percentage;
+    const usedPct = data.context_window?.used_percentage;
+
+    // --- Context window pct (Phase 121.5-03: raw scalar; renderer composes the bar) ---
+    // Pre-121.5-03 emitted a colored 10-char bar inline. Per D-03 the two-row
+    // renderer (lib/statusline/two-row-renderer.cjs renderBar) now owns the
+    // bar composition + the >=80% blink-red wrap. We hand it just the percentage.
+    // Quick-task 20260702 bucket-1(d): prefer the NATIVE context percentage the
+    // host exposes (context_window.used_percentage / exceeds_200k_tokens), with
+    // remaining_percentage as the FALLBACK for older CC / null-after-/compact.
+    // The resolver is pure + LOCAL (lib/statusline/ctx-window.cjs); lazy-required so
+    // a degraded install falls back to the inline derivation below and never blanks.
+    // ctxPct = null when NO data (fresh session before first API call) -> the
+    // renderer suppresses the bar (Phase 106-02 Test 7: no data = no bar).
+    //
+    // RCA statusline-context-pct-stale-post-compact (2026-07-28): the inline
+    // fallback below used to apply the AUTO_COMPACT_BUFFER rescale, which answers a
+    // different question than used_percentage and inflated the gauge by up to +16.5
+    // points (true 78 rendered as 93). The host emits used + remaining === 100
+    // exactly (787/787 captured payloads), so the honest derivation is
+    // 100 - remaining, matching lib/statusline/ctx-window.cjs branch-for-branch.
+    let ctxPct = null;
+    try {
+      const ctxWindow = require('../lib/statusline/ctx-window.cjs');
+      ctxPct = ctxWindow.resolveCtxPct(data.context_window).pct;
+    } catch (_ctxErr) {
+      // Graceful fallback, same scale as the resolver (never the buffer rescale).
+      if (Number.isFinite(usedPct)) {
+        ctxPct = Math.max(0, Math.min(100, Math.round(usedPct)));
+      } else if (Number.isFinite(remaining)) {
+        ctxPct = Math.max(0, Math.min(100, Math.round(100 - remaining)));
+      }
+    }
+
+    // Write bridge file for hooks/skills (per-room isolation).
+    // Uses dir (workspace) as hash source since roomDir isn't resolved yet.
+    //
+    // RCA 2026-07-28: this used to write `ctx_pct: usedPct || 0`, which coerced the
+    // post-/compact NULL used_percentage into a hard, false 0 -- the same null-to-0
+    // coercion lib/statusline/two-row-renderer.cjs:86 documents as already fixed
+    // there. It now writes the RESOLVED ctxPct (the exact number the gauge renders,
+    // one source of truth for both surfaces) and preserves null as null, so a reader
+    // can tell "unknown" apart from "empty". ctx_remaining is likewise derived from
+    // the same resolved value rather than `remaining || 100`, which turned a genuine
+    // 0 into 100.
+    try {
+      const bridgeFile = getBridgeFile(dir);
+      const bridge = JSON.stringify({
+        model_id: data.model?.id || 'unknown',
+        model_name: model,
+        ctx_pct: ctxPct,
+        ctx_remaining: ctxPct === null ? null : (100 - ctxPct),
+        ctx_size: data.context_window?.context_window_size || 200000,
+        timestamp: Math.floor(Date.now() / 1000)
+      });
+      fs.writeFileSync(bridgeFile + '.tmp', bridge);
+      fs.renameSync(bridgeFile + '.tmp', bridgeFile);
+    } catch (e) {}
+    // LEGACY: pre-121.5-03 colored bar composition retained ONLY for the
+    // graceful-fallback path below (Tier 0 / no-room case). Once the two-row
+    // renderer is the sole path, this block is dead. For now, keep both
+    // representations available so the no-room fallback keeps the bar.
+    let ctx = '';
+    if (ctxPct != null) {
+      const used = ctxPct;
+      const filled = Math.floor(used / 10);
+      const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(10 - filled);
+
+      // Phase 106-D02: prepend token-budget chart glyph to every ctx branch.
+      // Threshold contract preserved at 50/65/80 (researcher locked); skull
+      // glyph at >=80% replaced with literal "compaction-imminent" warning
+      // text wrapped in the same blink-red ANSI envelope. Glyphs land as raw
+      // UTF-8 codepoints (not \u{...} escapes) so the Phase 106-02 carve-out
+      // regression fence (tests/test-statusline-glyph-isolation.cjs) finds
+      // them via includes() and the doctor Class F scanner can match them.
+      if (used < 50) {
+        ctx = ` 📊 ${visual.ANSI.green}${bar} ${used}%${visual.ANSI.reset}`;
+      } else if (used < 65) {
+        ctx = ` 📊 ${visual.ANSI.yellow}${bar} ${used}%${visual.ANSI.reset}`;
+      } else if (used < 80) {
+        ctx = ` 📊 ${visual.ANSI.sienna}${bar} ${used}%${visual.ANSI.reset}`;
+      } else {
+        ctx = ` 📊 \x1b[5;31m⚠ compaction-imminent ${bar} ${used}%\x1b[0m`;
+      }
+    }
+
+    // --- Room context ---
+    let roomInfo = '';
+    // Phase 121.5-03: Two-row state object passed to lib/statusline/
+    // two-row-renderer.cjs. Filled out as we collect state below; the
+    // final emission delegates to renderStatusline(state) when room is set.
+    const rowState = {
+      current_version: 'unknown',
+      brain_tier: 'LOCAL',
+      ctx_pct: ctxPct, // null when remaining missing -> renderer suppresses bar
+      update_available: false,
+      update_available_version: null,
+      room: '',
+      section: '',
+      jtbd: '',
+      stage: '',
+      governing_thought: '',
+      operator: '',
+      // Voice Signature (Part 12): WHO is speaking. Default larry -- the
+      // conversational surface IS Larry (Part 10). 🤖 shows only when the host
+      // runs an explicit non-Larry agent (data.agent.name set + not /larry/i).
+      who: (data.agent && typeof data.agent.name === 'string' && !/larry/i.test(data.agent.name)) ? 'claude' : 'larry',
+      agent_label: (data.agent && typeof data.agent.name === 'string' && !/larry/i.test(data.agent.name)) ? data.agent.name : '',
+    };
+    // Resolve room path: try registry first, fall back to room/
+    let roomDir = '';
+    const registryPath = path.join(dir, '.rooms', 'registry.json');
+    if (fs.existsSync(registryPath)) {
+      try {
+        const reg = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+        if (reg.active && reg.rooms[reg.active]) {
+          const resolved = path.resolve(dir, reg.rooms[reg.active].path);
+          if (fs.existsSync(resolved)) roomDir = resolved;
+        }
+      } catch (e) {}
+    }
+    if (!roomDir) {
+      const legacy = path.join(dir, 'room');
+      if (fs.existsSync(legacy)) roomDir = legacy;
+    }
+
+    // Phase 94-01: STATE.md frontmatter current_room is the canonical
+    // active-room source. Statusline is a derived read-only view.
+    // Lawrence Aronhime (2026-04-28) hit "look at the bottom. It still
+    // says core power" 4x in 38 minutes because the prior implementation
+    // derived roomName from a stale source. getCurrentRoom() reads
+    // STATE.md per invocation -- no caching across calls -- so /mos:rooms
+    // switches propagate on the next prompt cycle's natural re-render.
+    let roomName = '';
+    if (folderMemory && typeof folderMemory.getCurrentRoom === 'function') {
+      try {
+        const cr = folderMemory.getCurrentRoom(dir);
+        if (cr && typeof cr.slug === 'string' && cr.slug.length > 0) {
+          roomName = cr.slug;
+        }
+      } catch (_e) { /* graceful fallback */ }
+    }
+
+    // Fallback chain when STATE.md current_room absent (Tier 0):
+    //   1. Registry rooms[active].name (legacy display name)
+    //   2. Workspace dir basename
+    if (!roomName && fs.existsSync(registryPath)) {
+      try {
+        const reg = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+        if (reg.active && reg.rooms[reg.active]) {
+          roomName = reg.rooms[reg.active].name || reg.active;
+        }
+      } catch (e) {}
+    }
+
+    if (roomDir) {
+      try {
+        if (!roomName) roomName = path.basename(dir);
+        // Phase 121.5-03: stamp room name into the two-row state.
+        rowState.room = roomName;
+
+        // Walk sections only to find the most recently modified one
+        // (the current exploration focus). Everything else about
+        // sections (counts, gaps, phase, stage, exploration label)
+        // was removed from the statusline per user spec 2026-04-14.
+        const sections = fs.readdirSync(roomDir, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+
+        let currentSection = '';
+        let latestMtime = 0;
+        for (const s of sections) {
+          const sPath = path.join(roomDir, s.name);
+          try {
+            const files = fs.readdirSync(sPath).filter(f => f.endsWith('.md'));
+            for (const f of files) {
+              const stat = fs.statSync(path.join(sPath, f));
+              if (stat.mtimeMs > latestMtime) {
+                latestMtime = stat.mtimeMs;
+                currentSection = s.name;
+              }
+            }
+          } catch (e) {}
+        }
+        // Phase 121.5-03: stamp current section into the two-row state.
+        rowState.section = currentSection;
+        // And derive the stage label (D-04 stage segment uses the
+        // EXPLORATION_LABELS map -- existing convention preserved).
+        if (currentSection) {
+          const stageEntry = EXPLORATION_LABELS[currentSection];
+          rowState.stage = stageEntry ? stageEntry.label : currentSection.replace(/-/g, ' ').toUpperCase();
+        }
+
+        // Build room status parts (De Stijl visual identity)
+        // Per user spec 2026-04-14: the room marker carries the ACTIVE
+        // ROOM NAME (not a static LARRY label), followed by the current
+        // section as a status breadcrumb. No venture stage, no section
+        // count, no gap count, no phase indicator, no exploration label.
+        const parts = [];
+
+        // Room name with house emoji prefix. Gold bold for brand identity.
+        const gold = visual.ANSI.gold || visual.ANSI.amber || '\x1b[38;2;245;194;66m';
+        let roomCrumb = `\u{1F3E0} ${gold}${visual.ANSI.bold}${roomName}${visual.ANSI.reset}`;
+        if (currentSection) {
+          // Section breadcrumb with folder emoji. Muted arrow separator.
+          roomCrumb += ` ${visual.ANSI.muted}\u25B6${visual.ANSI.reset} \u{1F4C2} ${visual.ANSI.cyan}${currentSection}${visual.ANSI.reset}`;
+        }
+        parts.push(roomCrumb);
+
+        // Exploration stage label with thematic emoji per stage
+        // (target, lightbulb, money bag, bar chart, etc). Derived from
+        // currentSection via EXPLORATION_LABELS map. Unknown sections
+        // fall back to a generic magnifying-glass emoji plus uppercase
+        // section name.
+        if (currentSection) {
+          const stageEntry = EXPLORATION_LABELS[currentSection];
+          const emoji = stageEntry ? stageEntry.emoji : '\u{1F50D}';
+          const label = stageEntry ? stageEntry.label : currentSection.replace(/-/g, ' ').toUpperCase();
+          parts.push(`${emoji} ${visual.ANSI.yellow}${label}${visual.ANSI.reset}`);
+        }
+
+        // Phase 88.1-04 -- MINTO governing_thought segment. Canon Part 3
+        // LOCAL-only (no BRAIN, no SIGNAL). 5s TTL cache + 300ms budget +
+        // graceful fallback. Entire helper is wrapped in try/catch below so
+        // any failure leaves the pre-88 statusline output unchanged.
+        try {
+          const mintoSeg = buildMintoSegment(roomDir);
+          if (mintoSeg) parts.push(mintoSeg);
+          // Phase 121.5-03: also pull the raw governing thought into row state
+          // for the two-row renderer. We re-resolve via the same chain that
+          // buildMintoSegment uses; this is intentionally a fresh read (5s TTL
+          // cache already memoizes the disk hit) so we get the same value.
+          if (statuslineCache && folderMemory) {
+            const sectionPath = resolveActiveSectionPath(roomDir);
+            if (sectionPath) {
+              const cached = statuslineCache.getCached(roomDir, sectionPath);
+              const triple = (cached && cached.fresh && cached.value)
+                ? cached.value
+                : folderMemory.readTriple(sectionPath);
+              if (triple && triple.reasoning && triple.reasoning.exists &&
+                  !triple.reasoning.is_stale &&
+                  typeof triple.reasoning.governing_thought === 'string' &&
+                  triple.reasoning.governing_thought.length > 0) {
+                rowState.governing_thought = triple.reasoning.governing_thought;
+              }
+            }
+          }
+        } catch (_e) { /* graceful fallback */ }
+
+        // Phase 91-06 -- Larry dial segment (Investigate | Blend | Insight).
+        // Canon Part 3: dial position derived from latest engine decision
+        // trace (.mindrian/decision-traces/<session>.json -- same source
+        // /mos:explain-decision reads). Canon Part 8 LOCAL-only. Inserted
+        // between MINTO and plugin brand so the user reads room state ->
+        // reasoning -> engine position in left-to-right order.
+        try {
+          const dialSeg = buildDialSegment(roomDir);
+          if (dialSeg) parts.push(dialSeg);
+        } catch (_e) { /* graceful fallback */ }
+
+        // Phase 106-D02: Active operator glyph (skipped on JUST_TALK default)
+        // Source: lib/conversation/operator.cjs getCurrent(roomDir) -- pure
+        // local read, < 1ms budget, graceful fallback to JUST_TALK on error.
+        // We DO NOT broadcast JUST_TALK because every cold-start room defaults
+        // to it; surfacing the default would just be noise. Canon Part 8
+        // LOCAL-only: never queries Brain.
+        try {
+          const operator = require('../lib/conversation/operator.cjs');
+          const opState = operator.getCurrent(roomDir);
+          if (opState && opState.current && opState.current !== 'JUST_TALK') {
+            parts.push(`⚙️ ${visual.ANSI.dim}${opState.current}${visual.ANSI.reset}`);
+            // Phase 121.5-03: also stamp operator into the two-row state.
+            rowState.operator = opState.current;
+          }
+        } catch (_e) { /* graceful fallback - never blank statusline */ }
+
+        // Phase 106-D02: Active JTBD glyph (skipped when getCurrent returns null)
+        // Source: lib/hmi/jtbd-state.cjs getCurrent(roomDir) -- returns null
+        // when state file absent OR current is null OR not an object. The 24h
+        // staleness rule lives inside isStale() not getCurrent(); we trust
+        // whatever non-null current the engine wrote. Canon Part 8 LOCAL-only.
+        try {
+          const jtbdState = require('../lib/hmi/jtbd-state.cjs');
+          const jtbdCurrent = jtbdState.getCurrent(roomDir);
+          if (jtbdCurrent && jtbdCurrent.jtbd) {
+            parts.push(`🎯 ${visual.ANSI.dim}${jtbdCurrent.jtbd}${visual.ANSI.reset}`);
+            // Phase 121.5-03: also stamp JTBD into the two-row state.
+            rowState.jtbd = jtbdCurrent.jtbd;
+          }
+        } catch (_e) { /* graceful fallback */ }
+
+        // MindrianOS plugin brand (brain emoji) + current version +
+        // persistent /mos:update hint. The green circle plus the
+        // literal command is a zero-runtime-cost nudge that works on
+        // airgapped machines, independent of any update-detection
+        // pipeline. Honest about what it is: a reminder, not a signal.
+        const pluginVersion = readPluginVersion();
+        const updateHint = `\u{1F504} ${visual.ANSI.dim}/mos:update${visual.ANSI.reset}`;
+        let pluginPart = `\u{1F9E0} ${visual.ANSI.cyan}MindrianOS${visual.ANSI.reset}`;
+        if (pluginVersion) {
+          pluginPart += ` ${visual.ANSI.dim}v${pluginVersion}${visual.ANSI.reset}`;
+        }
+        pluginPart += ` ${updateHint}`;
+        parts.push(pluginPart);
+
+        // Brain connection status. Green DNA if MINDRIAN_BRAIN_KEY is
+        // set (with optional health-bridge confirmation). Red DNA if
+        // not configured. This is a proxy, not a live health check -
+        // the statusline cannot do an MCP round-trip synchronously.
+        const brainStatus = detectBrainStatus();
+        if (brainStatus === 'connected') {
+          parts.push(`\u{1F9EC} ${visual.ANSI.green}BRAIN${visual.ANSI.reset}`);
+          // Phase 121.5-03: stamp brain tier into two-row state.
+          rowState.brain_tier = 'BRAIN';
+        } else if (brainStatus === 'disconnected') {
+          parts.push(`\u{1F9EC} ${visual.ANSI.red}BRAIN${visual.ANSI.reset}`);
+          rowState.brain_tier = 'LOCAL';
+        }
+
+        roomInfo = parts.join(` ${visual.ANSI.muted}${visual.SYMBOLS.box.v}${visual.ANSI.reset} `);
+      } catch (e) {}
+    } else {
+      // No room resolved. Still show the plugin version so users outside
+      // any room know which MindrianOS is running.
+      const pluginVersion = readPluginVersion();
+      if (pluginVersion) {
+        roomInfo = `${visual.ANSI.cyan}${visual.SYMBOLS.brand} MindrianOS${visual.ANSI.reset} ${visual.ANSI.dim}v${pluginVersion}${visual.ANSI.reset}`;
+      }
+    }
+
+    // --- Output (Phase 121.5-03: two-row D-02/D-03/D-04) ---
+    // The two-row renderer composes the locked statusline shape from the
+    // rowState we collected above. Version + update-glyph conditional come
+    // from lib/statusline/version-resolver.cjs (SEED-007 anchored).
+    //
+    // When no room is resolved (Tier 0 / cold start), emit only Row 1 with
+    // an empty Row 2 (room defaults to 'MindrianOS' in the renderer). This
+    // preserves the SEED-007 contract: the version-of-record is ALWAYS
+    // visible, even outside any room.
+    try {
+      const ver = versionResolver.resolveVersion();
+      rowState.current_version = ver.current_version;
+      rowState.update_available = ver.update_available;
+      rowState.update_available_version = ver.update_available_version;
+    } catch (_e) {
+      // Graceful: keep rowState.current_version='unknown' from initialization.
+    }
+
+    // Phase 187 -- the four-tier NAVIGATOR COCKPIT line (the navigator render
+    // path). Emitted as the hero line ABOVE the preserved two-row identity /
+    // situation block: the cockpit gives the navigator orientation + integrity
+    // warning + the lowest-friction next action at a glance, while the two rows
+    // below keep the SEED-007 version-of-record contract + the D-02 broadcast
+    // (📊 / 🎯 / ⚙️ / compaction-imminent) byte-identical. The cockpit line is
+    // additive and defensive: on any failure buildCockpitLine returns '' and the
+    // statusline degrades to exactly the pre-187 two-row output.
+    const cockpitLine = buildCockpitLine(rowState, rowState.room, ctxPct);
+
+    let twoRow;
+    if (rowState.room || roomInfo) {
+      // Two-row emission. The renderer handles all width-progressive
+      // degradation + the blink-red at >=80% + the conditional update glyph.
+      twoRow = twoRowRenderer.renderStatusline(rowState);
+    } else {
+      // No room AND no roomInfo. Still render Row 1 (version-of-record
+      // contract per SEED-007 + D-03). Row 2 will render with the default
+      // 'MindrianOS' room placeholder. This is intentionally minimal so the
+      // user outside any room still sees who/runway, just not where/what.
+      twoRow = twoRowRenderer.renderRow1(rowState);
+    }
+
+    // Navigator-LOCKED 2026-06-29: emit ONE navigator line -- the four-tier cockpit
+    // with the MindrianOS version trailing the Tier-4 chip (after the risk chip /
+    // "save soon"). The two-row identity/situation block + the 📊 progress bar are
+    // RETIRED from the render (hierarchy, not a pile). Claude Code's own native line
+    // (accept-edits / shift+tab) is emitted by the host below this and is untouched.
+    // twoRow remains ONLY as the degraded-install fallback (cockpit machinery absent)
+    // so the bar is never blank.
+    const verSuffix = (rowState && rowState.current_version && rowState.current_version !== 'unknown')
+      ? ' · v' + rowState.current_version
+      : '';
+    // D-02 broadcast preserved in the single line (navigator decision B, 2026-06-29):
+    // the operator (gear) and JTBD (target) facts ride the cockpit line when set, instead
+    // of a separate two-row block. JUST_TALK (the default operator) is suppressed (D-02 Test 6).
+    const jtbdSeg = (rowState && rowState.jtbd) ? ' · 🎯 ' + rowState.jtbd : '';
+    const operatorSeg = (rowState && rowState.operator && rowState.operator !== 'JUST_TALK')
+      ? ' · ⚙️ ' + rowState.operator : '';
+    process.stdout.write(cockpitLine ? cockpitLine + jtbdSeg + operatorSeg + verSuffix : twoRow);
+  } catch (e) {
+    // Phase 187 -- graceful fallback: NEVER blank the statusline, even on
+    // malformed stdin. Emit a minimal safe navigator cockpit line (the renderer
+    // itself never throws and degrades to '⬡ MindrianOS' on bad input).
+    try {
+      if (cockpitRenderer && typeof cockpitRenderer.renderCockpit === 'function') {
+        process.stdout.write(cockpitRenderer.renderCockpit({}));
+      }
+    } catch (_e2) {
+      // Absolute last resort: still never blank.
+      try { process.stdout.write('⬡ MindrianOS'); } catch (_e3) { /* give up safely */ }
+    }
+  }
+});

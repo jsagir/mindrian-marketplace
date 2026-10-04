@@ -1,0 +1,67 @@
+{
+  "name": "@mindrian_os/cli",
+  "version": "2.0.0-beta.57",
+  "description": "Install MindrianOS into Claude Code with one command -- `npx @mindrian_os/cli`. Ships the MindrianOS plugin (Larry + PWS methodology + Data Room) plus a setup/diagnostics CLI (install/doctor/update).",
+  "scripts": {
+    "mcp": "node scripts/mindrian-mcp-server.cjs",
+    "parity": "node lib/parity/check-parity.cjs",
+    "migrate-minto-v88": "node scripts/migrate-minto-schema-v88.cjs"
+  },
+  "bin": {
+    "mindrian-os": "bin/cli.js",
+    "cli": "bin/cli.js"
+  },
+  "files": [
+    ".claude-plugin",
+    ".mcp.json",
+    "settings.json",
+    "npm-shrinkwrap.json",
+    "hooks",
+    "commands",
+    "skills",
+    "agents",
+    "pipelines",
+    "output-styles",
+    "lib",
+    "!lib/wiki/editor-src",
+    "!lib/import/test-fixtures",
+    "scripts",
+    "!scripts/release.sh",
+    "!scripts/build-ui-shell.cjs",
+    "!scripts/release-lib",
+    "bin",
+    "data",
+    "references",
+    "templates",
+    "assets",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {
+    "@ig3/markdown-it-wikilinks": "^1.0.2",
+    "@modelcontextprotocol/client": "^2.1.0",
+    "@modelcontextprotocol/core": "^2.1.0",
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
+    "@modelcontextprotocol/node": "^2.1.0",
+    "@modelcontextprotocol/server": "^2.1.0",
+    "ajv": "^8.18.0",
+    "asciichart": "^1.5.25",
+    "chokidar": "^4.0.3",
+    "chrono-node": "^2.9.1",
+    "express": "^5.1.0",
+    "flexsearch": "^0.7.43",
+    "gray-matter": "^4.0.3",
+    "markdown-it": "^14.1.0",
+    "next": "16.2.10",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "semver": "^7.7.4",
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.2.0"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "license": "BSL-1.1"
+}

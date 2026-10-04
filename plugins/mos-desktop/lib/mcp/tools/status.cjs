@@ -1,0 +1,214 @@
+'use strict';
+// Phase 198-06 (SPEC-2, Task 2) -- status_read (spend/cap segment, day one).
+//
+// The Warp lesson (per 198-CONTEXT.md <specifics>): "Spend/cap visibility as
+// a first-class statusline segment ... status_read carries it from day one" --
+// the room teardown's finding was that bolting spend/cap visibility on AFTER
+// a substrate ships is what fails; the segment SHAPE must exist from the
+// first cut of the contract, even where the live billing wire is not built
+// yet. This tool ships that shape now:
+//   - context_pct/context_source: reuses the SHIPPED lib/statusline/
+//     ctx-window.cjs::resolveCtxPct (Canon Part 7 -- the SAME context-budget
+//     percentage resolver the CLI statusline already renders), fed by an
+//     OPTIONAL caller-supplied context_window object (the native Claude Code
+//     statusline stdin shape) -- a bare MCP pull has no stdin, so this
+//     degrades to null/'none' when the caller does not thread it through.
+//   - spend_usd/cap_usd: read from MINDRIAN_SPEND_USD / MINDRIAN_SPEND_CAP_USD
+//     env vars (or an optional caller-supplied override) -- no live billing
+//     API exists yet in this tree; degrade to null rather than fabricate a
+//     number. The SEGMENT is real and present from day one; the wire to a
+//     real billing source is future work (out of this plan's scope).
+//
+// status_read also publishes the computed segment to the SSE bus (Plan 03's
+// lib/mcp/sse-event-bus.cjs, EVENT_KINDS 'status-segment') so a live
+// subscriber (the future thin-adapter statusline) sees it without polling.
+//
+// Canon Part 8: zero Brain/network tokens; pure local reads + in-process
+// publish. Canon Part 11: register(server, ctx) + connectors export, same
+// disjoint-file module contract as room.cjs/graph.cjs/gate.cjs/sensors.cjs/
+// views.cjs -- never requires those modules or lib/mcp/tool-router.cjs at
+// module-load time.
+
+const { z } = require('zod');
+
+const { resolveCtxPct } = require('../../statusline/ctx-window.cjs');
+const sseEventBus = require('../sse-event-bus.cjs');
+const { resolveEffectiveSessionId } = require('../../core/session-binding.cjs');
+const { isWritePathEnabled } = require('../mcp-first-flag.cjs');
+const { resolveSessionRoomDir, resolveMcpSessionRoom, describeRoomBinding } = require('../session-room.cjs');
+const { detectHostTier } = require('../surface-detect.cjs');
+
+/**
+ * Phase 234-05: the live client identity, read PER CALL. Independent copy per
+ * the disjoint-file tool-module contract (same shape as graph.cjs/views.cjs).
+ * Undefined before initialize completes, which floors to unknown/tier0.
+ */
+function currentClientVersion(server) {
+  try {
+    if (server && server.server && typeof server.server.getClientVersion === 'function') {
+      return server.server.getClientVersion();
+    }
+  } catch (_e) {
+    // fall through to the conservative floor
+  }
+  return undefined;
+}
+
+function textResponse(payload, isError) {
+  const result = { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+  if (isError) result.isError = true;
+  return result;
+}
+
+
+function parseNumericEnv(name) {
+  const raw = process.env[name];
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * buildSpendCapSegment -- the Warp-lesson segment. Never throws; every field
+ * is null-degradable so the SHAPE is stable even before a real billing wire
+ * lands.
+ *
+ * @param {{spendUsd?: number, capUsd?: number}} overrides - optional
+ *   caller-supplied values (take precedence over env when finite numbers)
+ * @returns {{spend_usd: number|null, cap_usd: number|null, currency: string, source: string}}
+ */
+function buildSpendCapSegment(overrides) {
+  const o = overrides || {};
+  const spendUsd = (typeof o.spendUsd === 'number' && Number.isFinite(o.spendUsd))
+    ? o.spendUsd
+    : parseNumericEnv('MINDRIAN_SPEND_USD');
+  const capUsd = (typeof o.capUsd === 'number' && Number.isFinite(o.capUsd))
+    ? o.capUsd
+    : parseNumericEnv('MINDRIAN_SPEND_CAP_USD');
+  return {
+    spend_usd: spendUsd,
+    cap_usd: capUsd,
+    currency: 'usd',
+    source: (spendUsd !== null || capUsd !== null) ? 'configured' : 'unavailable',
+  };
+}
+
+/**
+ * buildStatusSegments -- the full status_read payload. Pure composition; no
+ * fs/network beyond the room-dir resolve above (already LOCAL-only).
+ *
+ * Phase 234-05 (D-05) adds the capability_floor segment. D-05 requires the
+ * server to STATE its floor honestly on BOTH axes rather than leaving a model
+ * to discover by trial that a tool it can see will refuse it. Any caller,
+ * model or human, can now ask status_read "what can I actually do right now
+ * on this host" and get a live answer.
+ *
+ * capabilityFloor is passed in rather than computed here because the host axis
+ * is only knowable from the live server handle (getClientVersion), and
+ * buildStatusSegments is deliberately kept as a pure function so its other
+ * segments stay unit-testable without a server. Absent -> null, never
+ * fabricated.
+ *
+ * @param {string} roomDir
+ * @param {object} params
+ * @param {{surface: string|undefined, host_tier: object, write_path_enabled: boolean}|null|undefined} capabilityFloor
+ */
+function buildStatusSegments(roomDir, params, capabilityFloor) {
+  const p = params || {};
+  const ctx = resolveCtxPct(p.contextWindow);
+  const spendCap = buildSpendCapSegment({ spendUsd: p.spendUsd, capUsd: p.capUsd });
+  return {
+    room_dir: roomDir,
+    context_pct: ctx.pct,
+    context_source: ctx.source,
+    spend_cap: spendCap,
+    capability_floor: capabilityFloor || null,
+  };
+}
+
+function register(server, ctx) {
+  server.registerTool(
+    'status_read',
+    {
+      title: 'Status Read',
+      description: "Read this session's navigator status segments, including the spend/cap segment from day one (the Warp lesson -- the shape exists now even where the live billing wire is not yet built). capability_floor.tool_registration reports whenever MCP tool registration was partial (a module failed to load or register), naming the failed module so health never claims complete capability it does not have. Publishes the computed segment to the SSE bus ('status-segment') for a live subscriber.",
+      inputSchema: z.object({
+        context_window: z.record(z.any()).optional()
+          .describe("Optional native Claude Code statusline stdin context_window object, forwarded through to the SAME resolveCtxPct resolver the CLI statusline uses. Absent -> context_pct is null."),
+        spend_usd: z.number().nonnegative().optional()
+          .describe('Optional caller-supplied spend override (else MINDRIAN_SPEND_USD env, else null).'),
+        cap_usd: z.number().nonnegative().optional()
+          .describe('Optional caller-supplied cap override (else MINDRIAN_SPEND_CAP_USD env, else null).'),
+      }),
+    },
+    async ({ context_window, spend_usd, cap_usd }, extra) => {
+      const sessionId = resolveEffectiveSessionId(undefined, extra);
+      // RCA desktop-session-binding-fallback: resolve with the `source` so a
+      // session that never bound a room is told it is looking at the registry's
+      // active room (a fallback), never at a binding.
+      const roomResolution = resolveMcpSessionRoom({ sessionId: sessionId, ctx: ctx });
+      const roomDir = roomResolution.dir;
+      // Phase 234-05 (D-05): both axes, read LIVE, per call. The host axis is
+      // only knowable after initialize completes, so it is read here and never
+      // cached at registration time.
+      const clientVersion = currentClientVersion(server);
+      // Phase 354-14 (SYS-04): lazily require register-core-tools.cjs here,
+      // inside the handler, after load -- requiring it at module-load time
+      // would create a load-order cycle (register-core-tools.cjs requires
+      // every lib/mcp/tools/*.cjs module, including this one). Reading the
+      // report at CALL time also means status_read always reflects the
+      // most recent registerCoreTools() run, not a stale one captured at
+      // registration time.
+      let toolRegistration = { complete: null, registered: [], failed: [], reason: 'not_run' };
+      try {
+        const registerCoreToolsMod = require('../register-core-tools.cjs');
+        if (typeof registerCoreToolsMod.getRegistrationHealth === 'function') {
+          const health = registerCoreToolsMod.getRegistrationHealth();
+          toolRegistration = {
+            complete: health.complete,
+            failed: (health.failed || []).map((f) => ({ module: f.module, phase: f.phase })),
+          };
+        }
+      } catch (_e) {
+        // health surface itself must never block status_read's other segments
+      }
+      const capabilityFloor = {
+        surface: (ctx && ctx.surface) || null,
+        host_tier: detectHostTier(clientVersion),
+        write_path_enabled: isWritePathEnabled({ surface: ctx && ctx.surface, clientVersion: clientVersion }),
+        tool_registration: toolRegistration,
+      };
+      const segments = buildStatusSegments(
+        roomDir,
+        { contextWindow: context_window, spendUsd: spend_usd, capUsd: cap_usd },
+        capabilityFloor
+      );
+      segments.room_binding = describeRoomBinding(roomResolution);
+      sseEventBus.publish('status-segment', segments);
+      return textResponse({ ok: true, segments: segments });
+    }
+  );
+}
+
+// Born-wired SOURCE of truth (Part 11 R1/R16). status_read is a pure read
+// (hitl_shape 'none') -- it never mutates room state, it only composes and
+// publishes a status segment. scripts/build-connector-registry.cjs discovers
+// this export and regenerates data/mcp-tool-connectors.json +
+// data/connector-registry.json from it; never hand-edit either generated file.
+const connectors = [
+  {
+    tool: 'status_read',
+    surface: 'status_read',
+    connector: 'mcp-tool',
+    hitl_shape: 'none',
+    hitl_why: "Pure read: composes this session's navigator status segments (including the day-one spend/cap segment) and publishes to the SSE bus, no fork.",
+    layer: 'context',
+    layer_why: "Composes this session's status segments and publishes a session injection to the SSE bus; changes what the navigator sees this turn, the rubric's own step 4 signal.",
+  },
+];
+
+module.exports = {
+  register,
+  connectors,
+  _internal: { resolveSessionRoomDir, buildSpendCapSegment, buildStatusSegments },
+};

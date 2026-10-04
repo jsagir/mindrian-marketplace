@@ -1,0 +1,264 @@
+#!/usr/bin/env node
+/**
+ * sync-rooms-graph -- Sync room hierarchy to SQLite local graph
+ *
+ * Reads registry.json, creates/updates Room and RoomGroup nodes in SQLite,
+ * and creates CONTAINS edges for the physical hierarchy.
+ *
+ * Idempotent: safe to run multiple times (INSERT OR REPLACE semantics).
+ * Fire-and-forget: failure never blocks any operation.
+ * Additive only: NEVER writes to filesystem or registry.json (D-15).
+ * Regenerable: graph can be rebuilt from filesystem at any time (D-18).
+ *
+ * Usage: node sync-rooms-graph [roomsHome]
+ *   roomsHome - Override ~/MindrianRooms (default: $MINDRIAN_ROOMS_HOME or ~/MindrianRooms)
+ *
+ * Exit codes:
+ *   0 - Success or graceful skip (no registry, no node:sqlite, etc.)
+ *   Never exits non-zero (fire-and-forget, D-16)
+ */
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const ROOMS_HOME = process.argv[2] || process.env.MINDRIAN_ROOMS_HOME || path.join(os.homedir(), 'MindrianRooms');
+const REGISTRY_PATH = path.join(ROOMS_HOME, '.rooms', 'registry.json');
+const DB_DIR = path.join(ROOMS_HOME, '.rooms', '.room-graph');
+const DB_PATH = path.join(DB_DIR, 'rooms.db');
+
+/**
+ * Initialize SQLite schema for room hierarchy.
+ * Creates Room, RoomGroup, and VentureStage node tables plus relationship tables.
+ * All operations are IF NOT EXISTS -- safe to call repeatedly.
+ * @param {import('node:sqlite').DatabaseSync} db - node:sqlite DatabaseSync instance
+ */
+function initRoomSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rooms (
+      name TEXT PRIMARY KEY,
+      venture_name TEXT DEFAULT '',
+      venture_stage TEXT DEFAULT '',
+      domain TEXT DEFAULT '',
+      status TEXT DEFAULT '',
+      created TEXT DEFAULT '',
+      path TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS room_groups (
+      name TEXT PRIMARY KEY,
+      icm_layer TEXT DEFAULT 'group',
+      rationale TEXT DEFAULT '',
+      path TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS venture_stages (
+      name TEXT PRIMARY KEY
+    );
+    CREATE TABLE IF NOT EXISTS group_contains_room (
+      group_name TEXT NOT NULL,
+      room_name TEXT NOT NULL,
+      PRIMARY KEY (group_name, room_name),
+      FOREIGN KEY (group_name) REFERENCES room_groups(name),
+      FOREIGN KEY (room_name) REFERENCES rooms(name)
+    );
+    CREATE TABLE IF NOT EXISTS group_contains_group (
+      parent_group TEXT NOT NULL,
+      child_group TEXT NOT NULL,
+      PRIMARY KEY (parent_group, child_group),
+      FOREIGN KEY (parent_group) REFERENCES room_groups(name),
+      FOREIGN KEY (child_group) REFERENCES room_groups(name)
+    );
+    CREATE TABLE IF NOT EXISTS room_at_stage (
+      room_name TEXT NOT NULL,
+      stage_name TEXT NOT NULL,
+      PRIMARY KEY (room_name, stage_name),
+      FOREIGN KEY (room_name) REFERENCES rooms(name),
+      FOREIGN KEY (stage_name) REFERENCES venture_stages(name)
+    );
+  `);
+}
+
+/**
+ * Seed the 5 VentureStage nodes (matching Brain taxonomy).
+ * @param {import('node:sqlite').DatabaseSync} db - node:sqlite DatabaseSync instance
+ */
+function seedStages(db) {
+  const stages = ['Pre-Opportunity', 'Discovery', 'Validation', 'Design', 'Investment'];
+  const stmt = db.prepare('INSERT OR IGNORE INTO venture_stages (name) VALUES (?)');
+  for (const stage of stages) {
+    stmt.run(stage);
+  }
+}
+
+/**
+ * Detect group directories under ROOMS_HOME.
+ * A group is a directory that contains subdirectories which are registered rooms.
+ * @param {object} rooms - rooms object from registry.json
+ * @returns {Map<string, string[]>} groupName -> [roomNames]
+ */
+function detectGroups(rooms) {
+  const groups = new Map();
+
+  for (const [name, room] of Object.entries(rooms)) {
+    const roomPath = room.path || name;
+    const parts = roomPath.split('/').filter(Boolean);
+
+    // If path has a parent directory, that parent is a group
+    if (parts.length >= 2) {
+      const groupName = parts[0];
+      if (!groups.has(groupName)) {
+        groups.set(groupName, []);
+      }
+      groups.get(groupName).push(name);
+    }
+  }
+
+  // Also scan filesystem for group directories with CLAUDE.md (ICM-compliant groups)
+  try {
+    const entries = fs.readdirSync(ROOMS_HOME, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
+
+      const groupPath = path.join(ROOMS_HOME, entry.name);
+      const hasClaude = fs.existsSync(path.join(groupPath, 'CLAUDE.md'));
+
+      // Check if this directory contains any subdirectories (potential rooms)
+      const subEntries = fs.readdirSync(groupPath, { withFileTypes: true });
+      const hasSubdirs = subEntries.some(e => e.isDirectory() && !e.name.startsWith('.'));
+
+      if (hasClaude && hasSubdirs && !groups.has(entry.name)) {
+        groups.set(entry.name, []);
+      }
+    }
+  } catch (_) {
+    // Filesystem scan is best-effort
+  }
+
+  return groups;
+}
+
+/**
+ * Sync rooms and groups to SQLite.
+ * Uses INSERT OR REPLACE for idempotent upserts.
+ * @param {import('node:sqlite').DatabaseSync} db - node:sqlite DatabaseSync instance
+ * @param {object} registry - Parsed registry.json
+ */
+function syncRooms(db, registry) {
+  const rooms = registry.rooms || {};
+  const groups = detectGroups(rooms);
+
+  const upsertRoom = db.prepare(
+    'INSERT OR REPLACE INTO rooms (name, venture_name, venture_stage, domain, status, created, path) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+  const deleteStage = db.prepare('DELETE FROM room_at_stage WHERE room_name = ?');
+  const insertStage = db.prepare('INSERT OR IGNORE INTO room_at_stage (room_name, stage_name) VALUES (?, ?)');
+
+  // Sync Room nodes
+  for (const [name, room] of Object.entries(rooms)) {
+    if (room.status === 'archived') continue;
+
+    upsertRoom.run(
+      name,
+      room.venture_name || '',
+      room.venture_stage || '',
+      room.domain || '',
+      room.status || 'unknown',
+      room.created || '',
+      room.path || name
+    );
+
+    // Create AT_STAGE edge if venture_stage is known
+    if (room.venture_stage) {
+      deleteStage.run(name);
+      insertStage.run(name, room.venture_stage);
+    }
+  }
+
+  const upsertGroup = db.prepare(
+    'INSERT OR REPLACE INTO room_groups (name, icm_layer, rationale, path) VALUES (?, ?, ?, ?)'
+  );
+  const insertContains = db.prepare(
+    'INSERT OR IGNORE INTO group_contains_room (group_name, room_name) VALUES (?, ?)'
+  );
+
+  // Sync RoomGroup nodes
+  for (const [groupName, roomNames] of groups) {
+    const groupPath = path.join(ROOMS_HOME, groupName);
+    let rationale = '';
+
+    // Try to extract rationale from group's CLAUDE.md
+    try {
+      const claudePath = path.join(groupPath, 'CLAUDE.md');
+      if (fs.existsSync(claudePath)) {
+        const content = fs.readFileSync(claudePath, 'utf8');
+        const lines = content.split('\n').slice(0, 5);
+        rationale = lines.find(l => l.trim() && !l.startsWith('#')) || '';
+      }
+    } catch (_) {}
+
+    upsertGroup.run(groupName, 'group', rationale, groupName);
+
+    // Create CONTAINS edges from group to rooms
+    for (const roomName of roomNames) {
+      insertContains.run(groupName, roomName);
+    }
+  }
+}
+
+function main() {
+  // Check registry exists
+  if (!fs.existsSync(REGISTRY_PATH)) {
+    process.exit(0);
+  }
+
+  // Load registry
+  let registry;
+  try {
+    registry = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8'));
+  } catch (_) {
+    process.stderr.write('sync-rooms-graph: invalid registry.json\n');
+    process.exit(0);
+  }
+
+  // Check if rooms exist
+  if (!registry.rooms || Object.keys(registry.rooms).length === 0) {
+    process.exit(0);
+  }
+
+  // Try to load node:sqlite (Node >=22.5.0 builtin)
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch (_) {
+    process.stderr.write('sync-rooms-graph: node:sqlite not available (requires Node >=22.5.0), skipping local graph sync\n');
+    process.exit(0);
+  }
+
+  // Open or create graph database
+  let db = null;
+  try {
+    fs.mkdirSync(DB_DIR, { recursive: true });
+    // Phase 276 C4: busy-timeout option, one line, see lib/core/room-db.cjs:242-251
+    // for the full reasoning. This opens rooms.db (the roomsHome-level graph,
+    // .rooms/.room-graph/rooms.db), NOT a per-room room.db, but it is still a
+    // genuine writer (initRoomSchema/seedStages/syncRooms) that can contend.
+    db = new DatabaseSync(DB_PATH, { timeout: 5000 });
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    initRoomSchema(db);
+    seedStages(db);
+    syncRooms(db, registry);
+
+    const roomCount = Object.keys(registry.rooms).filter(n => registry.rooms[n].status !== 'archived').length;
+    console.log(JSON.stringify({ synced: roomCount, graph: DB_PATH }));
+  } catch (err) {
+    process.stderr.write(`sync-rooms-graph: ${err.message}\n`);
+  } finally {
+    try { if (db) db.close(); } catch (_) {}
+  }
+}
+
+main();

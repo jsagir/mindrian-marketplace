@@ -1,0 +1,86 @@
+---
+name: auto-explore
+description: "Manual fallback: run auto-explore on one file by hand when the ambient run could not start on this surface (the room starts it on its own; Phase 355.1)"
+license: BSL-1.1. See LICENSE for complete terms (Business Source License 1.1, Change Date 2030-04-16 to Apache License 2.0).
+help_jtbd: "Let Larry decompose your domain before you even ask."
+body_shape: "methodology"
+layer: "loop"
+layer_why: "Runs the same domain-decomposition cycle the PostToolUse hook fires automatically, a single agent cycle to a stopping condition, kind:utility only because it is hook-triggered rather than navigator-typed."
+hitl_shape: "F.3"
+hitl_why: "The rabbit-hole exploration asks how deep to keep going, a depth budget."
+# Phase 267.3-06, ruled in 267.3-CLASSIFICATION.md (Row 3): first delivery at commands/auto-explore.md:65, the F.1 dispatch contract carrying the domain-decomposition finding computed over the navigator's own freshly-filed artifact.
+interactive_first_reward: methodology_reframe
+argument-hint: "<file_path>"
+serves_jtbd: ["find-problem", "understand-market", "explore"]
+teaching: "The room normally starts this domain decomposition on its own the moment a new artifact lands. /mos:auto-explore is the fallback: use it by hand only when the ambient run could not start on this surface."
+allowed-tools: Bash Read AskUserQuestion
+# --- Phase 144.1 connector frontmatter ---
+connector:
+  connects_to_spine: true
+  sensor_triggers: []
+  reach_id: context_block
+  sub_mode: auto-explore
+  framework: "Domain Selection"
+  posture: push_forward
+  hierarchy_rank: 17
+  filing: fileEvidenceWithReadback
+  plan_gated: false
+  web_scope: null
+---
+
+# /mos:auto-explore -- Fallback (the room normally starts this on its own)
+
+On CLI, the PostToolUse fingerprint (`scripts/auto-explore-fingerprint.cjs`) and the Stop hook start this domain decomposition automatically the moment a new artifact lands. On Desktop and Cowork, the Stop-time close-out (`stop_gate_check`) starts the same ambient run (Phase 355.1) -- Desktop has no PostToolUse hook surface, so the room's own close-out is what fires there instead. This command is the **fallback**, never the way in: manual invocation produces the same F.1 contract as the ambient path, preserving tri-polar render parity (invariant 4 from VALIDATION.md), for the rare case the ambient run could not start on this surface.
+
+## Steps for Larry
+
+1. Validate that the file at `$1` exists. If not, return: "File not found: $1".
+
+2. Compute material_id:
+
+   ```javascript
+   const store = require('lib/memory/explored-materials-store');
+   const fs = require('node:fs');
+   const stat = fs.statSync(file_path);
+   const material_id = store.computeMaterialId(roomDir, file_path, stat.mtime.getTime());
+   ```
+
+3. Check rate-limit ledger:
+
+   ```javascript
+   const existing = store.findLatest(roomSlug, material_id);
+   if (existing && existing.user_response && !forceFlag) {
+     return "Already explored -- last finding response: " + existing.user_response +
+            ". Re-run with --force to override.";
+   }
+   ```
+
+4. Call surfaceFinding directly (synchronous; no UserPromptSubmit drain needed since this is invoked directly by user):
+
+   ```javascript
+   const agent = require('lib/agents/auto-explore-agent');
+   const result = agent.surfaceFinding({
+     finding: theComputedFinding,
+     roomDir: roomDir,
+     operator: 'AUTONOMOUS',
+     tier: 1,
+   });
+   ```
+
+5. Return the F.1 dispatch contract inline. The user picks Explore / Skip / Later via Larry's AskUserQuestion follow-up turn.
+
+6. Mark surfaced=true in ledger via `store.appendMaterial`.
+
+7. When the user picks an option, call `agent.handleUserResponse` with the chosen verb so the F.1 selection routes back into JSONL state and (on EXPLORE) emits the INFORMS cascade edge.
+
+## Why this exists
+
+Per RESEARCH 4.8, Desktop has no PostToolUse hook, and per Phase 355.1 the room now starts this domain decomposition on its own on every surface (CLI's PostToolUse fingerprint + Stop hook, Desktop/Cowork's Stop-time close-out). Without this command, a surface where the ambient run genuinely could not start would never see an auto-explore finding at all. The slash invocation produces the SAME F.1 contract as the ambient path -- verified by the three-surface render parity smoke in VALIDATION.md (invariant 4). This is the fallback, never the way in, for tri-polar coverage.
+
+## Tri-polar surfaces
+
+| Surface | Auto-fire path | Recovery path |
+|---------|----------------|---------------|
+| CLI | PostToolUse hook (`scripts/auto-explore-fingerprint.cjs`) -> background spawn -> UserPromptSubmit drain (`scripts/auto-explore-drain.cjs`) | SessionStart preflight (`scripts/preflight-auto-explore.cjs`) |
+| Cowork | Same as CLI | Same as CLI |
+| Desktop | Stop-time close-out (`stop_gate_check`, Phase 355.1) starts the ambient run | This slash command is the fallback recovery path when the ambient run could not start on this surface |

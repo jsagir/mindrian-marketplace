@@ -1,0 +1,783 @@
+#!/usr/bin/env node
+'use strict';
+
+/*
+ * Copyright (c) 2026 Mindrian. BSL 1.1.
+ *
+ * Phase 135-02 -- Offer Resolver helper (the abstention triple + the SQL-local
+ * + MD-aware relevance/confidence consumption + the grounded-reason builder).
+ * =========================================================================
+ * This is the net-new resolver body that navigation-engine.cjs delegates to from
+ * resolveOfferNextStep (which was a `return null` stub since Phase 91). It returns
+ * exactly ONE calibrated next-move offer { command, framework, jtbd, confidence,
+ * reason, scope } or null. It NEVER throws (any internal failure returns null).
+ *
+ * A3 LOCKED: the resolver is LOCAL-ONLY and SYNCHRONOUS. There is no awaited
+ * buildBrainPacket, no Brain query, no Brain payload formed anywhere in here.
+ * Every memory read (graph neighborhood, memory_event tail, FEYNMAN temporal,
+ * MINTO governing thought, active JTBD) is a SYNC read routed ONLY through the
+ * navigation.cjs chokepoint or read off the already-read quadruple. Mode A's
+ * RECOMMENDED marker rides the caller's decision_trace flag, never a fresh packet.
+ *
+ * The abstention triple runs in a STRICT order so margin is ALWAYS computed
+ * (rank-first) before the operator strong-signal gate reads it (gate-second).
+ * There is no forward reference to margin.
+ *
+ *   1. HARD SILENCE  -- operator === 'JUST_TALK' -> null (cheapest abstention).
+ *   2. RANK FIRST    -- rankForSelector; if empty -> null; compute the single margin.
+ *   3. OPERATOR GATE -- DECISION_GATE always; METHODOLOGY on close; EXPLORE_CAPTURE
+ *                       / BUILD_ROOM only when margin >= STRONG_SIGNAL_THRESHOLD.
+ *   4. MARGIN FLOOR  -- margin < MARGIN_THRESHOLD -> null (low-confidence abstain).
+ *   5. REJECTION     -- shouldExclude(top.command, roomState) -> null (backoff N=5).
+ *   6. TIER FALLBACK -- tier_0 (BRAIN.md absent) constrains the command to the
+ *                       hardcoded minimal verb set; never crashes.
+ *
+ * The margin folds in the SQL-local + MD-aware relevance signal so the resolver
+ * is genuinely calibrated by the room's graph + temporal + reasoning context, not
+ * just by the bare ranker tie-break. SC2 consumes the local graph neighborhood +
+ * memory_event tail; SC4 consumes the FEYNMAN temporal signal + the MINTO
+ * governing thought + the active JTBD. A present-fresh governing thought + a
+ * present active JTBD + recent temporal activity RAISE confidence; an absent /
+ * stale governing thought or a missing JTBD LOWER it (and can tip a borderline
+ * margin under the floor into abstention).
+ *
+ * Downstream: the emitted reason carries a [[wikilink]] so the shipped
+ * offer-presenter.isReasonGrounded gate passes (section-name regex hit). scope is
+ * context.sectionPath.
+ *
+ * No em-dashes (hyphens only). No emoji. CJS only.
+ */
+
+// Confidence-margin floor. top-1 must lead top-2 (after the MD + graph relevance
+// adjustment) by at least this on the 0..1 score. Below this the signal is a
+// coin-flip and a wrong offer trains the ignore reflex (CONTEXT.md "a wrong offer
+// trains the opposite habit"). Claude's Discretion default per CONTEXT.md
+// D-discretion; SEED-009 will learn this weight later (cohort >= 30 + 1000 outcome
+// edges). v2-tunable via .mos/config.json -- the config read is intentionally NOT
+// built here.
+const MARGIN_THRESHOLD = 0.15;
+
+// Strong-signal bar for the default-silent operators (EXPLORE_CAPTURE /
+// BUILD_ROOM). Concretely 2 x MARGIN_THRESHOLD: those operators only fire an offer
+// when the signal is twice the ordinary floor (CONTEXT.md D-6 default-silent unless
+// a strong signal). Claude's Discretion default; SEED-009 learns it later; v2-
+// tunable via .mos/config.json (the config read is NOT built here).
+const STRONG_SIGNAL_THRESHOLD = 2 * MARGIN_THRESHOLD; // 0.30
+
+// MD-aware relevance boost weights (SC4). Folded into the effective margin so the
+// quadruple-plus-FEYNMAN-plus-MINTO-plus-JTBD signal measurably shifts the
+// outcome. Claude's Discretion defaults; SEED-009 learns later; v2-tunable.
+const GOVERNING_THOUGHT_BOOST = 0.12; // present + fresh governing thought
+const ACTIVE_JTBD_BOOST = 0.12;       // present active-JTBD intent leg
+const MD_PENALTY = 0.10;              // absent/stale governing thought OR missing JTBD
+
+// SC2 graph-relevance boost weights. Folded into the effective margin when
+// roomState.db is non-null. A dense neighborhood + a recent memory_event tail bias
+// toward offering; a sparse neighborhood + a stale tail bias toward abstention.
+const NEIGHBORHOOD_BOOST = 0.16;
+const RECENT_ACTIVITY_BOOST = 0.06;
+const RECENT_ACTIVITY_WINDOW_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+// Fallback section token so the grounded reason NEVER becomes an undefined-valued
+// wikilink when context.sectionPath is falsy.
+const FALLBACK_SECTION = 'section/active';
+
+/**
+ * resolveOffer(context) -> offer | null
+ *
+ * SYNCHRONOUS. Never throws (the whole body is wrapped; any internal failure
+ * returns null, the graceful emptyDecision idiom). Returns exactly one offer with
+ * the six canonical keys, or null (abstention).
+ *
+ * context = {
+ *   quadruple,        // pre-read memory quadruple (reasoning.governing_thought = MINTO)
+ *   brainAvailable,   // boolean
+ *   operator,         // enum string ('JUST_TALK' default)
+ *   sectionPath,      // wikilink target + scope
+ *   problemType,      // string or null
+ *   jtbd,             // active-JTBD intent leg (SC4) or null
+ *   roomState,        // { db, roomDir, invocationsSinceDecision }; db null -> degrade
+ *   packet,           // optional pre-built packet; NEVER built here (A3)
+ * }
+ */
+function resolveOffer(context) {
+  try {
+    const ctx = (context && typeof context === 'object') ? context : {};
+
+    // ----- 1. HARD SILENCE: operator gate (cheapest abstention) -----
+    if (ctx.operator === 'JUST_TALK') return null;
+
+    // ----- 2. RANK FIRST: compute the SINGLE margin before any gate reads it ---
+    const ranker = require('../workflow/f-selector-ranker.cjs');
+    // Phase 311 (SEED-052, D-04/D-05): reuse the already-shipped identity
+    // checker, computed once per call, no caching. Never a second heuristic.
+    const { checkAdminIdentity } = require('../../scripts/check-admin-identity.cjs');
+    const isAdmin = checkAdminIdentity().admin === true;
+    const focusNodeId = resolveFocusNodeId(ctx);
+    const items = ranker.rankForSelector({
+      jtbd: (typeof ctx.jtbd === 'string') ? ctx.jtbd : null,
+      problemType: (typeof ctx.problemType === 'string') ? ctx.problemType : null,
+      focusNodeId: focusNodeId,
+      roomState: (ctx.roomState && typeof ctx.roomState === 'object') ? ctx.roomState : {},
+      packetOptional: (ctx.packet && typeof ctx.packet === 'object') ? ctx.packet : null,
+      k: 3,
+      isAdmin,
+      // Phase 353 Plan 02 Task 8 (D-353-3, R-353-H): thread the caller's
+      // tierCandidates through to rankForSelector's EXISTING seam (Phase
+      // 244 TRIG-02). navigation-engine.cjs::decide() is the producer that
+      // sets ctx.tierCandidates from the shipped section-command-ledger;
+      // absent/not-an-array is already this seam's own byte-identical
+      // no-op (f-selector-ranker.cjs:941), so no new guard is needed here.
+      tierCandidates: ctx.tierCandidates,
+    });
+    if (!Array.isArray(items) || items.length === 0) return null;
+
+    const top = items[0];
+    if (!top || typeof top.command !== 'string') return null;
+
+    // Base ranker margin (top-1 minus top-2). This is the SINGLE place the raw
+    // margin is read off the ranker; everything below reads the relevance-adjusted
+    // `margin`.
+    const rankerMargin = items.length >= 2
+      ? (items[0].score - items[1].score)
+      : items[0].score;
+
+    // SC4 MD-aware relevance (consumed, not just present): the MINTO governing
+    // thought + the active JTBD + the FEYNMAN temporal signal adjust the margin.
+    const mdAdjust = computeMdAdjust(ctx);
+
+    // SC2 graph-aware relevance (consumed, not just present): the local graph
+    // neighborhood + the memory_event tail adjust the margin when db is non-null.
+    const graphAdjust = computeGraphAdjust(ctx, focusNodeId);
+
+    // The single relevance-adjusted margin. Clamp to [0, 1]. This is the value
+    // every gate below reads -- defined ONCE, before the operator strong-signal
+    // gate, so there is no forward reference.
+    let margin = rankerMargin + mdAdjust + graphAdjust;
+    if (margin < 0) margin = 0;
+    if (margin > 1) margin = 1;
+
+    // ----- 3. OPERATOR GATE (reads the already-computed margin) -----
+    const operator = (typeof ctx.operator === 'string') ? ctx.operator : 'JUST_TALK';
+    if (operator === 'DECISION_GATE') {
+      // always eligible.
+    } else if (operator === 'METHODOLOGY') {
+      // close-of-methodology offer; eligible.
+    } else if (operator === 'EXPLORE_CAPTURE' || operator === 'BUILD_ROOM') {
+      // default-silent unless a strong signal (margin >= 2 x MARGIN_THRESHOLD).
+      if (margin < STRONG_SIGNAL_THRESHOLD) return null;
+    } else {
+      // any other operator value -> abstain.
+      return null;
+    }
+
+    // ----- 4. MARGIN FLOOR: low-confidence abstain -----
+    if (margin < MARGIN_THRESHOLD) return null;
+
+    // ----- 5. REJECTION BACKOFF (N=5 decay window) -----
+    try {
+      const decisions = require('../workflow/selector-decisions.cjs');
+      if (decisions.shouldExclude(top.command, ctx.roomState)) return null;
+    } catch (_e) {
+      // selector-decisions unavailable -> do not block the offer on a backoff read.
+    }
+
+    // ----- 6. TIER FALLBACK: tier_0 constrains to the minimal verb set -----
+    let chosen = top;
+    try {
+      const shared = require('./navigation-engine-shared.cjs');
+      const tierMode = shared.resolveTierMode(ctx.quadruple, ctx.brainAvailable);
+      if (tierMode === 'tier_0') {
+        chosen = constrainToMinimalVerb(items, shared.CANONICAL_VERBS) || top;
+        if (!chosen) return null;
+      }
+    } catch (_e) {
+      // tier resolution failure -> proceed with the top item (graceful).
+    }
+
+    // ----- EMIT: build the grounded reason first, then the six-key offer -----
+    const reason = buildReason(chosen, ctx);
+    const scope = (typeof ctx.sectionPath === 'string' && ctx.sectionPath.length > 0)
+      ? ctx.sectionPath : FALLBACK_SECTION;
+
+    // Confidence reflects the relevance-adjusted margin AND the item score, so the
+    // MD-aware + graph-aware signal is visible in the emitted confidence (not just
+    // in the abstention decision). Clamp [0, 1].
+    let confidence = clamp01((typeof chosen.score === 'number' ? chosen.score : 0) * 0.5 + margin * 0.5);
+
+    return {
+      command: chosen.command,
+      framework: (typeof chosen.framework === 'string') ? chosen.framework : null,
+      jtbd: (typeof chosen.jtbd_label === 'string') ? chosen.jtbd_label : null,
+      confidence: confidence,
+      reason: reason,
+      scope: scope,
+    };
+  } catch (_err) {
+    // Any internal failure -> abstain (never throw; the composer fallback fires).
+    return null;
+  }
+}
+
+// ---------- relevance helpers ----------
+
+/**
+ * computeMdAdjust(context) -> number (signed margin adjustment).
+ *
+ * SC4: consumes the MINTO governing thought (quadruple.reasoning.governing_thought),
+ * the active JTBD (context.jtbd), and the FEYNMAN temporal freshness leg. A present,
+ * fresh governing thought + a present active JTBD RAISE the margin; an absent / stale
+ * governing thought or a missing JTBD LOWER it. Pure read off the already-read
+ * quadruple + context (no IO). FEYNMAN temporal via the memory_event tail is folded
+ * by computeGraphAdjust when db is present; here we read the quadruple-resident
+ * reasoning leg so the MD signal still moves the margin in the db-null degrade path.
+ */
+function computeMdAdjust(context) {
+  let adjust = 0;
+
+  const reasoning = context.quadruple && context.quadruple.reasoning;
+  const gov = reasoning && typeof reasoning.governing_thought === 'string'
+    ? reasoning.governing_thought.trim() : '';
+  const govFresh = reasoning ? (reasoning.is_stale !== true) : false;
+  if (gov.length > 0 && govFresh) {
+    adjust += GOVERNING_THOUGHT_BOOST;
+  } else {
+    // absent OR stale governing thought biases toward abstention.
+    adjust -= MD_PENALTY;
+  }
+
+  const jtbd = (typeof context.jtbd === 'string') ? context.jtbd.trim() : '';
+  if (jtbd.length > 0) {
+    adjust += ACTIVE_JTBD_BOOST;
+  } else {
+    adjust -= MD_PENALTY;
+  }
+
+  return adjust;
+}
+
+/**
+ * computeGraphAdjust(context, focusNodeId) -> number (signed margin adjustment).
+ *
+ * SC2: when context.roomState.db is non-null, reads the local graph neighborhood
+ * (getNeighborhood) + the memory_event tail (findRecentChanges) + the FEYNMAN
+ * temporal signal (firstCapturedLastTouchedBySection) via the navigation.cjs
+ * chokepoint (sync, A3-safe) and turns them into a relevance signal. A dense
+ * neighborhood + a recent tail RAISE the margin; a sparse neighborhood + a stale
+ * tail leave it unmoved (bias toward abstention). When db is null, returns 0
+ * (degrade to the rank-only + MD path) without crashing. Wrapped: any read failure
+ * returns 0.
+ */
+function computeGraphAdjust(context, focusNodeId) {
+  const roomState = context.roomState;
+  const db = (roomState && roomState.db) ? roomState.db : null;
+  if (!db) return 0; // degrade gracefully; no graph read possible.
+
+  let adjust = 0;
+  try {
+    const navigation = require('./navigation.cjs');
+
+    // SC2: local graph neighborhood density as a relevance input.
+    if (focusNodeId) {
+      const neighborhood = navigation.getNeighborhood(db, focusNodeId, { maxDepth: 2, topK: 20 });
+      if (Array.isArray(neighborhood) && neighborhood.length > 0) {
+        // Scale boost by density (saturating at >= 5 neighbors).
+        const density = Math.min(1, neighborhood.length / 5);
+        adjust += NEIGHBORHOOD_BOOST * density;
+      }
+    }
+
+    // SC2/SC4: memory_event tail recency as a relevance input.
+    const recent = navigation.findRecentChanges(db, 0, { limit: 20 });
+    if (Array.isArray(recent) && recent.length > 0) {
+      const newest = recent[0];
+      const ts = newest && typeof newest.createdAt === 'number' ? newest.createdAt : null;
+      if (ts !== null) {
+        const age = Date.now() - ts;
+        if (age >= 0 && age <= RECENT_ACTIVITY_WINDOW_MS) {
+          // Linear recency: fresher tail -> larger boost.
+          const recency = 1 - (age / RECENT_ACTIVITY_WINDOW_MS);
+          adjust += RECENT_ACTIVITY_BOOST * recency;
+        }
+      }
+    }
+
+    // SC4: FEYNMAN temporal per section. A section with recorded temporal activity
+    // confirms the offer is grounded in real local history.
+    const section = (typeof context.sectionPath === 'string' && context.sectionPath.length > 0)
+      ? context.sectionPath : null;
+    if (section) {
+      const temporal = navigation.firstCapturedLastTouchedBySection(db, section);
+      if (temporal && Number.isFinite(temporal.total_events) && temporal.total_events > 0) {
+        adjust += RECENT_ACTIVITY_BOOST * 0.5;
+      }
+    }
+  } catch (_e) {
+    // Any chokepoint read failure -> contribute nothing; never crash.
+    return 0;
+  }
+  return adjust;
+}
+
+/**
+ * resolveFocusNodeId(context) -> string | null
+ *
+ * Resolves a focus node for getNeighborhood via getActiveFocus when a db handle is
+ * present. Sync, chokepoint-only. Returns null on any failure (degrade to rank-only
+ * graph path).
+ */
+function resolveFocusNodeId(context) {
+  const roomState = context.roomState;
+  const db = (roomState && roomState.db) ? roomState.db : null;
+  if (!db) return null;
+  try {
+    const navigation = require('./navigation.cjs');
+
+    // 1. An explicit active focus for this session wins.
+    const sessionId = (typeof context.sessionId === 'string') ? context.sessionId : null;
+    const focus = navigation.getActiveFocus(db, sessionId);
+    if (focus && typeof focus.focusNodeId === 'string') return focus.focusNodeId;
+
+    // 2. The section node (the navigator's current scope) is the natural focus.
+    //    The canonical id convention is 'section:<slug>'. Passing it to the
+    //    chokepoint getNeighborhood resolves a real neighborhood when the node
+    //    exists, and getNeighborhood returns [] when it does not (no crash).
+    const section = (typeof context.sectionPath === 'string' && context.sectionPath.length > 0)
+      ? context.sectionPath : null;
+    if (section) {
+      const sectionNodeId = 'section:' + section;
+      const nb = navigation.getNeighborhood(db, sectionNodeId, { maxDepth: 1, topK: 1 });
+      if (Array.isArray(nb) && nb.length > 0) return sectionNodeId;
+    }
+
+    // 3. Fall back to the most recent memory_event's target node.
+    const recent = navigation.findRecentChanges(db, 0, { limit: 5 });
+    if (Array.isArray(recent)) {
+      for (const ev of recent) {
+        if (ev && typeof ev.targetNodeId === 'string' && ev.targetNodeId.length > 0) {
+          return ev.targetNodeId;
+        }
+      }
+    }
+  } catch (_e) {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * constrainToMinimalVerb(items, canonicalVerbs) -> item | null
+ *
+ * tier_0 fallback: return the first ranked item whose command maps to the hardcoded
+ * minimal verb set (Run Methodology / Reformulate / Free-Text). When none of the
+ * ranked items map to the minimal set, fall back to the top item so the resolver
+ * still emits a single calibrated offer rather than going dark in tier_0.
+ */
+function constrainToMinimalVerb(items, canonicalVerbs) {
+  const minimal = new Set(['run methodology', 'reformulate', 'free-text']);
+  // canonicalVerbs[9] === 'Free-Text'; the minimal set is the cold-start vocabulary.
+  if (Array.isArray(canonicalVerbs)) { /* referenced for the canon minimal set */ }
+  for (const it of items) {
+    if (!it || typeof it.command !== 'string') continue;
+    const slug = it.command.replace(/^\/?mos:/, '').replace(/-/g, ' ').toLowerCase();
+    if (minimal.has(slug)) return it;
+  }
+  return items.length > 0 ? items[0] : null;
+}
+
+/**
+ * buildReason(top, context) -> string
+ *
+ * Builds a grounded reason that PREPENDS a [[wikilink]] so the presenter's
+ * section-name grounding gate (isReasonGrounded -> 'ok') passes. Weaves in the
+ * active JTBD and / or the governing thought theme when present so the reason
+ * reflects the MD-aware signal, then appends the item jtbd_summary. Guarantees
+ * length >= 15 and NEVER emits an undefined-valued wikilink (falsy sectionPath uses
+ * a defined fallback token).
+ */
+function buildReason(top, context) {
+  const section = (typeof context.sectionPath === 'string' && context.sectionPath.length > 0)
+    ? context.sectionPath : FALLBACK_SECTION;
+  const wikilink = '[[' + section + ']]';
+
+  const parts = [wikilink];
+
+  const jtbd = (typeof context.jtbd === 'string') ? context.jtbd.trim() : '';
+  if (jtbd.length > 0) {
+    parts.push('to ' + jtbd);
+  }
+
+  const reasoning = context.quadruple && context.quadruple.reasoning;
+  const gov = reasoning && typeof reasoning.governing_thought === 'string'
+    ? reasoning.governing_thought.trim() : '';
+  if (gov.length > 0) {
+    parts.push('(governing thought: ' + gov + ')');
+  }
+
+  const summary = (typeof top.jtbd_summary === 'string' && top.jtbd_summary.length > 0)
+    ? top.jtbd_summary.trim() : '';
+  if (summary.length > 0) {
+    parts.push(summary);
+  }
+
+  let reason = parts.join(' ').trim();
+
+  // Guarantee minimum grounded length even when JTBD / governing thought / summary
+  // are all absent. The wikilink already satisfies the section-name regex; pad with
+  // a section reference so the length floor (>= 15) is always cleared.
+  if (reason.length < 15) {
+    reason = wikilink + ' next move for this section';
+  }
+  return reason;
+}
+
+function clamp01(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 148-05 Task 1 (IRW-05, D-07/D-08): the ONE F.1 host.
+// ---------------------------------------------------------------------------
+// The three suggest surfaces -- F.1 Next Move, the offer-resolver
+// (resolveOfferNextStep, Phase 135), and suggest-next -- now converge on a
+// SINGLE render door: selector-dispatcher.pickShape({ requestedShape: 'F.1' }).
+// This is the IDENTICAL pattern lib/core/research-filing-selector.cjs uses; it
+// is NOT a second bespoke renderer. resolveOffer's calibration logic (the ONE
+// offer it computes) is untouched -- only the rendering door is added here.
+//
+// SEED-020 single-door discipline: no bespoke AskUserQuestion payload is built
+// anywhere in this file. The free-text capture row for the cold-room lead is
+// the dispatcher's 'text' archetype, surfaced via the verb list that pickShape
+// renders. Part 8 doctrine: only the resolved generic framework name reaches
+// command-resolver.commandsForFramework; the raw intent text NEVER crosses into
+// a Brain or web query.
+
+const HOST_SHAPE = 'F.1';
+
+// The tier_0 canon fallback verbs (Canon Part 3 Tier 0 minimal set) kept BENEATH
+// the cold-room help lead.
+const TIER0_FALLBACK_VERBS = ['Run Methodology', 'Reformulate', 'Free-Text'];
+
+// The cold-room help lead row (D-07). A free-text intent-capture row whose typed
+// intent resolves through command-resolver + the JTBD ranker. Rendered as the
+// dispatcher 'text' archetype (no bespoke AskUserQuestion).
+const COLD_ROOM_LEAD_VERB = 'What can I help you with?';
+
+// The standing trio (Plan 03) -- always present outside the MAX_K cap.
+const STANDING_TRIO_VERBS = ['File', 'Brain review', 'Free-Text'];
+
+function _modeToTier(tierMode) {
+  if (tierMode === 'mode_a') return 2;
+  if (tierMode === 'mode_b') return 1;
+  return 0; // tier_0
+}
+
+/**
+ * resolveTierModeForHost(context) -> 'mode_a' | 'mode_b' | 'tier_0'
+ *
+ * Thin wrapper over navigation-engine-shared.resolveTierMode so both the offer
+ * render path and the suggest-next path agree on the tier. Never throws; any
+ * failure degrades to 'tier_0' (the safe cold-start default).
+ */
+function resolveTierModeForHost(context) {
+  try {
+    const shared = require('./navigation-engine-shared.cjs');
+    const ctx = (context && typeof context === 'object') ? context : {};
+    return shared.resolveTierMode(ctx.quadruple, ctx.brainAvailable);
+  } catch (_e) {
+    return 'tier_0';
+  }
+}
+
+/**
+ * hasJtbdSignal(context) -> boolean
+ *
+ * A room has a JTBD signal when a non-empty active-JTBD intent leg is present.
+ * The cold-room help lead fires when there is NO JTBD signal OR the tier is
+ * tier_0; once a JTBD signal exists, the six intelligence reaches lead instead
+ * (D-07).
+ */
+function hasJtbdSignal(context) {
+  const ctx = (context && typeof context === 'object') ? context : {};
+  return typeof ctx.jtbd === 'string' && ctx.jtbd.trim().length > 0;
+}
+
+/**
+ * matchReachesForIntent(framework) -> string[]
+ *
+ * D-08 intent matching: the resolved GENERIC framework name (never the raw
+ * intent text) crosses into command-resolver.commandsForFramework to produce the
+ * matched reaches. Returns the matched command list (or []). Part 8: this is the
+ * ONLY value derived from the cold-room lead that leaves the local render path,
+ * and it is a generic framework handle, never user content.
+ */
+function matchReachesForIntent(framework) {
+  if (typeof framework !== 'string' || framework.trim().length === 0) return [];
+  try {
+    const resolver = require('../workflow/command-resolver.cjs');
+    return resolver.commandsForFramework(framework.trim());
+  } catch (_e) {
+    return [];
+  }
+}
+
+/**
+ * buildColdRoomVerbs(context) -> string[]
+ *
+ * The cold-room (tier_0 / no-JTBD-signal) verb list. The help lead leads; the
+ * tier_0 canon fallback (Run Methodology / Reformulate / Free-Text) sits
+ * beneath it; the standing trio is appended (deduped, Free-Text always last).
+ */
+function buildColdRoomVerbs(context) {
+  const verbs = [COLD_ROOM_LEAD_VERB];
+  for (const v of TIER0_FALLBACK_VERBS) {
+    if (verbs.indexOf(v) === -1) verbs.push(v);
+  }
+  for (const v of STANDING_TRIO_VERBS) {
+    if (verbs.indexOf(v) === -1) verbs.push(v);
+  }
+  // Free-Text always last (the dispatcher also enforces this; we keep the list
+  // tidy at the source).
+  const withoutFreeText = verbs.filter(function (v) { return v !== 'Free-Text'; });
+  withoutFreeText.push('Free-Text');
+  return withoutFreeText;
+}
+
+/**
+ * renderOfferThroughHost(offer, context) -> dispatcher envelope
+ *
+ * Render door for a single resolved offer (resolveOffer output). Routes through
+ * selector-dispatcher.pickShape({ requestedShape: 'F.1', ... }) -- the ONE host,
+ * not a bespoke renderer. The offer's command becomes the recommendedVerb when
+ * the tier is mode_a (the dispatcher renders the marker only in Mode A at
+ * confidence >= 0.7, enforced there, not re-implemented here).
+ *
+ * Returns the dispatcher's { shape, rendered } envelope. Never throws.
+ */
+function renderOfferThroughHost(offer, context) {
+  const ctx = (context && typeof context === 'object') ? context : {};
+  const tierMode = resolveTierModeForHost(ctx);
+  const tier = _modeToTier(tierMode);
+
+  // A cold room (tier_0 or no JTBD signal) leads with the help row regardless of
+  // whether an offer was computed.
+  if (tierMode === 'tier_0' || !hasJtbdSignal(ctx)) {
+    return renderColdRoomLead(ctx);
+  }
+
+  const verbs = (offer && typeof offer.command === 'string')
+    ? [offer.command].concat(STANDING_TRIO_VERBS)
+    : STANDING_TRIO_VERBS.slice();
+  // dedupe, Free-Text last.
+  const seen = [];
+  for (const v of verbs) { if (seen.indexOf(v) === -1) seen.push(v); }
+  const tidy = seen.filter(function (v) { return v !== 'Free-Text'; });
+  tidy.push('Free-Text');
+
+  const recommendedVerb = (tierMode === 'mode_a' && offer && typeof offer.command === 'string')
+    ? offer.command : null;
+
+  return _pickHost({
+    tier: tier,
+    verbs: tidy,
+    recommendedVerb: recommendedVerb,
+    header: '-- mindrianOS -- next move --',
+  });
+}
+
+/**
+ * renderColdRoomLead(context) -> dispatcher envelope
+ *
+ * The cold-room "what can I help you with" lead (D-07). Routes through the SAME
+ * pickShape host with the 'text' archetype hint (reachKey 'free_text') so the
+ * dispatcher constructs the free-text capture row. The tier_0 canon fallback +
+ * the standing trio sit beneath the lead. NO bespoke AskUserQuestion.
+ */
+function renderColdRoomLead(context) {
+  const ctx = (context && typeof context === 'object') ? context : {};
+  const verbs = buildColdRoomVerbs(ctx);
+  return _pickHost({
+    tier: 0 === _modeToTier(resolveTierModeForHost(ctx)) ? 1 : _modeToTier(resolveTierModeForHost(ctx)),
+    verbs: verbs,
+    recommendedVerb: null,
+    header: '-- mindrianOS -- what can I help you with? --',
+    reachKey: 'free_text',
+  });
+}
+
+/**
+ * suggestNext(context) -> dispatcher envelope
+ *
+ * The suggest-next surface (IRW-05). It computes the single calibrated offer via
+ * the SAME resolveOffer calibration, then renders it through the SAME pickShape
+ * host as the offer-resolver -- one ranking, one render path. When resolveOffer
+ * abstains (null), the host still renders the standing trio (or the cold-room
+ * lead), so the navigator is never left without a next move. Never throws.
+ */
+function suggestNext(context) {
+  try {
+    const offer = resolveOffer(context);
+    // Quick-task 20260702: persist the routed next step to the LOCAL side-channel
+    // so the statusline "Next:" cue goes LIVE (closes the 192-04 deriveNextMove
+    // NAMED DEBT). This is the WRITE side; the read side is the hot-path cockpit
+    // signal. When resolveOffer abstained (null), persistNextMove CLEARS the cache
+    // so the statusline falls back to the jtbd proxy rather than pinning a stale
+    // step. LOCAL only (Part 8), and off the hot statusline path (this is the
+    // command-time router surface). Fully guarded: a persist failure never affects
+    // the returned render.
+    try {
+      const nextMoveCache = require('../statusline/next-move-cache.cjs');
+      nextMoveCache.persistNextMove(offer);
+    } catch (_persistErr) { /* graceful: the read side degrades to the jtbd proxy */ }
+    return renderOfferThroughHost(offer, context);
+  } catch (_e) {
+    // Any failure -> degrade to the cold-room lead (never crash the turn).
+    return renderColdRoomLead(context);
+  }
+}
+
+/**
+ * _pickHost(payloadFields) -> dispatcher envelope
+ *
+ * The single call site of selector-dispatcher.pickShape for this module. Every
+ * suggest surface in this file funnels through here so there is provably ONE
+ * render door (the IRW-05 seam asserts pickShape is the only renderer invoked).
+ */
+function _pickHost(fields) {
+  try {
+    const dispatcher = require('../hmi/selector-dispatcher.cjs');
+    return dispatcher.pickShape({
+      requestedShape: HOST_SHAPE,
+      tier: fields.tier,
+      payload: {
+        verbs: fields.verbs,
+        recommendedVerb: fields.recommendedVerb || null,
+        header: fields.header,
+        reachKey: fields.reachKey || null,
+      },
+    });
+  } catch (_e) {
+    return { shape: 'error', rendered: { error: 'offer_host_dispatch_failed' } };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 191 Plan 04 (191-04, Wave 3 Surface B, D-03/D-03a): fold the LOCAL
+// command-recommendation candidate into the F.7 dial's ReachList as the
+// recommended single ranked reach.
+// ---------------------------------------------------------------------------
+// decide() (Wave 3a, navigation-engine.cjs applyProjectionLift) already
+// enriches trace.projection_offer.command_recommendation with the D-03 lift
+// candidate { command_slug, hitl_shape, confidence }. This composer reads
+// THAT existing field (191-IFACE.md section 6) and rescores the ReachList's
+// existing 'brain_consult' member so it renders through the ALREADY-SHIPPED
+// dial-presenter.renderDial pipeline. Mints NO new LarryReach (D-03): the
+// 6-reach bank (dial-reach-orchestrator.cjs REACH_DEFS) and DIAL_REACH_K=6
+// are never touched here -- only the score/recommended/label carried on the
+// EXISTING brain_consult row change, for THIS turn's render.
+//
+// LOCAL-ONLY + SYNC (A3 LOCKED, same discipline as resolveOffer above): pure
+// function, no Brain packet, no await, no require of navigation-engine.cjs
+// (the gate was already applied upstream by the lift module; this composer
+// never re-derives or re-weights the confidence, D-02).
+//
+// R7 (never throws): a missing/malformed command_recommendation, a missing
+// reachList, or a reachList with no 'brain_consult' member all degrade to
+// the INPUT reachList returned unchanged (graceful degrade, byte-equivalent
+// to the pre-191 render).
+
+const BRAIN_CONSULT_REACH_ID = 'brain_consult';
+
+/**
+ * composeCommandRecommendationReach(reachList, trace) -> ReachList
+ *
+ * reachList: the dial-reach-orchestrator.buildReachList(...) output
+ *   { reaches, tier_mode, offered_count, total_count, pinned_suggestion }.
+ * trace: decide()'s decision_trace (or any object carrying
+ *   trace.projection_offer.command_recommendation, 191-IFACE.md section 6).
+ *
+ * Returns a NEW ReachList (never mutates the input) whose 'brain_consult'
+ * reach is rescored per the IFACE section 6 row contract:
+ *   { reach_id: 'brain_consult', label: command_recommendation.command_slug,
+ *     score: command_recommendation.confidence, recommended: true }
+ * plus a `hitl_shape` passthrough (191-IFACE.md section 4 enum) carried on
+ * the row for the confirm affordance. Every OTHER reach's `recommended` flag
+ * is forced false so exactly one reach is marked this turn (R8 recommend-
+ * not-trigger: one candidate, never a second selection brain). The reaches
+ * are re-sorted desc by score (mirroring buildReachList's own ordering
+ * discipline) so the boosted row surfaces inside the chooser's MAX_K=3 /
+ * DIAL_REACH_K=6 window when it clears the gate.
+ *
+ * When command_recommendation is absent/malformed, OR the reachList carries
+ * no 'brain_consult' member, the INPUT reachList is returned UNCHANGED
+ * (graceful degrade -- byte-equivalent to the pre-191 reachList).
+ */
+function composeCommandRecommendationReach(reachList, trace) {
+  try {
+    const rl = (reachList && typeof reachList === 'object') ? reachList : null;
+    if (!rl || !Array.isArray(rl.reaches)) return reachList;
+
+    const projectionOffer = trace && typeof trace === 'object' ? trace.projection_offer : null;
+    const rec = projectionOffer && typeof projectionOffer === 'object'
+      ? projectionOffer.command_recommendation : null;
+
+    if (!rec || typeof rec !== 'object'
+        || typeof rec.command_slug !== 'string' || rec.command_slug.length === 0
+        || typeof rec.confidence !== 'number') {
+      return reachList; // graceful degrade: pre-191 reachList unchanged.
+    }
+
+    const idx = rl.reaches.findIndex(function (r) { return r && r.reach_id === BRAIN_CONSULT_REACH_ID; });
+    if (idx === -1) return reachList; // no brain_consult member -> degrade unchanged.
+
+    // Clone -- this composer never mutates the caller's reachList (pure).
+    const reaches = rl.reaches.map(function (r) { return Object.assign({}, r); });
+    reaches[idx] = Object.assign({}, reaches[idx], {
+      score: clamp01(rec.confidence),
+      recommended: true,
+      command_slug: rec.command_slug,
+      hitl_shape: (typeof rec.hitl_shape === 'string') ? rec.hitl_shape : 'ask',
+    });
+
+    // R8: exactly one recommended reach this turn -- the lifted candidate IS
+    // the recommendation; every other reach's frozen-gate marker is cleared.
+    for (let i = 0; i < reaches.length; i++) {
+      if (i !== idx) reaches[i].recommended = false;
+    }
+
+    // Re-sort desc by score so the recommended reach surfaces within the
+    // chooser's top-K window (same ordering discipline buildReachList uses).
+    reaches.sort(function (a, b) { return b.score - a.score; });
+
+    return Object.assign({}, rl, { reaches: reaches });
+  } catch (_err) {
+    return reachList; // never throw (R7); degrade to the input unchanged.
+  }
+}
+
+module.exports = {
+  resolveOffer,
+  // Phase 148-05 (IRW-05): the ONE F.1 host. offer-resolver + suggest-next both
+  // render through selector-dispatcher.pickShape -- single code path, no second
+  // bespoke renderer.
+  renderOfferThroughHost,
+  renderColdRoomLead,
+  suggestNext,
+  matchReachesForIntent,
+  hasJtbdSignal,
+  resolveTierModeForHost,
+  buildColdRoomVerbs,
+  MARGIN_THRESHOLD,
+  STRONG_SIGNAL_THRESHOLD,
+  HOST_SHAPE,
+  COLD_ROOM_LEAD_VERB,
+  TIER0_FALLBACK_VERBS,
+  STANDING_TRIO_VERBS,
+  // Phase 191 Plan 04 (Wave 3 Surface B, D-03): folds the command-recommendation
+  // candidate into the F.7 dial ReachList as the recommended single ranked reach.
+  composeCommandRecommendationReach,
+  BRAIN_CONSULT_REACH_ID,
+};

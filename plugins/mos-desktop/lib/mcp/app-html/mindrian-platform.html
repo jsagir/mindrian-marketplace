@@ -1,0 +1,1842 @@
+<!DOCTYPE html>
+<!-- PARKED 2026-10-02 (Phase 369, D-02): this page is loaded by nothing (lib/mcp/app-views.cjs registers only dashboard, wiki and graph) and its callServerTool is a stub that calls nothing. It is kept for reference, not deleted, and is not a live surface. The browser workspace is the Phase 369 UI shell; MCP Apps stay the Desktop and Cowork face. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="generator" content="MindrianOS -- AI Innovation Co-Founder">
+<title>MindrianOS Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:wght@400;600;700;800&family=Source+Serif+4:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================
+   DE STIJL DESIGN SYSTEM
+   Ported from export-template.html
+   The REAL MindrianOS visual identity
+   ============================================ */
+:root {
+  /* --- Mondrian Palette --- */
+  --mondrian-red: #C23B22;
+  --mondrian-blue: #1B3B6F;
+  --mondrian-yellow: #E8B931;
+  --mondrian-black: #1A1A1A;
+  --mondrian-white: #F7F3ED;
+  --mondrian-gray: #D4CFC7;
+  --accent-green: #2D6B4A;
+  --accent-sienna: #B5602A;
+
+  /* --- Grid Borders --- */
+  --grid-border: 5px solid var(--mondrian-black);
+  --grid-border-thin: 3px solid var(--mondrian-black);
+
+  /* --- Semantic Colors (De Stijl adapted) --- */
+  --color-success: #2D6B4A;
+  --color-danger: #C23B22;
+  --color-warning: #E8B931;
+  --color-info: #1B3B6F;
+
+  /* --- Typography --- */
+  --font-headline: "Playfair Display", Georgia, serif;
+  --font-body: "Source Serif 4", Georgia, serif;
+  --font-ui: "DM Sans", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* --- Spacing --- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 40px;
+  --s8: 48px;
+
+  /* --- Animation --- */
+  --transition-fast: 150ms ease-out;
+  --transition-base: 200ms ease-out;
+  --transition-slow: 300ms ease;
+
+  /* --- Focus --- */
+  --focus-ring: 3px solid var(--mondrian-yellow);
+  --focus-offset: -3px;
+
+  /* --- Touch Target --- */
+  --touch-min: 44px;
+
+  /* --- Bullet Chart Zones --- */
+  --zone-danger: #F0DDD9;
+  --zone-warning: #F5EDD4;
+  --zone-good: #D9EAE0;
+}
+
+/* --- Reduced Motion --- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================
+   RESET & BASE
+   ============================================ */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--mondrian-black);
+  color: var(--mondrian-black);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* --- Focus Visible --- */
+*:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  z-index: 11;
+}
+
+/* ============================================
+   PLATFORM SHELL
+   ============================================ */
+.platform {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+  background: var(--mondrian-black);
+}
+
+/* ============================================
+   TOPBAR -- Black background, logo blocks, editorial
+   Matches export-template.html exactly
+   ============================================ */
+.topbar {
+  height: 56px;
+  background: var(--mondrian-black);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  border-bottom: var(--grid-border);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.topbar-logo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.topbar-logo-block {
+  width: 8px;
+  height: 24px;
+}
+.topbar-logo-block.r { background: var(--mondrian-red); }
+.topbar-logo-block.b { background: var(--mondrian-blue); }
+.topbar-logo-block.y { background: var(--mondrian-yellow); }
+
+.topbar-title {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--mondrian-white);
+}
+
+.topbar-badge {
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--mondrian-black);
+  background: var(--mondrian-yellow);
+  padding: 4px 14px;
+  display: inline-block;
+}
+
+/* --- Tab Navigation --- */
+.topbar-nav {
+  display: flex;
+  gap: 0;
+}
+
+.topbar-nav button {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mondrian-gray);
+  background: transparent;
+  border: none;
+  padding: 8px 18px;
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-nav button:hover {
+  color: var(--mondrian-white);
+}
+
+.topbar-nav button.active {
+  color: var(--mondrian-white);
+  background: rgba(255,255,255,0.08);
+}
+
+.topbar-nav button.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 24px;
+  height: 3px;
+  background: var(--mondrian-yellow);
+}
+
+.topbar-nav button svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* ============================================
+   CONTENT AREA
+   ============================================ */
+.content {
+  overflow-y: auto;
+  min-height: 0;
+  background: var(--mondrian-black);
+}
+
+/* --- View Transitions --- */
+.view {
+  opacity: 1;
+  transition: opacity var(--transition-fast);
+}
+.view[aria-hidden="true"] {
+  display: none;
+}
+
+/* ============================================
+   VIEW 1: MULLINS ASSESSMENT (Home)
+   Three Mondrian columns with colored backgrounds
+   ============================================ */
+.mullins {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 5px;
+  background: var(--mondrian-black);
+  padding: 5px;
+  min-height: calc(100vh - 56px - 36px - 80px);
+}
+
+.mullins-column {
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  position: relative;
+}
+.mullins-column.real {
+  background: var(--mondrian-blue);
+  color: var(--mondrian-white);
+}
+.mullins-column.win {
+  background: var(--mondrian-yellow);
+  color: var(--mondrian-black);
+}
+.mullins-column.worth {
+  background: var(--mondrian-red);
+  color: var(--mondrian-white);
+}
+
+.mullins-header {
+  font-family: var(--font-headline);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1.2;
+  padding-bottom: var(--s3);
+  border-bottom: 2px solid rgba(255,255,255,0.2);
+}
+.mullins-column.win .mullins-header {
+  border-bottom-color: rgba(0,0,0,0.15);
+}
+
+/* --- Mullins Cell (evidence meter) --- */
+.mullins-cell {
+  padding: var(--s4);
+  background: rgba(255,255,255,0.08);
+  cursor: pointer;
+  transition: transform var(--transition-slow), box-shadow var(--transition-slow);
+  min-height: var(--touch-min);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.mullins-column.win .mullins-cell {
+  background: rgba(0,0,0,0.06);
+}
+.mullins-cell:hover {
+  transform: scale(1.02);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 10;
+}
+
+.cell-question {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+/* --- Bullet Chart --- */
+.bullet-chart {
+  position: relative;
+  height: 20px;
+  overflow: hidden;
+}
+.mullins-column.real .bullet-chart,
+.mullins-column.worth .bullet-chart {
+  background: rgba(255,255,255,0.1);
+}
+.mullins-column.win .bullet-chart {
+  background: rgba(0,0,0,0.08);
+}
+
+/* Qualitative zones */
+.bullet-zone {
+  position: absolute;
+  top: 0;
+  height: 100%;
+}
+.bullet-zone.danger {
+  left: 0;
+  width: 33.33%;
+  background: rgba(194,59,34,0.25);
+}
+.bullet-zone.ok {
+  left: 33.33%;
+  width: 33.33%;
+  background: rgba(232,185,49,0.2);
+}
+.bullet-zone.good {
+  left: 66.66%;
+  width: 33.34%;
+  background: rgba(45,107,74,0.25);
+}
+.mullins-column.win .bullet-zone.danger { background: rgba(194,59,34,0.2); }
+.mullins-column.win .bullet-zone.ok { background: rgba(181,96,42,0.15); }
+.mullins-column.win .bullet-zone.good { background: rgba(45,107,74,0.2); }
+
+/* Current value bar */
+.bullet-bar {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  height: 10px;
+  transition: width var(--transition-slow);
+  z-index: 2;
+}
+.bullet-bar.high { background: var(--accent-green); }
+.bullet-bar.mid { background: var(--accent-sienna); }
+.bullet-bar.low { background: var(--mondrian-red); }
+.bullet-bar.none { background: var(--mondrian-gray); width: 0 !important; }
+.mullins-column.win .bullet-bar.high { background: var(--accent-green); }
+.mullins-column.win .bullet-bar.mid { background: var(--accent-sienna); }
+.mullins-column.win .bullet-bar.low { background: var(--mondrian-red); }
+
+/* Target marker */
+.bullet-target {
+  position: absolute;
+  top: 2px;
+  height: 16px;
+  width: 2px;
+  z-index: 3;
+}
+.mullins-column.real .bullet-target,
+.mullins-column.worth .bullet-target {
+  background: var(--mondrian-white);
+}
+.mullins-column.win .bullet-target {
+  background: var(--mondrian-black);
+}
+
+.cell-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cell-score {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.cell-artifacts {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.7;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.cell-artifacts svg {
+  width: 10px;
+  height: 10px;
+  opacity: 0.6;
+}
+
+/* --- Column Footer --- */
+.mullins-footer {
+  margin-top: auto;
+  padding-top: var(--s3);
+  border-top: 2px solid rgba(255,255,255,0.15);
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+.mullins-column.win .mullins-footer {
+  border-top-color: rgba(0,0,0,0.12);
+}
+.mullins-footer .gap-count {
+  opacity: 0.9;
+}
+.mullins-footer .evidence-count {
+  opacity: 0.75;
+}
+
+/* --- Brain Suggestion Strip --- */
+.brain-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+  padding: var(--s5);
+  background: var(--mondrian-black);
+  margin: 0 5px 5px 5px;
+  min-height: 64px;
+}
+
+.suggestion-content {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  flex: 1;
+  min-width: 0;
+}
+
+.suggestion-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(232,185,49,0.12);
+  border: 1px solid rgba(232,185,49,0.3);
+}
+.suggestion-icon svg {
+  width: 18px;
+  height: 18px;
+  color: var(--mondrian-yellow);
+}
+
+.suggestion-text {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--mondrian-white);
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.suggestion-framework {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--mondrian-yellow);
+}
+.suggestion-area {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--mondrian-red);
+}
+
+.btn-run {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0 var(--s5);
+  min-height: var(--touch-min);
+  min-width: 100px;
+  background: var(--mondrian-yellow);
+  color: var(--mondrian-black);
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform 0.15s ease;
+  flex-shrink: 0;
+}
+.btn-run:hover {
+  background: #D4A82A;
+  transform: translateY(-1px);
+}
+.btn-run:active {
+  transform: scale(0.97);
+}
+
+/* ============================================
+   VIEW 2: ROOM (Command Center)
+   ============================================ */
+
+/* --- Cascade Alerts --- */
+.cascade-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 5px;
+  background: var(--mondrian-black);
+}
+
+.alert-card {
+  display: flex;
+  align-items: center;
+  gap: var(--s5);
+  padding: var(--s4) var(--s5);
+  background: var(--mondrian-white);
+  border-left: 5px solid;
+  min-height: var(--s8);
+}
+.alert-card.contradiction { border-left-color: var(--mondrian-red); }
+.alert-card.convergence { border-left-color: var(--mondrian-blue); }
+.alert-card.invalidation { border-left-color: var(--mondrian-yellow); }
+
+.alert-type-badge {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--mondrian-black);
+  flex-shrink: 0;
+  width: 110px;
+  opacity: 0.6;
+}
+
+.alert-text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--mondrian-black);
+  flex: 1;
+  line-height: 1.5;
+}
+
+.alert-actions {
+  display: flex;
+  gap: var(--s2);
+  flex-shrink: 0;
+}
+
+.btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 var(--s3);
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+  border: 1px solid rgba(26,26,26,0.2);
+  border-radius: 0;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: scale(0.97); }
+
+.btn-approve {
+  background: rgba(45,107,74,0.1);
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+}
+.btn-approve:hover {
+  background: var(--accent-green);
+  color: var(--mondrian-white);
+}
+.btn-reject {
+  background: rgba(194,59,34,0.1);
+  color: var(--mondrian-red);
+  border-color: var(--mondrian-red);
+}
+.btn-reject:hover {
+  background: var(--mondrian-red);
+  color: var(--mondrian-white);
+}
+.btn-defer {
+  background: rgba(26,26,26,0.05);
+  color: var(--mondrian-black);
+  border-color: var(--mondrian-gray);
+}
+.btn-defer:hover {
+  background: var(--mondrian-gray);
+  color: var(--mondrian-black);
+}
+
+/* --- Mondrian Section Grid --- */
+.mondrian-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  grid-auto-rows: minmax(160px, 1fr);
+  gap: 5px;
+  background: var(--mondrian-black);
+  padding: 0 5px 5px 5px;
+}
+
+.section-card {
+  padding: 28px 24px;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: transform var(--transition-slow), box-shadow var(--transition-slow);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: calc(var(--touch-min) * 2);
+  opacity: 0;
+  animation: cellAssemble 0.6s ease forwards;
+}
+.section-card:hover {
+  transform: scale(1.02);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 10;
+}
+.section-card.span-2 {
+  grid-row: span 2;
+}
+
+@keyframes cellAssemble {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Section card color assignments */
+.section-card:nth-child(1) { background: var(--mondrian-blue); color: var(--mondrian-white); }
+.section-card:nth-child(2) { background: var(--mondrian-yellow); color: var(--mondrian-black); }
+.section-card:nth-child(3) { background: var(--mondrian-white); color: var(--mondrian-black); }
+.section-card:nth-child(4) { background: var(--mondrian-white); color: var(--mondrian-black); }
+.section-card:nth-child(5) { background: var(--mondrian-red); color: var(--mondrian-white); }
+
+.section-health {
+  position: absolute;
+  top: var(--s3);
+  right: var(--s3);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.health-good { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+.health-warning { background: var(--color-warning); box-shadow: 0 0 6px var(--color-warning); }
+.health-gap { background: var(--color-danger); box-shadow: 0 0 6px var(--color-danger); }
+
+.section-name {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: var(--s2);
+  opacity: 0.7;
+}
+
+.section-count {
+  font-family: var(--font-headline);
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.section-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  margin-top: var(--s1);
+}
+
+/* ============================================
+   VIEW 3: KNOWLEDGE GRAPH
+   ============================================ */
+.graph-view {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 5px;
+  background: var(--mondrian-black);
+  min-height: calc(100vh - 56px - 36px);
+}
+
+.graph-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  background: var(--mondrian-white);
+  padding: var(--s3) var(--s5);
+}
+
+.graph-filters {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0 var(--s4);
+  min-height: var(--touch-min);
+  background: transparent;
+  color: var(--mondrian-black);
+  border: 1px solid var(--mondrian-gray);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.filter-btn:hover {
+  border-color: var(--mondrian-black);
+}
+.filter-btn.active {
+  background: var(--mondrian-black);
+  color: var(--mondrian-white);
+  border-color: var(--mondrian-black);
+}
+
+.graph-search input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--mondrian-white);
+  color: var(--mondrian-black);
+  border: var(--grid-border-thin);
+  padding: 0 var(--s4);
+  min-height: var(--touch-min);
+  min-width: 200px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+.graph-search input:focus {
+  border-color: var(--mondrian-yellow);
+}
+.graph-search input::placeholder {
+  color: var(--mondrian-gray);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.graph-container {
+  background: var(--mondrian-white);
+  flex: 1;
+  min-height: 400px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Decorative Mondrian grid background */
+.graph-bg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 3fr 1fr 2fr;
+  grid-template-rows: 2fr 1fr 1fr;
+  gap: 5px;
+  background: var(--mondrian-black);
+  opacity: 0.08;
+}
+.graph-bg-cell { background: var(--mondrian-white); }
+.graph-bg-cell:nth-child(2) { background: var(--mondrian-blue); }
+.graph-bg-cell:nth-child(5) { background: var(--mondrian-red); }
+.graph-bg-cell:nth-child(7) { background: var(--mondrian-yellow); }
+
+.graph-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s4);
+  z-index: 1;
+}
+.graph-placeholder svg {
+  width: 48px;
+  height: 48px;
+  color: var(--mondrian-black);
+  opacity: 0.2;
+}
+.graph-placeholder-title {
+  font-family: var(--font-headline);
+  font-size: 20px;
+  color: var(--mondrian-black);
+  opacity: 0.4;
+}
+.graph-placeholder-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mondrian-black);
+  opacity: 0.3;
+  letter-spacing: 0.05em;
+}
+
+/* ============================================
+   VIEW 4: CHAIN (Framework Explorer)
+   ============================================ */
+.chain-view {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 5px;
+  background: var(--mondrian-black);
+  min-height: calc(100vh - 56px - 36px);
+}
+
+.chain-header-bar {
+  background: var(--mondrian-white);
+  padding: var(--s4) var(--s5);
+}
+.chain-label {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--mondrian-black);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  opacity: 0.6;
+}
+
+.chain-track-wrapper {
+  background: var(--mondrian-white);
+  padding: var(--s5);
+}
+.chain-track {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  padding: var(--s3) 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chain-node {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  padding: 0 var(--s4);
+  min-height: var(--touch-min);
+  display: flex;
+  align-items: center;
+  background: var(--mondrian-white);
+  border: var(--grid-border-thin);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  color: var(--mondrian-black);
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.chain-node:hover {
+  background: var(--mondrian-gray);
+  transform: translateY(-1px);
+}
+.chain-node.active {
+  background: var(--mondrian-blue);
+  border-color: var(--mondrian-blue);
+  color: var(--mondrian-white);
+}
+
+.chain-arrow {
+  flex-shrink: 0;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chain-arrow svg {
+  width: 20px;
+  height: 20px;
+  color: var(--mondrian-black);
+  opacity: 0.3;
+}
+
+/* Chain detail panel */
+.chain-detail {
+  background: var(--mondrian-white);
+  border-left: 5px solid var(--mondrian-blue);
+  padding: var(--s6) var(--s5);
+  flex: 1;
+}
+
+.chain-detail-title {
+  font-family: var(--font-headline);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--mondrian-black);
+  margin-bottom: var(--s3);
+  line-height: 1.25;
+}
+
+.chain-detail-stats {
+  display: flex;
+  gap: var(--s5);
+  margin-bottom: var(--s4);
+}
+
+.chain-stat {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--mondrian-black);
+  opacity: 0.6;
+}
+.chain-stat-value {
+  font-weight: 600;
+  color: var(--mondrian-blue);
+  opacity: 1;
+}
+
+.chain-detail-desc {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--mondrian-black);
+  line-height: 1.7;
+  max-width: 60ch;
+  opacity: 0.85;
+}
+
+/* ============================================
+   VIEW 5: CLAIMS (Assumption Tracker)
+   ============================================ */
+.claims-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  background: var(--mondrian-black);
+  padding: 5px;
+}
+
+.claim-card {
+  background: var(--mondrian-white);
+  padding: var(--s5);
+  border-left: 5px solid;
+  cursor: pointer;
+  transition: transform var(--transition-slow), box-shadow var(--transition-slow);
+  min-height: calc(var(--touch-min) * 2);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+.claim-card:hover {
+  transform: scale(1.02);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 10;
+}
+
+.claim-card.untested { border-left-color: var(--mondrian-gray); }
+.claim-card.supported { border-left-color: var(--accent-green); }
+.claim-card.contradicted { border-left-color: var(--mondrian-red); }
+.claim-card.stale { border-left-color: var(--mondrian-yellow); }
+
+.claim-text {
+  font-family: var(--font-headline);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mondrian-black);
+  line-height: 1.4;
+}
+
+.claim-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.claim-section {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mondrian-black);
+  letter-spacing: 0.05em;
+  opacity: 0.5;
+}
+
+.validity-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: var(--s1) var(--s2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.validity-badge.untested {
+  background: var(--mondrian-gray);
+  color: var(--mondrian-black);
+}
+.validity-badge.supported {
+  background: var(--accent-green);
+  color: var(--mondrian-white);
+}
+.validity-badge.contradicted {
+  background: var(--mondrian-red);
+  color: var(--mondrian-white);
+}
+.validity-badge.stale {
+  background: var(--mondrian-yellow);
+  color: var(--mondrian-black);
+}
+
+.claim-evidence {
+  display: flex;
+  gap: var(--s3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mondrian-black);
+  opacity: 0.5;
+}
+.claim-evidence .for { color: var(--accent-green); opacity: 1; }
+.claim-evidence .against { color: var(--mondrian-red); opacity: 1; }
+
+/* ============================================
+   FOOTER STATUS BAR
+   Matches topbar style -- black background
+   ============================================ */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--s5);
+  min-height: 36px;
+  background: var(--mondrian-black);
+  border-top: var(--grid-border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mondrian-gray);
+  gap: var(--s4);
+  letter-spacing: 0.03em;
+}
+
+.footer-section {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.connected {
+  background: var(--accent-green);
+  box-shadow: 0 0 4px var(--accent-green);
+}
+.status-dot.disconnected {
+  background: var(--mondrian-red);
+}
+
+/* ============================================
+   RESPONSIVE -- Collapse to single column at 640px
+   ============================================ */
+@media (max-width: 640px) {
+  .topbar {
+    flex-direction: column;
+    height: auto;
+    padding: var(--s3);
+    gap: var(--s2);
+  }
+  .topbar-nav {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .mullins {
+    grid-template-columns: 1fr;
+  }
+  .mondrian-grid {
+    grid-template-columns: 1fr;
+  }
+  .section-card.span-2 {
+    grid-row: span 1;
+  }
+  .claims-grid {
+    grid-template-columns: 1fr;
+  }
+  .brain-suggestion {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+  }
+  .btn-run {
+    width: 100%;
+  }
+  .alert-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--s3);
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="platform" role="application" aria-label="MindrianOS Platform">
+
+  <!-- ==========================================
+       TOPBAR -- Export template pattern
+       ========================================== -->
+  <header class="topbar" role="banner">
+    <div class="topbar-left">
+      <div class="topbar-logo" aria-hidden="true">
+        <div class="topbar-logo-block r"></div>
+        <div class="topbar-logo-block b"></div>
+        <div class="topbar-logo-block y"></div>
+      </div>
+      <span class="topbar-title">MindrianOS</span>
+      <span class="topbar-badge" id="venture-stage">Pre-Opportunity</span>
+    </div>
+
+    <nav class="topbar-nav" role="tablist" aria-label="Platform views">
+      <button class="active" role="tab" aria-selected="true" aria-controls="view-mullins" data-view="mullins">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <rect x="1" y="1" width="6" height="6"/><rect x="9" y="1" width="6" height="6"/><rect x="1" y="9" width="6" height="6"/><rect x="9" y="9" width="6" height="6"/>
+        </svg>
+        Mullins
+      </button>
+      <button role="tab" aria-selected="false" aria-controls="view-room" data-view="room">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <rect x="1" y="1" width="14" height="14" rx="1"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="6" y1="6" x2="6" y2="15"/>
+        </svg>
+        Room
+      </button>
+      <button role="tab" aria-selected="false" aria-controls="view-graph" data-view="graph">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="8" cy="12" r="2"/><line x1="5.5" y1="5" x2="6.5" y2="10.5"/><line x1="10.5" y1="5" x2="9.5" y2="10.5"/><line x1="6" y1="4" x2="10" y2="4"/>
+        </svg>
+        Graph
+      </button>
+      <button role="tab" aria-selected="false" aria-controls="view-chain" data-view="chain">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <rect x="1" y="5" width="4" height="6" rx="1"/><rect x="6" y="5" width="4" height="6" rx="1"/><rect x="11" y="5" width="4" height="6" rx="1"/><line x1="5" y1="8" x2="6" y2="8"/><line x1="10" y1="8" x2="11" y2="8"/>
+        </svg>
+        Chain
+      </button>
+      <button role="tab" aria-selected="false" aria-controls="view-claims" data-view="claims">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <path d="M3 8l3 3 7-7"/>
+        </svg>
+        Claims
+      </button>
+    </nav>
+  </header>
+
+  <!-- ==========================================
+       CONTENT
+       ========================================== -->
+  <main class="content">
+
+    <!-- ========== VIEW 1: MULLINS ========== -->
+    <div class="view" id="view-mullins" role="tabpanel" aria-label="Mullins Assessment">
+      <div class="mullins">
+
+        <!-- IS IT REAL? (Blue cell) -->
+        <div class="mullins-column real">
+          <div class="mullins-header">Is It Real?</div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Market exists - 80% coverage, 4 artifacts" data-cell="market-exists">
+            <div class="cell-question">Market exists?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar high" style="width: 80%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">80%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                4 artifacts
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Problem is real - 100% coverage, 6 artifacts" data-cell="problem-real">
+            <div class="cell-question">Problem is real?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar high" style="width: 100%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">100%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                6 artifacts
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Solution works - 25% coverage, 1 artifact" data-cell="solution-works">
+            <div class="cell-question">Solution works?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar low" style="width: 25%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">25%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                1 artifact
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-footer">
+            <span class="evidence-count">Evidence: 11</span>
+            <span class="gap-count">Gaps: 3</span>
+          </div>
+        </div>
+
+        <!-- CAN WE WIN? (Yellow cell) -->
+        <div class="mullins-column win">
+          <div class="mullins-header">Can We Win?</div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Competitive advantage - 60% coverage, 3 artifacts" data-cell="competitive-advantage">
+            <div class="cell-question">Competitive advantage?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar mid" style="width: 60%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">60%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                3 artifacts
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Team can execute - 85% coverage, 5 artifacts" data-cell="team-execute">
+            <div class="cell-question">Team can execute?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar high" style="width: 85%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">85%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                5 artifacts
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Timing is right - 45% coverage, 2 artifacts" data-cell="timing-right">
+            <div class="cell-question">Timing is right?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar mid" style="width: 45%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">45%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                2 artifacts
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-footer">
+            <span class="evidence-count">Evidence: 10</span>
+            <span class="gap-count">Gaps: 2</span>
+          </div>
+        </div>
+
+        <!-- IS IT WORTH IT? (Red cell) -->
+        <div class="mullins-column worth">
+          <div class="mullins-header">Is It Worth It?</div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Revenue potential - no evidence" data-cell="revenue-potential">
+            <div class="cell-question">Revenue potential?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar none" style="width: 0%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">--</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                no evidence
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Risk acceptable - no evidence" data-cell="risk-acceptable">
+            <div class="cell-question">Risk acceptable?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar none" style="width: 0%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">--</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                no evidence
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-cell" tabindex="0" role="button" aria-label="Aligned with goals - 15% coverage, 1 artifact" data-cell="aligned-goals">
+            <div class="cell-question">Aligned with goals?</div>
+            <div class="bullet-chart">
+              <div class="bullet-zone danger"></div>
+              <div class="bullet-zone ok"></div>
+              <div class="bullet-zone good"></div>
+              <div class="bullet-bar low" style="width: 15%"></div>
+              <div class="bullet-target" style="left: 75%"></div>
+            </div>
+            <div class="cell-meta">
+              <span class="cell-score">15%</span>
+              <span class="cell-artifacts">
+                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1"/></svg>
+                1 artifact
+              </span>
+            </div>
+          </div>
+
+          <div class="mullins-footer">
+            <span class="evidence-count">Evidence: 1</span>
+            <span class="gap-count">Gaps: 5</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Brain Suggestion -- dark panel like topbar -->
+      <div class="brain-suggestion">
+        <div class="suggestion-content">
+          <div class="suggestion-icon">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <circle cx="8" cy="6" r="4"/><path d="M4 10c0 2.2 1.8 4 4 4s4-1.8 4-4"/><line x1="8" y1="2" x2="8" y2="4"/><line x1="5" y1="3" x2="6" y2="4.5"/><line x1="11" y1="3" x2="10" y2="4.5"/>
+            </svg>
+          </div>
+          <div class="suggestion-text">
+            Weakest area is <span class="suggestion-area">"Is It Worth It?"</span> with 5 gaps.
+            Brain suggests: <span class="suggestion-framework">Financial Feasibility Analysis</span>
+          </div>
+        </div>
+        <button class="btn-run" id="btn-run-methodology" aria-label="Run Financial Feasibility Analysis">Run It</button>
+      </div>
+    </div>
+
+    <!-- ========== VIEW 2: ROOM ========== -->
+    <div class="view" id="view-room" role="tabpanel" aria-label="Room Command Center" aria-hidden="true">
+
+      <!-- Cascade Alerts -->
+      <div class="cascade-alerts">
+        <div class="alert-card contradiction">
+          <span class="alert-type-badge">Contradiction</span>
+          <span class="alert-text">Market analysis says "no competitors" but competitive analysis lists 3 direct competitors</span>
+          <div class="alert-actions">
+            <button class="btn btn-approve" data-cascade="approve" data-alert="c1">Approve</button>
+            <button class="btn btn-reject" data-cascade="reject" data-alert="c1">Reject</button>
+            <button class="btn btn-defer" data-cascade="defer" data-alert="c1">Defer</button>
+          </div>
+        </div>
+        <div class="alert-card convergence">
+          <span class="alert-type-badge">Convergence</span>
+          <span class="alert-text">"Supply chain" appears in 4 sections -- emerging pattern</span>
+          <div class="alert-actions">
+            <button class="btn btn-approve" data-cascade="acknowledge" data-alert="v1">Acknowledge</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mondrian Section Grid -->
+      <div class="mondrian-grid">
+        <div class="section-card span-2" tabindex="0" role="button" data-section="problem-definition">
+          <div class="section-health health-good"></div>
+          <div class="section-name">problem-definition</div>
+          <div class="section-count">6</div>
+          <div class="section-label">artifacts</div>
+        </div>
+        <div class="section-card" tabindex="0" role="button" data-section="market-analysis">
+          <div class="section-health health-warning"></div>
+          <div class="section-name">market-analysis</div>
+          <div class="section-count">3</div>
+          <div class="section-label">artifacts</div>
+        </div>
+        <div class="section-card" tabindex="0" role="button" data-section="competitive-analysis">
+          <div class="section-health health-good"></div>
+          <div class="section-name">competitive</div>
+          <div class="section-count">4</div>
+          <div class="section-label">artifacts</div>
+        </div>
+        <div class="section-card" tabindex="0" role="button" data-section="solution-design">
+          <div class="section-health health-gap"></div>
+          <div class="section-name">solution-design</div>
+          <div class="section-count">1</div>
+          <div class="section-label">artifact</div>
+        </div>
+        <div class="section-card" tabindex="0" role="button" data-section="financial-model">
+          <div class="section-health health-gap"></div>
+          <div class="section-name">financial-model</div>
+          <div class="section-count">0</div>
+          <div class="section-label">empty</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== VIEW 3: GRAPH ========== -->
+    <div class="view" id="view-graph" role="tabpanel" aria-label="Knowledge Graph" aria-hidden="true">
+      <div class="graph-view">
+        <div class="graph-toolbar">
+          <div class="graph-filters" role="group" aria-label="Edge type filters">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="tensions">Tensions</button>
+            <button class="filter-btn" data-filter="patterns">Patterns</button>
+            <button class="filter-btn" data-filter="hsi">HSI</button>
+            <button class="filter-btn" data-filter="causal">Causal</button>
+          </div>
+          <div class="graph-search">
+            <input type="text" placeholder="Search nodes..." aria-label="Search graph nodes">
+          </div>
+        </div>
+
+        <div class="graph-container">
+          <div class="graph-bg" aria-hidden="true">
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+            <div class="graph-bg-cell"></div>
+          </div>
+          <div class="graph-placeholder">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <circle cx="12" cy="12" r="5"/><circle cx="36" cy="12" r="5"/><circle cx="24" cy="36" r="5"/>
+              <circle cx="12" cy="36" r="3"/><circle cx="36" cy="36" r="3"/>
+              <line x1="16" y1="14" x2="20" y2="32"/><line x1="32" y1="14" x2="28" y2="32"/>
+              <line x1="17" y1="12" x2="31" y2="12"/><line x1="15" y1="36" x2="19" y2="36"/><line x1="29" y1="36" x2="33" y2="36"/>
+            </svg>
+            <span class="graph-placeholder-title">Knowledge Graph</span>
+            <span class="graph-placeholder-sub">INFORMS / CONTRADICTS / CONVERGES / ENABLES</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== VIEW 4: CHAIN ========== -->
+    <div class="view" id="view-chain" role="tabpanel" aria-label="Framework Chain Explorer" aria-hidden="true">
+      <div class="chain-view">
+        <div class="chain-header-bar">
+          <div class="chain-label">FEEDS_INTO chain from Brain</div>
+        </div>
+
+        <div class="chain-track-wrapper">
+          <div class="chain-track" role="list" aria-label="Framework chain">
+            <div class="chain-node" tabindex="0" role="listitem" data-framework="beautiful-question">Beautiful Question</div>
+            <div class="chain-arrow" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="10" x2="16" y2="10"/><polyline points="12,6 16,10 12,14"/></svg>
+            </div>
+            <div class="chain-node" tabindex="0" role="listitem" data-framework="domain-selection">Domain Selection</div>
+            <div class="chain-arrow" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="10" x2="16" y2="10"/><polyline points="12,6 16,10 12,14"/></svg>
+            </div>
+            <div class="chain-node active" tabindex="0" role="listitem" data-framework="pws-value-proposition" aria-current="true">PWS Value Proposition</div>
+            <div class="chain-arrow" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="10" x2="16" y2="10"/><polyline points="12,6 16,10 12,14"/></svg>
+            </div>
+            <div class="chain-node" tabindex="0" role="listitem" data-framework="jobs-to-be-done">Jobs to Be Done</div>
+            <div class="chain-arrow" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="10" x2="16" y2="10"/><polyline points="12,6 16,10 12,14"/></svg>
+            </div>
+            <div class="chain-node" tabindex="0" role="listitem" data-framework="process-mapping">Process Mapping</div>
+            <div class="chain-arrow" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="10" x2="16" y2="10"/><polyline points="12,6 16,10 12,14"/></svg>
+            </div>
+            <div class="chain-node" tabindex="0" role="listitem" data-framework="reverse-salient">Reverse Salient</div>
+          </div>
+        </div>
+
+        <div class="chain-detail">
+          <div class="chain-detail-title">PWS Value Proposition</div>
+          <div class="chain-detail-stats">
+            <div class="chain-stat">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12" aria-hidden="true"><polyline points="2,8 6,4 10,8"/></svg>
+              <span class="chain-stat-value">16</span> feeds in
+            </div>
+            <div class="chain-stat">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12" aria-hidden="true"><polyline points="2,4 6,8 10,4"/></svg>
+              <span class="chain-stat-value">17</span> feeds out
+            </div>
+          </div>
+          <div class="chain-detail-desc">
+            This is the hub of the entire methodology. The three gates -- Is it Real? Can we Win? Is it Worth it? --
+            must each be addressed with evidence before proceeding. 16 frameworks feed into this assessment.
+            17 frameworks chain from it.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== VIEW 5: CLAIMS ========== -->
+    <div class="view" id="view-claims" role="tabpanel" aria-label="Assumption Tracker" aria-hidden="true">
+      <div class="claims-grid">
+        <div class="claim-card supported" tabindex="0" role="button" data-claim="claim-1">
+          <div class="claim-text">Customer segment is healthcare providers in rural areas</div>
+          <div class="claim-evidence">
+            <span class="for">3 supporting</span>
+            <span class="against">0 against</span>
+          </div>
+          <div class="claim-meta">
+            <span class="claim-section">problem-definition</span>
+            <span class="validity-badge supported">Supported</span>
+          </div>
+        </div>
+
+        <div class="claim-card contradicted" tabindex="0" role="button" data-claim="claim-2">
+          <div class="claim-text">No direct competitors exist in this space</div>
+          <div class="claim-evidence">
+            <span class="for">1 supporting</span>
+            <span class="against">3 against</span>
+          </div>
+          <div class="claim-meta">
+            <span class="claim-section">competitive-analysis</span>
+            <span class="validity-badge contradicted">Contradicted</span>
+          </div>
+        </div>
+
+        <div class="claim-card untested" tabindex="0" role="button" data-claim="claim-3">
+          <div class="claim-text">Unit economics work at $29/month price point</div>
+          <div class="claim-evidence">
+            <span>0 evidence</span>
+          </div>
+          <div class="claim-meta">
+            <span class="claim-section">financial-model</span>
+            <span class="validity-badge untested">Untested</span>
+          </div>
+        </div>
+
+        <div class="claim-card stale" tabindex="0" role="button" data-claim="claim-4">
+          <div class="claim-text">Regulatory approval takes 6 months</div>
+          <div class="claim-evidence">
+            <span class="for">1 supporting</span>
+            <span style="color: var(--mondrian-yellow);">data > 90 days old</span>
+          </div>
+          <div class="claim-meta">
+            <span class="claim-section">legal-ip</span>
+            <span class="validity-badge stale">Stale</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ==========================================
+       FOOTER STATUS BAR -- Matches topbar
+       ========================================== -->
+  <footer class="footer" role="contentinfo">
+    <div class="footer-section">
+      <span class="status-dot connected" aria-label="Connected"></span>
+      Brain connected -- 21K nodes
+    </div>
+    <div class="footer-section">room.db: 23 nodes, 47 edges</div>
+    <div class="footer-section">Larry -- Ask mode (turn 2)</div>
+  </footer>
+</div>
+
+<script>
+/* ============================================
+   VIEW SWITCHING -- Tab-based with ARIA
+   ============================================ */
+const tabs = document.querySelectorAll('.topbar-nav button');
+const views = document.querySelectorAll('.view');
+
+function switchView(viewId) {
+  // Update tab state
+  tabs.forEach(t => {
+    const isActive = t.dataset.view === viewId;
+    t.classList.toggle('active', isActive);
+    t.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  // Update view visibility with transition
+  views.forEach(v => {
+    const isTarget = v.id === 'view-' + viewId;
+    if (isTarget) {
+      v.removeAttribute('aria-hidden');
+      v.style.display = '';
+      // Trigger reflow for transition
+      void v.offsetHeight;
+      v.style.opacity = '1';
+    } else {
+      v.setAttribute('aria-hidden', 'true');
+      v.style.display = 'none';
+      v.style.opacity = '0';
+    }
+  });
+}
+
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => switchView(tab.dataset.view));
+});
+
+// Keyboard navigation for tabs
+document.querySelector('.topbar-nav').addEventListener('keydown', (e) => {
+  const tabArray = Array.from(tabs);
+  const currentIndex = tabArray.indexOf(document.activeElement);
+  if (currentIndex === -1) return;
+
+  let nextIndex;
+  if (e.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabArray.length;
+  else if (e.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabArray.length) % tabArray.length;
+  else return;
+
+  e.preventDefault();
+  tabArray[nextIndex].focus();
+  tabArray[nextIndex].click();
+});
+
+/* ============================================
+   MCP APP COMMUNICATION (placeholder)
+   In production:
+   import { App } from '@modelcontextprotocol/ext-apps';
+   const app = new App({ name: 'MindrianOS', version: '2.0.0' });
+   app.connect();
+   ============================================ */
+
+const app = {
+  connected: false,
+
+  connect() {
+    this.connected = true;
+    console.log('[MindrianOS] MCP App connected');
+  },
+
+  // Receive data from tool call
+  ontoolresult(result) {
+    try {
+      const data = JSON.parse(result.content.find(c => c.type === 'text').text);
+      if (data.view) switchView(data.view);
+      renderView(data);
+    } catch (err) {
+      console.error('[MindrianOS] Failed to parse tool result:', err);
+    }
+  },
+
+  // Call back to MindrianOS server
+  async callServerTool(params) {
+    console.log('[MindrianOS] callServerTool:', params);
+    // In production: return await realApp.callServerTool(params);
+    return { content: [{ type: 'text', text: '{}' }] };
+  },
+
+  // Send intent to Larry (Shopify pattern)
+  async updateContext(ctx) {
+    console.log('[MindrianOS] Intent sent to Larry:', ctx);
+    // In production: return await realApp.updateContext(ctx);
+  }
+};
+
+/* ============================================
+   ACTION HANDLERS -- Shopify Intent Model
+   UI elements send INTENTS, never execute directly
+   ============================================ */
+
+// Mullins cell drill-down
+document.querySelectorAll('.mullins-cell').forEach(cell => {
+  const handler = () => {
+    app.updateContext({
+      type: 'user-intent',
+      data: { action: 'drill-down', target: cell.dataset.cell }
+    });
+  };
+  cell.addEventListener('click', handler);
+  cell.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+  });
+});
+
+// Run methodology
+document.getElementById('btn-run-methodology').addEventListener('click', () => {
+  app.updateContext({
+    type: 'user-intent',
+    data: { action: 'run-methodology', framework: 'financial-feasibility' }
+  });
+});
+
+// Cascade actions
+document.querySelectorAll('[data-cascade]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    app.callServerTool({
+      name: 'file_artifact',
+      arguments: { action: btn.dataset.cascade, target: btn.dataset.alert }
+    });
+  });
+});
+
+// Section card exploration
+document.querySelectorAll('.section-card').forEach(card => {
+  const handler = () => {
+    app.updateContext({
+      type: 'user-intent',
+      data: { action: 'explore-section', section: card.dataset.section }
+    });
+  };
+  card.addEventListener('click', handler);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+  });
+});
+
+// Graph filter buttons
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    app.updateContext({
+      type: 'user-intent',
+      data: { action: 'filter-graph', edgeType: btn.dataset.filter }
+    });
+  });
+});
+
+// Chain node exploration
+document.querySelectorAll('.chain-node').forEach(node => {
+  const handler = () => {
+    document.querySelectorAll('.chain-node').forEach(n => {
+      n.classList.remove('active');
+      n.removeAttribute('aria-current');
+    });
+    node.classList.add('active');
+    node.setAttribute('aria-current', 'true');
+    app.updateContext({
+      type: 'user-intent',
+      data: { action: 'explore-framework', framework: node.dataset.framework }
+    });
+  };
+  node.addEventListener('click', handler);
+  node.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+  });
+});
+
+// Claim card exploration
+document.querySelectorAll('.claim-card').forEach(card => {
+  const handler = () => {
+    app.updateContext({
+      type: 'user-intent',
+      data: { action: 'explore-claim', claim: card.dataset.claim }
+    });
+  };
+  card.addEventListener('click', handler);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+  });
+});
+
+/* ============================================
+   DATA RENDERING (called when tool result arrives)
+   ============================================ */
+
+function renderView(data) {
+  // In production: parse data.view_type and render appropriate content
+  // data.mullins -> update Mullins bullet charts
+  // data.room_state -> update Command Center cards + alerts
+  // data.graph -> render Cytoscape.js
+  // data.chain -> render framework chain nodes
+  // data.claims -> render assumption cards
+  console.log('[MindrianOS] Rendering:', data);
+}
+
+// Auto-connect on load
+app.connect();
+
+// Initialize: ensure only Mullins view is shown
+switchView('mullins');
+</script>
+
+</body>
+</html>

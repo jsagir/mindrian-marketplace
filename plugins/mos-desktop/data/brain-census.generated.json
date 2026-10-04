@@ -1,0 +1,4116 @@
+{
+  "meta": {
+    "census_date": "2026-10-01",
+    "brain_url": "https://theo-mcp.onrender.com",
+    "brain_stats": {
+      "nodes": 28131,
+      "relationships": 53313,
+      "labels": [
+        {
+          "label": "BrainRecord",
+          "count": 148,
+          "declared": true
+        },
+        {
+          "label": "CaseStudy",
+          "count": 93,
+          "declared": true
+        },
+        {
+          "label": "Chapter",
+          "count": 35,
+          "declared": true
+        },
+        {
+          "label": "Chunk",
+          "count": 210,
+          "declared": true
+        },
+        {
+          "label": "Concept",
+          "count": 0,
+          "declared": true
+        },
+        {
+          "label": "DomainConcept",
+          "count": 6,
+          "declared": true
+        },
+        {
+          "label": "Example",
+          "count": 47,
+          "declared": true
+        },
+        {
+          "label": "Framework",
+          "count": 457,
+          "declared": true
+        },
+        {
+          "label": "GraphRagMeta",
+          "count": 1,
+          "declared": true
+        },
+        {
+          "label": "Mention",
+          "count": 13273,
+          "declared": true
+        },
+        {
+          "label": "MethodologyChunk",
+          "count": 12401,
+          "declared": true
+        },
+        {
+          "label": "MindrianCommand",
+          "count": 113,
+          "declared": true
+        },
+        {
+          "label": "Phase",
+          "count": 6,
+          "declared": true
+        },
+        {
+          "label": "ProcessStep",
+          "count": 735,
+          "declared": true
+        },
+        {
+          "label": "Reach",
+          "count": 6,
+          "declared": true
+        },
+        {
+          "label": "Root",
+          "count": 1,
+          "declared": true
+        },
+        {
+          "label": "Sensor",
+          "count": 15,
+          "declared": true
+        },
+        {
+          "label": "Stage",
+          "count": 0,
+          "declared": true
+        },
+        {
+          "label": "TaxonomyRecord",
+          "count": 270,
+          "declared": true
+        },
+        {
+          "label": "Technique",
+          "count": 315,
+          "declared": true
+        },
+        {
+          "label": "ToolType",
+          "count": 6,
+          "declared": true
+        }
+      ],
+      "diagnostics": {
+        "hasWarning": false,
+        "notifications": [],
+        "gqlStatusObjects": [
+          {
+            "gqlStatus": "00000",
+            "statusDescription": "note: successful completion",
+            "severity": "UNKNOWN",
+            "classification": "UNKNOWN"
+          }
+        ],
+        "warningGqlStatuses": []
+      }
+    },
+    "key_tier_lane_a": "read",
+    "lane_a_source": "render-live ungated read tools",
+    "key_tier_lane_b": "admin",
+    "lane_b_source": "theo-live brain_stats + brain_schema (whole-graph Cypher refused by Theo read allow-list)"
+  },
+  "canon_discrepancy": {
+    "canon_prose_count": 25,
+    "scanned_count": 50,
+    "scanned_at": "2026-10-01",
+    "enumeration_source": "frontmatter scan of commands/*.md (kind: methodology)"
+  },
+  "gap_table": [
+    {
+      "framework": "Jobs to Be Done (JTBD)",
+      "uses": 5,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Reverse Salient Analysis",
+      "uses": 5,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Six Thinking Hats",
+      "uses": 4,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "HSI Semantic Surprise Analysis Assistant",
+      "uses": 3,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "PWS Triple Validation Compass",
+      "uses": 3,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "S-Curve Analysis",
+      "uses": 3,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Adoption-Capacity Theory",
+      "uses": 2,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "PWS Value Proposition",
+      "uses": 2,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Root Cause Analysis",
+      "uses": 2,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Scenario Planning",
+      "uses": 2,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Systems Thinking",
+      "uses": 2,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "The Pyramid Principle",
+      "uses": 2,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Ackoff Pyramid",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Adaptive Leadership",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Beautiful Question Framework",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Domain Selection",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Dominant Design",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Four Lenses of Innovation",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Futures Wheel",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Hypothesis-Driven Problem Solving",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Knowns and Unknowns Matrix Framework",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Lean Canvas",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "MECE (Mutually Exclusive, Collectively Exhaustive)",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Mullins Model",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "PEST Analysis",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Problem Definition Transformation Framework",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Red Teaming",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Trending to the Absurd",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    },
+    {
+      "framework": "Usher's Model of Cumulative Synthesis",
+      "uses": 1,
+      "readiness_score": null,
+      "status": null,
+      "reason": "readiness probe absent or failed - treated as a gap"
+    }
+  ],
+  "generated_note": "GENERATED by scripts/build-brain-census.cjs - do not hand-edit",
+  "lane_a": {
+    "frameworks": [
+      {
+        "name": "Jobs to Be Done (JTBD)",
+        "uses": 5,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Jobs to Be Done (JTBD)",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Jobs to Be Done (JTBD)",
+            "score": 2,
+            "inputs": {
+              "has_structure": true,
+              "has_ordering": true,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 3,
+              "ordering_edges": 2,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Jobs to Be Done (JTBD)",
+            "steps": [
+              {
+                "name": "Identify Situation",
+                "position": 1,
+                "ordered": true
+              },
+              {
+                "name": "Define Need",
+                "position": 2,
+                "ordered": true
+              },
+              {
+                "name": "Expected Outcome",
+                "position": 3,
+                "ordered": true
+              }
+            ],
+            "ordering": {
+              "components": 3,
+              "leads_to_edges": 2,
+              "heads": 1,
+              "ordered_components": 3,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 1,
+              "total": 23,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:15.708Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:15.708Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:15.708Z"
+          }
+        ]
+      },
+      {
+        "name": "Reverse Salient Analysis",
+        "uses": 5,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Reverse Salient Analysis",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Reverse Salient Analysis",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Reverse Salient Analysis",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:20.365Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:20.365Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:20.365Z"
+          }
+        ]
+      },
+      {
+        "name": "Six Thinking Hats",
+        "uses": 4,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Six Thinking Hats",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Six Thinking Hats",
+            "score": 3,
+            "inputs": {
+              "has_structure": true,
+              "has_ordering": false,
+              "has_technique": true,
+              "pattern_known": true
+            },
+            "evidence": {
+              "structure_components": 11,
+              "ordering_edges": 0,
+              "technique_links": 1,
+              "orchestration_status": "active"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Six Thinking Hats",
+            "steps": [
+              {
+                "name": "A team, real people or a research swarm, gets assembled with each slot bound to one hat's discipline for this round, not their default personality",
+                "position": 1,
+                "ordered": false
+              },
+              {
+                "name": "Black is risk: what could go wrong, what are we assuming that might be false, argued as genuine critical judgment, not reflexive pessimism.",
+                "position": 2,
+                "ordered": false
+              },
+              {
+                "name": "Blue closes it with a ruling: supported, rejected, refined into a sharper version, or undecided, with the specific unknown named rather than waved at",
+                "position": 3,
+                "ordered": false
+              },
+              {
+                "name": "Each hat then reports under its own rules: White has to cite a source or retract the claim; Black has to actively hunt for the evidence that would disprove the hypothesis before it's allowed to complain in general terms; Yellow has to back its optimism with something real; Green's ideas get written down as provocations, not proposals to defend; Red owes nobody an explanation.",
+                "position": 4,
+                "ordered": false
+              },
+              {
+                "name": "letting them disagree with each other",
+                "position": 5,
+                "ordered": false
+              },
+              {
+                "name": "Red is feeling: the gut reaction, stated with zero justification required, because a feeling doesn't need permission to exist.",
+                "position": 6,
+                "ordered": false
+              },
+              {
+                "name": "staging six honest readings",
+                "position": 7,
+                "ordered": false
+              },
+              {
+                "name": "state one hypothesis in plain, falsifiable language, precise enough that a stranger could tell you exactly what would prove it wrong",
+                "position": 8,
+                "ordered": false
+              },
+              {
+                "name": "the six readings get laid against each other, one hat's argument at a time, over that same one hypothesis",
+                "position": 9,
+                "ordered": false
+              },
+              {
+                "name": "White is facts: what do we actually know, what's missing, no interpretation allowed.",
+                "position": 10,
+                "ordered": false
+              },
+              {
+                "name": "you name the scope",
+                "position": 11,
+                "ordered": false
+              }
+            ],
+            "ordering": {
+              "components": 11,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 11,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 1,
+              "total": 23,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:24.745Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:24.745Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:24.745Z"
+          }
+        ]
+      },
+      {
+        "name": "HSI Semantic Surprise Analysis Assistant",
+        "uses": 3,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "HSI Semantic Surprise Analysis Assistant",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "HSI Semantic Surprise Analysis Assistant",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "HSI Semantic Surprise Analysis Assistant",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:29.056Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:29.056Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:29.056Z"
+          }
+        ]
+      },
+      {
+        "name": "PWS Triple Validation Compass",
+        "uses": 3,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "PWS Triple Validation Compass",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "PWS Triple Validation Compass",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "PWS Triple Validation Compass",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:33.516Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:33.516Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:33.516Z"
+          }
+        ]
+      },
+      {
+        "name": "S-Curve Analysis",
+        "uses": 3,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "S-Curve Analysis",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "S-Curve Analysis",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "S-Curve Analysis",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:37.835Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:37.835Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:37.835Z"
+          }
+        ]
+      },
+      {
+        "name": "Adoption-Capacity Theory",
+        "uses": 2,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Adoption-Capacity Theory",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Adoption-Capacity Theory",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Adoption-Capacity Theory",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:42.290Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:42.290Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:42.290Z"
+          }
+        ]
+      },
+      {
+        "name": "PWS Value Proposition",
+        "uses": 2,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "PWS Value Proposition",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "PWS Value Proposition",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "PWS Value Proposition",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:46.560Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:46.560Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:46.560Z"
+          }
+        ]
+      },
+      {
+        "name": "Root Cause Analysis",
+        "uses": 2,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Root Cause Analysis",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Root Cause Analysis",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Root Cause Analysis",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:50.992Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:50.992Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:50.992Z"
+          }
+        ]
+      },
+      {
+        "name": "Scenario Planning",
+        "uses": 2,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Scenario Planning",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Scenario Planning",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Scenario Planning",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:55.259Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:55.259Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:55.259Z"
+          }
+        ]
+      },
+      {
+        "name": "Systems Thinking",
+        "uses": 2,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Systems Thinking",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Systems Thinking",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Systems Thinking",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:22:59.505Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:22:59.505Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:22:59.505Z"
+          }
+        ]
+      },
+      {
+        "name": "The Pyramid Principle",
+        "uses": 2,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "The Pyramid Principle",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "The Pyramid Principle",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "The Pyramid Principle",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:03.912Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:03.912Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:03.912Z"
+          }
+        ]
+      },
+      {
+        "name": "Ackoff Pyramid",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Ackoff Pyramid",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Ackoff Pyramid",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Ackoff Pyramid",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:08.252Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:08.252Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:08.252Z"
+          }
+        ]
+      },
+      {
+        "name": "Adaptive Leadership",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Adaptive Leadership",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Adaptive Leadership",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": null
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Adaptive Leadership",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:12.726Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:12.726Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:12.726Z"
+          }
+        ]
+      },
+      {
+        "name": "Beautiful Question Framework",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Beautiful Question Framework",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Beautiful Question Framework",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Beautiful Question Framework",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:17.020Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:17.020Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:17.020Z"
+          }
+        ]
+      },
+      {
+        "name": "Domain Selection",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Domain Selection",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Domain Selection",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Domain Selection",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:21.536Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:21.536Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:21.536Z"
+          }
+        ]
+      },
+      {
+        "name": "Dominant Design",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Dominant Design",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Dominant Design",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Dominant Design",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:25.777Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:25.778Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:25.778Z"
+          }
+        ]
+      },
+      {
+        "name": "Four Lenses of Innovation",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Four Lenses of Innovation",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Four Lenses of Innovation",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Four Lenses of Innovation",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:30.020Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:30.020Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:30.020Z"
+          }
+        ]
+      },
+      {
+        "name": "Futures Wheel",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Futures Wheel",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Futures Wheel",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Futures Wheel",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:34.415Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:34.415Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:34.415Z"
+          }
+        ]
+      },
+      {
+        "name": "Hypothesis-Driven Problem Solving",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Hypothesis-Driven Problem Solving",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Hypothesis-Driven Problem Solving",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Hypothesis-Driven Problem Solving",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:38.708Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:38.708Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:38.708Z"
+          }
+        ]
+      },
+      {
+        "name": "Knowns and Unknowns Matrix Framework",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Knowns and Unknowns Matrix Framework",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Knowns and Unknowns Matrix Framework",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Knowns and Unknowns Matrix Framework",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:43.146Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:43.146Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:43.146Z"
+          }
+        ]
+      },
+      {
+        "name": "Lean Canvas",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Lean Canvas",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Lean Canvas",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Lean Canvas",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:47.408Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:47.408Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:47.408Z"
+          }
+        ]
+      },
+      {
+        "name": "MECE (Mutually Exclusive, Collectively Exhaustive)",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "MECE (Mutually Exclusive, Collectively Exhaustive)",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "MECE (Mutually Exclusive, Collectively Exhaustive)",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "MECE (Mutually Exclusive, Collectively Exhaustive)",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:51.687Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:51.687Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:51.687Z"
+          }
+        ]
+      },
+      {
+        "name": "Mullins Model",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "coverage": {
+              "matched": 0,
+              "total": 457,
+              "status": "empty"
+            },
+            "refusal": {
+              "code": "ALIAS_CYCLE",
+              "detail": "alias resolution from `Mullins Model` revisited `Mullins Model` after 2 hop(s); the cycle is `Mullins Model` -> `John Mullins Framework` -> `Mullins Model`"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "coverage": {
+              "matched": 0,
+              "total": 457,
+              "status": "empty"
+            },
+            "refusal": {
+              "code": "ALIAS_CYCLE",
+              "detail": "alias resolution from `Mullins Model` revisited `Mullins Model` after 2 hop(s); the cycle is `Mullins Model` -> `John Mullins Framework` -> `Mullins Model`"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "refusal": {
+              "code": "ALIAS_CYCLE",
+              "detail": "alias resolution from `Mullins Model` revisited `Mullins Model` after 2 hop(s); the cycle is `Mullins Model` -> `John Mullins Framework` -> `Mullins Model`"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:23:57.843Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:23:57.843Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:23:57.843Z"
+          }
+        ]
+      },
+      {
+        "name": "PEST Analysis",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "PEST Analysis",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "PEST Analysis",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "PEST Analysis",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:24:02.128Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:24:02.128Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:24:02.128Z"
+          }
+        ]
+      },
+      {
+        "name": "Problem Definition Transformation Framework",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Problem Definition Transformation Framework",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Problem Definition Transformation Framework",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Problem Definition Transformation Framework",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:24:06.553Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:24:06.553Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:24:06.553Z"
+          }
+        ]
+      },
+      {
+        "name": "Red Teaming",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Red Teaming",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Red Teaming",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Red Teaming",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:24:10.861Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:24:10.861Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:24:10.861Z"
+          }
+        ]
+      },
+      {
+        "name": "Trending to the Absurd",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Trending to the Absurd",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Trending to the Absurd",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Trending to the Absurd",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:24:15.274Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:24:15.274Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:24:15.274Z"
+          }
+        ]
+      },
+      {
+        "name": "Usher's Model of Cumulative Synthesis",
+        "uses": 1,
+        "normalize": {
+          "ok": true,
+          "result": {
+            "canonical": "Usher's Model of Cumulative Synthesis",
+            "matched_via": "exact",
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "readiness": {
+          "ok": true,
+          "result": {
+            "framework": "Usher's Model of Cumulative Synthesis",
+            "score": 0,
+            "inputs": {
+              "has_structure": false,
+              "has_ordering": false,
+              "has_technique": false,
+              "pattern_known": false
+            },
+            "evidence": {
+              "structure_components": 0,
+              "ordering_edges": 0,
+              "technique_links": 0,
+              "orchestration_status": "draft"
+            },
+            "unsynced_inputs": [
+              "pattern_known"
+            ],
+            "coverage": {
+              "matched": 1,
+              "total": 457,
+              "status": "partial"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "structure": {
+          "ok": true,
+          "result": {
+            "framework": "Usher's Model of Cumulative Synthesis",
+            "steps": [],
+            "ordering": {
+              "components": 0,
+              "leads_to_edges": 0,
+              "heads": 0,
+              "ordered_components": 0,
+              "unordered_components": 0,
+              "branching": false
+            },
+            "coverage": {
+              "matched": 0,
+              "total": 23,
+              "status": "empty"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        },
+        "provenance": [
+          {
+            "tool": "normalize_framework_name",
+            "date": "2026-10-01T12:24:19.536Z"
+          },
+          {
+            "tool": "orchestration_readiness",
+            "date": "2026-10-01T12:24:19.536Z"
+          },
+          {
+            "tool": "discover_structure",
+            "date": "2026-10-01T12:24:19.536Z"
+          }
+        ]
+      }
+    ],
+    "absence_probes": [
+      {
+        "name": "TRIZ",
+        "normalize": {
+          "ok": true,
+          "result": {
+            "coverage": {
+              "matched": 0,
+              "total": 457,
+              "status": "empty"
+            },
+            "refusal": {
+              "code": "FRAMEWORK_NOT_FOUND",
+              "detail": "no live `:Framework` carries the name `TRIZ`"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        }
+      },
+      {
+        "name": "SCAMPER",
+        "normalize": {
+          "ok": true,
+          "result": {
+            "coverage": {
+              "matched": 0,
+              "total": 457,
+              "status": "empty"
+            },
+            "refusal": {
+              "code": "FRAMEWORK_NOT_FOUND",
+              "detail": "no live `:Framework` carries the name `SCAMPER`"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        }
+      },
+      {
+        "name": "Five Whys",
+        "normalize": {
+          "ok": true,
+          "result": {
+            "coverage": {
+              "matched": 0,
+              "total": 457,
+              "status": "empty"
+            },
+            "refusal": {
+              "code": "FRAMEWORK_NOT_FOUND",
+              "detail": "no live `:Framework` carries the name `Five Whys`"
+            },
+            "diagnostics": {
+              "hasWarning": false,
+              "notifications": [],
+              "gqlStatusObjects": [
+                {
+                  "gqlStatus": "00000",
+                  "statusDescription": "note: successful completion",
+                  "severity": "UNKNOWN",
+                  "classification": "UNKNOWN"
+                }
+              ],
+              "warningGqlStatuses": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  "lane_b": {
+    "results": {
+      "C1": {
+        "frameworks": 457,
+        "source": "brain_stats.labels (not a Cypher count; Theo refuses the whole-graph plan C1 shares)"
+      },
+      "C5": [
+        {
+          "label": "BrainRecord",
+          "c": 148
+        },
+        {
+          "label": "CaseStudy",
+          "c": 93
+        },
+        {
+          "label": "Chapter",
+          "c": 35
+        },
+        {
+          "label": "Chunk",
+          "c": 210
+        },
+        {
+          "label": "Concept",
+          "c": 0
+        },
+        {
+          "label": "DomainConcept",
+          "c": 6
+        },
+        {
+          "label": "Example",
+          "c": 47
+        },
+        {
+          "label": "Framework",
+          "c": 457
+        },
+        {
+          "label": "GraphRagMeta",
+          "c": 1
+        },
+        {
+          "label": "Mention",
+          "c": 13273
+        },
+        {
+          "label": "MethodologyChunk",
+          "c": 12401
+        },
+        {
+          "label": "MindrianCommand",
+          "c": 113
+        },
+        {
+          "label": "Phase",
+          "c": 6
+        },
+        {
+          "label": "ProcessStep",
+          "c": 735
+        },
+        {
+          "label": "Reach",
+          "c": 6
+        },
+        {
+          "label": "Root",
+          "c": 1
+        },
+        {
+          "label": "Sensor",
+          "c": 15
+        },
+        {
+          "label": "Stage",
+          "c": 0
+        },
+        {
+          "label": "TaxonomyRecord",
+          "c": 270
+        },
+        {
+          "label": "Technique",
+          "c": 315
+        },
+        {
+          "label": "ToolType",
+          "c": 6
+        }
+      ],
+      "C6": {
+        "relationship_types": [
+          "ADDRESSES",
+          "ADDRESSES_PROBLEM_TYPE",
+          "ALIAS_OF",
+          "APPLIED_IN",
+          "COMPLEMENTS",
+          "CONTRASTS_WITH",
+          "ENABLES",
+          "EQUIPS_WITH",
+          "EXTENDS",
+          "FEEDS_INTO",
+          "FOLLOWS",
+          "GUARDED_BY",
+          "HAS_CHUNK",
+          "HAS_PHASE",
+          "HAS_PROCESS_STEP",
+          "HAS_STEP",
+          "HAS_TECHNIQUE",
+          "ILLUSTRATES",
+          "IMPLEMENTED_AS",
+          "INCORPORATES",
+          "INSTANCE_OF",
+          "LEADS_TO",
+          "LOOPS_TO",
+          "MENTIONED_IN",
+          "MENTIONS",
+          "NEXT_CHUNK",
+          "NEXT_IN_RECIPE",
+          "PART_OF",
+          "PRECEDES",
+          "PREREQUISITE",
+          "PRODUCES_INPUT_FOR",
+          "RELATED_TO",
+          "RELATES_TO",
+          "REQUIRES_KNOWLEDGE_OF",
+          "SOURCED_FROM",
+          "SUPPORTS",
+          "TEACHES",
+          "TRIGGERS",
+          "USES_FRAMEWORK",
+          "USES_TECHNIQUE",
+          "USES_TOOL",
+          "WIRED_TO"
+        ],
+        "property_keys_count": 546
+      },
+      "C2": {
+        "refused": true,
+        "error": "PLAN_REJECTED: plan operator `Distinct` is not on the read allow-list"
+      },
+      "C2a": {
+        "refused": true,
+        "error": "PLAN_REJECTED: plan operator `DirectedRelationshipTypeScan` is not on the read allow-list"
+      },
+      "C2b": {
+        "refused": true,
+        "error": "PLAN_REJECTED: plan operator `DirectedRelationshipTypeScan` is not on the read allow-list"
+      },
+      "C2c": {
+        "refused": true,
+        "error": "PLAN_REJECTED: plan operator `DirectedRelationshipTypeScan` is not on the read allow-list"
+      },
+      "C2d": {
+        "refused": true,
+        "error": "PLAN_REJECTED: plan operator `DirectedRelationshipTypeScan` is not on the read allow-list"
+      },
+      "C3": {
+        "refused": true,
+        "error": "PLAN_REJECTED: plan operator `Distinct` is not on the read allow-list"
+      },
+      "C4": {
+        "feeds_into": {
+          "refused": true,
+          "error": "PLAN_REJECTED: plan operator `RelationshipCountFromCountStore` is not on the read allow-list"
+        },
+        "leads_to": {
+          "refused": true,
+          "error": "PLAN_REJECTED: plan operator `RelationshipCountFromCountStore` is not on the read allow-list"
+        },
+        "alias_of": {
+          "refused": true,
+          "error": "PLAN_REJECTED: plan operator `RelationshipCountFromCountStore` is not on the read allow-list"
+        }
+      },
+      "C7": {
+        "rows": [],
+        "diagnostics": {
+          "hasWarning": false,
+          "notifications": [],
+          "gqlStatusObjects": [
+            {
+              "gqlStatus": "02000",
+              "statusDescription": "note: no data",
+              "severity": "UNKNOWN",
+              "classification": "UNKNOWN"
+            }
+          ],
+          "warningGqlStatuses": []
+        }
+      },
+      "C8": {
+        "rows": [
+          {
+            "f.name": "TRIZ / Genrich Altshuller Innovation Algorithm"
+          }
+        ],
+        "diagnostics": {
+          "hasWarning": false,
+          "notifications": [],
+          "gqlStatusObjects": [
+            {
+              "gqlStatus": "00000",
+              "statusDescription": "note: successful completion",
+              "severity": "UNKNOWN",
+              "classification": "UNKNOWN"
+            }
+          ],
+          "warningGqlStatuses": []
+        }
+      },
+      "C9": {
+        "rows": [
+          {
+            "f.name": "Jobs to Be Done (JTBD)"
+          },
+          {
+            "f.name": "JTBD"
+          },
+          {
+            "f.name": "Jobs to Be Done"
+          },
+          {
+            "f.name": "PWS-JTBD Innovation Discovery Framework"
+          },
+          {
+            "f.name": "Theory of Jobs to Be Done"
+          },
+          {
+            "f.name": "Jobs to Be Done / JTBD"
+          }
+        ],
+        "diagnostics": {
+          "hasWarning": false,
+          "notifications": [],
+          "gqlStatusObjects": [
+            {
+              "gqlStatus": "00000",
+              "statusDescription": "note: successful completion",
+              "severity": "UNKNOWN",
+              "classification": "UNKNOWN"
+            }
+          ],
+          "warningGqlStatuses": []
+        }
+      }
+    },
+    "lane_b_source": "theo-live brain_stats + brain_schema (whole-graph Cypher refused by Theo read allow-list)",
+    "key_tier_lane_b": "admin",
+    "drift_caveat": false,
+    "used_c2_fallback": false,
+    "theo_shape": true
+  }
+}

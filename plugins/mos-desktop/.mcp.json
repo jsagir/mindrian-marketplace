@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mindrian-os": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mindrian-mcp-server.cjs"],
+      "alwaysLoad": true
+    },
+    "mindrian-brain": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mindrian-brain-mcp-client.cjs"],
+      "alwaysLoad": true
+    }
+  }
+}
