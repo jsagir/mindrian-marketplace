@@ -2170,6 +2170,152 @@ function buildAcceptanceChecklist(ctx) {
         }
       },
     },
+    {
+      // Quick 261005-l9o (SEED-117, CODE-01 / SW-02 / SW-20) -- the Python floor.
+      //
+      // The room registry, resolve-room and on-cwd-changed run embedded Python.
+      // macOS ships Python 3.9, Windows ships none; one Python 3.11-only call in
+      // those scripts means no tester on a stock machine can create or switch a
+      // room (the registry stays empty and every write path sticks). This point
+      // names the python3 the machine would run and counts the 3.11-only APIs left
+      // under scripts/, so the regression surfaces at release time instead of in a
+      // tester's bug report 16 days later.
+      //
+      // Status: FAIL when any 3.11-only API is found. WARN (ok, finding set) when
+      // python3 is missing or older than 3.9: that is a property of the machine
+      // running the doctor, not of the release, so it must not brick the train.
+      // The pattern is assembled from pieces so this file never matches itself.
+      //
+      // Canon Part 8: a local file read and one local `python3 --version` spawn.
+      // Zero network.
+      id: 'python-floor',
+      label: 'room scripts hold the Python 3.9 floor: python3 version resolved, 0 Python 3.11-only APIs under scripts/',
+      severity: 'blocker',
+      applies_to: ['pre-tag', 'full'],
+      run: async function () {
+        if (inTestMode && process.env.DOCTOR_TEST_FAIL_POINT === 'python-floor') {
+          return { ok: false, finding: 'python-floor synthesized failure (test mode)', detail: {} };
+        }
+        const cp = require('child_process');
+        let python3Version = 'not found';
+        try {
+          const pv = cp.spawnSync('python3', ['--version'], { encoding: 'utf8', timeout: 10000 });
+          if (!pv.error && pv.status === 0) {
+            python3Version = (((pv.stdout || '') + (pv.stderr || '')).trim().split('\n')[0] || '').replace(/^Python\s+/i, '') || 'unknown';
+          }
+        } catch (_e) { /* stays 'not found' */ }
+        const apiRe = new RegExp(['datetime' + '\\.' + 'UTC', 'tom' + 'llib', 'Exception' + 'Group'].join('|'));
+        const hits = [];
+        const walkScripts = function (dir) {
+          let ents;
+          try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_e) { return; }
+          for (const ent of ents) {
+            if (ent.name === 'node_modules' || ent.name === '.git') continue;
+            const full = path.join(dir, ent.name);
+            if (ent.isDirectory()) { walkScripts(full); continue; }
+            if (!ent.isFile()) continue;
+            let buf;
+            try {
+              if (fs.statSync(full).size > 3 * 1024 * 1024) continue;
+              buf = fs.readFileSync(full);
+            } catch (_e) { continue; }
+            if (buf.includes(0)) continue;
+            const lines = buf.toString('utf8').split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              if (apiRe.test(lines[i])) hits.push(path.relative(pluginRoot, full) + ':' + (i + 1));
+            }
+          }
+        };
+        walkScripts(path.join(pluginRoot, 'scripts'));
+        const m = /^(\d+)\.(\d+)/.exec(python3Version);
+        const belowFloor = m ? (Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 9)) : true;
+        const detail = {
+          python3_version: python3Version,
+          python_floor: '3.9',
+          py311_only_api_hits: hits.length,
+          hit_sample: hits.slice(0, 10),
+        };
+        if (hits.length > 0) {
+          return {
+            ok: false,
+            finding: hits.length + ' Python 3.11-only API use(s) under scripts/ (first: ' + hits[0] + '); the room scripts must run on Python 3.9',
+            detail: detail,
+          };
+        }
+        if (belowFloor) {
+          return {
+            ok: true,
+            finding: python3Version === 'not found'
+              ? 'WARN: python3 not found on PATH; the room registry needs python3 (3.9 or newer) until the Node rewrite lands'
+              : 'WARN: python3 is ' + python3Version + ', below the 3.9 floor the room scripts target',
+            detail: detail,
+          };
+        }
+        return { ok: true, finding: null, detail: detail };
+      },
+    },
+    {
+      // Quick 261005-muy (RULE 10, navigator ruling 2026-10-05: no cut without a real-room run read
+      // by a human) -- the standing view of the receipt release.sh Step 2.6 will demand.
+      //
+      // Reads the newest receipt in the receipt dir (MINDRIAN_REAL_ROOM_RECEIPT_DIR, default
+      // $HOME/.mindrian/release-real-room) and compares its sha with this repo's HEAD. Equal and not
+      // recorded with --offline: ok, no finding. Behind, absent or offline: ok with a WARN naming the
+      // command to run, because the HARD refusal belongs to Step 2.6 of the cut itself, and a point
+      // that went red on every commit after the last read would brick every doctor run in between.
+      //
+      // Canon Part 8: a local directory read and one local `git rev-parse HEAD`. Zero network.
+      id: 'real-room-run',
+      label: 'a person read a real-room run for this HEAD: latest receipt sha equals HEAD (WARN when behind or absent)',
+      severity: 'blocker',
+      applies_to: ['pre-tag', 'full'],
+      run: async function () {
+        if (inTestMode && process.env.DOCTOR_TEST_FAIL_POINT === 'real-room-run') {
+          return { ok: false, finding: 'real-room-run synthesized failure (test mode)', detail: {} };
+        }
+        const cp = require('child_process');
+        const receiptDir = process.env.MINDRIAN_REAL_ROOM_RECEIPT_DIR
+          || path.join(process.env.HOME || require('os').homedir(), '.mindrian', 'release-real-room');
+        const runCmd = 'node scripts/real-room-run.cjs --read-by "<your name>"';
+        let headSha = '';
+        try {
+          const gr = cp.spawnSync('git', ['-C', pluginRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+          if (!gr.error && gr.status === 0) headSha = String(gr.stdout || '').trim();
+        } catch (_e) { /* stays empty */ }
+        let latest = null;
+        let files = [];
+        try { files = fs.readdirSync(receiptDir).filter(function (f) { return /\.json$/.test(f); }); } catch (_e) { files = []; }
+        files.forEach(function (f) {
+          let j = null;
+          try { j = JSON.parse(fs.readFileSync(path.join(receiptDir, f), 'utf8')); } catch (_e) { j = null; }
+          if (!j || typeof j !== 'object' || typeof j.sha !== 'string') return;
+          const t = Date.parse(j.read_at || '') || 0;
+          if (!latest || t > latest.t) latest = { t: t, receipt: j };
+        });
+        const detail = {
+          receipt_dir: receiptDir,
+          head_sha: headSha || null,
+          latest_sha: latest ? latest.receipt.sha : null,
+          latest_reader: latest ? String(latest.receipt.reader || '') : null,
+          latest_read_at: latest ? String(latest.receipt.read_at || '') : null,
+          offline: latest ? latest.receipt.offline === true : null,
+          desktop_verified: latest && latest.receipt.desktop_verified ? latest.receipt.desktop_verified : null,
+        };
+        if (!latest) {
+          return { ok: true, finding: 'WARN: no real-room receipt in ' + receiptDir + '; release.sh Step 2.6 will refuse a cut until a person runs ' + runCmd, detail: detail };
+        }
+        if (!headSha) {
+          return { ok: true, finding: 'WARN: HEAD could not be read, so the receipt could not be compared; Step 2.6 will refuse in that case', detail: detail };
+        }
+        if (latest.receipt.sha !== headSha) {
+          return { ok: true, finding: 'WARN: the latest real-room receipt is for ' + latest.receipt.sha.slice(0, 12) + ', behind HEAD ' + headSha.slice(0, 12) + '; run ' + runCmd, detail: detail };
+        }
+        if (latest.receipt.offline === true) {
+          return { ok: true, finding: 'WARN: the receipt for HEAD was recorded with --offline; Step 2.6 refuses it. Run ' + runCmd + ' without --offline', detail: detail };
+        }
+        return { ok: true, finding: null, detail: detail };
+      },
+    },
   ];
 }
 
