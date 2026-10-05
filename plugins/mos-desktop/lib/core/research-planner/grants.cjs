@@ -482,20 +482,13 @@ function validateExecutedQuery(query, grant, state) {
   if (!Array.isArray(grant.families) || grant.families.indexOf(q.family) === -1 || templateIdsOf(q.family).indexOf(q.template_id) === -1) {
     return { ok: false, reason: 'outside_family' };
   }
-  if (q.audit !== 'pass') return { ok: false, reason: 'audit_tripped' };
+  if (q.audit !== 'pass' && q.audit !== 'not_applicable') return { ok: false, reason: 'audit_tripped' };
 
   const round = Number.isInteger(q.round) ? q.round : (Number.isInteger(st.round) ? st.round : 1);
-  if (grant.lifetime === 'standing') {
-    const known = {};
-    (grant.approved_terms || []).forEach(function (e) {
-      known[normTerm(e.term)] = true;
-      (e.synonyms || []).forEach(function (s) { known[normTerm(s)] = true; });
-    });
-    const fresh = (Array.isArray(q.slot_terms) ? q.slot_terms : []).some(function (t) { return !known[normTerm(t)]; });
-    if (fresh) return { ok: false, reason: 'new_term' };
-  } else if (round === 1) {
-    if ((grant.approved_hashes || []).indexOf(q.q_hash) === -1) return { ok: false, reason: 'hash_not_approved' };
-  }
+  // 369.2 R02 (ruling 2026-10-05, A5): the web lines carry one run grant per run showing the exact
+  // strings; a standing term grant no longer covers a web send (it has no approved_hashes, so a
+  // round-one query never matches it). new_term is never emitted; REASK_REASONS still lists it for old ledgers.
+  if (round === 1 && (grant.approved_hashes || []).indexOf(q.q_hash) === -1) return { ok: false, reason: 'hash_not_approved' };
 
   const cap = grant.caps && Number.isFinite(grant.caps.max_searches) ? grant.caps.max_searches : 0;
   if ((st.searches_used || 0) >= cap) return { ok: false, reason: 'cap_exceeded' };
@@ -594,9 +587,77 @@ function theoGrantCard(p, opts) {
   };
 }
 
+// jobOf(plan) -> the navigator's own question, one line, capped, for the card and the answer line
+// (ruling 2026-10-05: the approval is named by its job, never by the word grant).
+function jobOf(plan) {
+  const py = plan && plan.pyramid;
+  const raw = py && typeof py.stated_question === 'string' ? py.stated_question : '';
+  const one = raw.replace(/\s+/g, ' ').trim();
+  if (one.length === 0) return 'this research run';
+  return one.length > 140 ? one.slice(0, 137).trim() + '...' : one;
+}
+
+// approvedLine(n, job) / refusedLine(): the two answer lines (ruling 2026-10-05).
+function approvedLine(n, job) {
+  const count = Number.isInteger(n) && n >= 0 ? n : 0;
+  return ('Approved: ' + count + ' search' + (count === 1 ? '' : 'es') + ' left for ' + (job || 'this research run') + '.').replace(/[\u2014\u2013]/g, '-');
+}
+function refusedLine() { return 'Nothing left this machine.'; }
+
+// runCard(p, opts) -> the F.0 card for a web run: one approval per run, every exact string on it.
+// The user-facing words never say "grant" (ruling 2026-10-05); ids and policy codes ride in the payload.
+function runCard(p, opts) {
+  const caps = p.caps || {};
+  const sendQueries = (opts && Array.isArray(opts.queries)) ? opts.queries.map(function (q) { return String(q).replace(/[\r\n]+/g, ' '); }) : [];
+  const n = sendQueries.length > 0 ? sendQueries.length : (Number.isFinite(caps.max_searches) ? caps.max_searches : 0);
+  const word = 'search' + (n === 1 ? '' : 'es');
+  const job = opts && typeof opts.job === 'string' && opts.job.length > 0 ? opts.job : 'this research run';
+  const lines = [];
+  lines.push('These ' + n + ' ' + word + ' will leave this machine for ' + job + '. Nothing is sent until you approve.');
+  lines.push('');
+  lines.push('OpenAlex is a public index of scholarly papers. Each search goes there exactly as written, once, for this run only. Nothing else leaves the room, and nothing is filed.');
+  lines.push('');
+  if (sendQueries.length > 0) {
+    lines.push('The searches, exactly as they will be sent:');
+    sendQueries.forEach(function (q) { lines.push('- ' + q); });
+  } else {
+    lines.push('No search strings could be listed, so nothing will be sent.');
+  }
+  lines.push('');
+  lines.push('- Caps for this run: ' + caps.max_searches + ' searches, ' + caps.results_per_query + ' results each');
+  lines.push('- Room scope: only this room');
+  lines.push('- Revoke: tell Larry to revoke the search approval at any time; the next search stops');
+  lines.push('');
+  lines.push('Approving never files anything. Anything worth keeping comes back as its own yes or no.');
+  const templates = [];
+  (p.families || []).forEach(function (f) { templates.push(f); });
+  const templateIds = [];
+  (p.families || []).forEach(function (f) { templateIdsOf(f).forEach(function (t) { if (templateIds.indexOf(t) === -1) templateIds.push(t); }); });
+  return {
+    shape: 'F.0',
+    title: 'See every search before it leaves, then approve this run once.',
+    question: 'Send these ' + n + ' ' + word + ' to OpenAlex for this run?',
+    options: [
+      { id: 'approve_run', label: 'Send these ' + n + ' ' + word + ' (Recommended)', recommended: true },
+      { id: 'not_now', label: 'Not now' },
+    ],
+    body_md: lines.join('\n').replace(/[\u2014\u2013]/g, '-'),
+    payload: {
+      grant_lifetime: 'run',
+      policy_version: p.policy_version || CURRENT_POLICY,
+      new_terms: [],
+      queries: sendQueries.slice(),
+      families: templates,
+      template_ids: templateIds,
+      job: job,
+    },
+  };
+}
+
 function grantCard(proposal, opts) {
   const p = proposal || {};
   if (Array.isArray(p.providers) && p.providers.indexOf(THEO_PROVIDER) !== -1) return theoGrantCard(p, opts);
+  if (p.lifetime === 'run') return runCard(p, opts);
   const now = clockOf(opts);
   const newTerms = (opts && Array.isArray(opts.newTerms)) ? opts.newTerms : [];
   const standingKind = p.lifetime !== 'run';
@@ -604,9 +665,11 @@ function grantCard(proposal, opts) {
   (p.families || []).forEach(function (f) { templates.push(f + ': ' + templateIdsOf(f).join(', ')); });
   const caps = p.caps || {};
   const lines = [];
-  lines.push('## Let this room look things up in OpenAlex?');
+  // 369.2-10 (ruling 2026-10-05): the word grant never reaches a user. The standing card says what a standing
+  // approval does since plan 09 (A5): it records terms and shapes and sends nothing; each run asks once.
+  lines.push('## Keep these search terms approved for this room?');
   lines.push('');
-  lines.push('OpenAlex is a public index of scholarly papers. A grant lets the room send short search strings there. It covers fetching only; filing still asks each time.');
+  lines.push('OpenAlex is a public index of scholarly papers. This standing approval records the terms and search shapes the room accepts. It sends nothing by itself: each run still shows its exact searches and asks once before anything leaves. It covers fetching only; filing still asks each time.');
   lines.push('');
   lines.push('- Provider: ' + (p.providers || []).join(', ') + '; fallback: none (if it is down, the run says so and stops)');
   lines.push('- What is searched: OpenAlex titles, abstracts and metadata; nothing else leaves the room');
@@ -617,8 +680,8 @@ function grantCard(proposal, opts) {
     lines.push('- Expires: ' + iso(now + GRANT_EXPIRY_DAYS * DAY_MS).slice(0, 10) + ' (' + GRANT_EXPIRY_DAYS + ' days from today)');
   }
   lines.push('- Room scope: only this room (' + (p.room_id || 'this room') + '); it does not carry to any other room');
-  lines.push('- Policy version: ' + (p.policy_version || CURRENT_POLICY));
-  lines.push('- Revoke: tell Larry "revoke the research grant" at any time; the next search stops');
+  // the policy version id rides in the payload, not the body (ruling 2026-10-05: ids never reach a user)
+  lines.push('- Revoke: tell Larry to revoke the search approval at any time; the next search stops');
   if (newTerms.length > 0) {
     lines.push('');
     lines.push('New terms that would leave the room the first time (approving covers these):');
@@ -632,14 +695,14 @@ function grantCard(proposal, opts) {
     sendQueries.forEach(function (q) { lines.push('- ' + String(q).replace(/[\r\n]+/g, ' ')); });
   }
   lines.push('');
-  lines.push('A grant never files anything. Anything worth keeping comes back as its own yes or no.');
+  lines.push('A standing approval never files anything. Anything worth keeping comes back as its own yes or no.');
 
   return {
     shape: 'F.0',
-    title: 'Research grant',
-    question: 'Approve this research grant?',
+    title: 'Keep these search terms approved for this room.',
+    question: 'Keep this standing search approval?',
     options: [
-      { id: 'approve_standing', label: 'Approve this standing grant (Recommended)', recommended: true },
+      { id: 'approve_standing', label: 'Keep this standing approval (Recommended)', recommended: true },
       { id: 'approve_run', label: 'Approve this one run only' },
       { id: 'not_now', label: 'Not now' },
     ],
@@ -749,6 +812,9 @@ module.exports = {
   THEO_PROVIDER,
   THEO_MAX_CALLS,
   grantCard,
+  jobOf,
+  approvedLine,
+  refusedLine,
   readRunLedger,
   recordRun,
   throttleState,

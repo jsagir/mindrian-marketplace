@@ -14,10 +14,9 @@
  *   Test 5  timeout graceful (AbortError; fetcher continues with remaining sources)
  *   Test 6  malformed response graceful (arXiv returns non-XML; api_error logged)
  *   Test 7  per-source budget exhausted (seed 100 entries; openalex skipped)
- *   Test 8  CANON PART 8 adversarial: leaked-artifact-body in query throws
- *   Test 9  CANON PART 8 adversarial: leaked-venture-name in query throws
- *   Test 10 CANON PART 8 adversarial: leaked-meeting-fragment in query throws
- *   Test 11 CANON PART 8 adversarial: leaked-financial-figure in query throws
+ *   Tests 8-11 (moved 369.2-06, ruling 2026-10-05): the old adversarial-throws legs are retired;
+ *           W1 pins that the web line dispatches the same strings unchanged, W2 pins A4
+ *           (a credential-shaped query is refused pre-dispatch, zero fetch, no echo).
  *   Test 12 chokepoint exclusivity: every fetch() call site is inside a
  *           per-source dispatcher invoked by fetchAcademic via
  *           buildAcademicQuery; static grep enforces this.
@@ -543,97 +542,80 @@ console.log('=== 89.2-02 fetcher-academic suite: starting ===');
     SCENARIO_RESULTS.push({ test: 'T7', surface: 'academic', payload: out });
   });
 
-  // ---------- Test 8: CANON PART 8 adversarial: leaked-artifact-body ----------
-  await runScenario('Test 8: CANON PART 8 adversarial leaked-artifact-body throws', async function () {
+  // ---------- 369.2 ruling 2026-10-05 (added beside Tests 8-11) ----------
+  // Web line: the academic fetcher sends a room's words as written (the CONTENT-SET
+  // fence binds the Theo/Brain line only); a credential in the string is refused
+  // per A4. The ledger entries these two scenarios add are removed from the
+  // cumulative A1 ledger on purpose: A1 pins every OTHER test's outbound traffic.
+  const A4_3692 = process.env.MOS_369_2_A4 === 'drop' ? 'drop' : 'keep';
+
+  await runScenario('W1 web line: adversarial strings dispatch unchanged (academic) (369.2 ruling 2026-10-05)', async function () {
+    const ledgerMark = CAPTURED_URLS_ALL.length;
+    const items = [
+      { q: 'cancer biomarkers <<artifact: meeting with Dr Smith Q4 financials>>', opts: {} },
+      { q: 'oncology venture valuation $5.2M cancer treatment', opts: {} },
+      { q: 'oncology meeting with Mayo Clinic Q3', opts: {} },
+      { q: 'oncology partnerships under $750K threshold', opts: {} },
+    ];
+    for (const it of items) {
+      const q = it.q;
     setupScopedHome();
     clearApiKeys();
-    // Pattern 3 (meeting with) is the only short way to leak an artifact body in 1 line.
-    const queries = ['cancer biomarkers <<artifact: meeting with Dr Smith Q4 financials>>'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-academic.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchAcademic(queries, {});
-    } catch (e) {
-      threw = e;
+      installMockFetch(buildAllSourcesMockOk('clean', 1));
+      const fetcher = require('../core/rs-fetcher-academic.cjs');
+      let threw = null;
+      try {
+        await fetcher.fetchAcademic([q], it.opts);
+      } catch (e) {
+        threw = e;
+      }
+      assert.equal(threw, null, 'a web line must not throw on a room string; q=' + q + ' got ' + (threw && threw.name));
+      assert.ok(CAPTURED_URLS.length >= 1, 'at least one dispatch for q=' + q + '; got ' + CAPTURED_URLS.length);
+      assert.ok(
+        CAPTURED_URLS.some(function (u) { return u.indexOf(encodeURIComponent(q)) !== -1; }),
+        'expected the planted string in an outbound URL, unchanged for q=' + q);
     }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(threw.meta.surface, 'academic', 'meta.surface');
-    assert.ok(typeof threw.meta.matched_pattern === 'string'
-      && threw.meta.matched_pattern.length > 0, 'meta.matched_pattern present');
-
-    // ZERO outbound URL captures for this query.
-    assert.equal(CAPTURED_URLS.length, 0,
-      'NO fetch() calls allowed before throw; got ' + CAPTURED_URLS.length);
-
-    // ZERO telemetry entries for this query.
-    const telemetry = require('../core/rs-egress-telemetry.cjs');
-    if (fs.existsSync(telemetry.TELEMETRY_FILE)) {
-      const payload = JSON.parse(fs.readFileSync(telemetry.TELEMETRY_FILE, 'utf8'));
-      assert.equal(payload.entries.length, 0,
-        'NO telemetry entries allowed; got ' + payload.entries.length);
-    }
-    SCENARIO_RESULTS.push({ test: 'T8', surface: 'academic', payload: { threw: threw.meta.matched_pattern } });
+    CAPTURED_URLS_ALL.length = ledgerMark;
   });
 
-  // ---------- Test 9: CANON PART 8 adversarial: leaked-venture-name (currency) ----------
-  await runScenario('Test 9: CANON PART 8 adversarial leaked-venture-financials throws', async function () {
+  await runScenario('W2 A4=' + A4_3692 + ' credential-shaped query (academic) ' + (A4_3692 === 'keep'
+    ? 'is refused pre-dispatch: zero fetch, no echo (369.2 ruling 2026-10-05)'
+    : 'dispatches like any other string (369.2 ruling 2026-10-05)'), async function () {
+    const ledgerMark = CAPTURED_URLS_ALL.length;
+    for (const q of ['cancer biomarkers api_key=abc123secretvalue', 'cancer biomarkers Bearer abcdefghijklmnopqrstu']) {
     setupScopedHome();
     clearApiKeys();
-    // Pattern 1 (currency $5.2M) leak.
-    const queries = ['oncology venture valuation $5.2M cancer treatment'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-academic.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchAcademic(queries, {});
-    } catch (e) {
-      threw = e;
+      installMockFetch(buildAllSourcesMockOk('clean', 1));
+      const fetcher = require('../core/rs-fetcher-academic.cjs');
+      let threw = null;
+      try {
+        await fetcher.fetchAcademic([q], {});
+      } catch (e) {
+        threw = e;
+      }
+      if (A4_3692 === 'keep') {
+        assert.ok(threw, 'expected a throw on a credential-shaped query: ' + q);
+        assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
+        assert.equal(threw.meta.surface, 'academic', 'meta.surface');
+        assert.equal(threw.meta.matched_pattern, 'credential', 'matched_pattern is credential');
+        assert.equal(threw.meta.sample, '', 'no echo in the violation sample');
+        assert.equal(String(threw.message).indexOf('abc123secretvalue'), -1, 'no echo in the message');
+        assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed before throw; got ' + CAPTURED_URLS.length);
+        const telemetry = require('../core/rs-egress-telemetry.cjs');
+        if (fs.existsSync(telemetry.TELEMETRY_FILE)) {
+          const payload = JSON.parse(fs.readFileSync(telemetry.TELEMETRY_FILE, 'utf8'));
+          assert.equal(payload.entries.length, 0, 'NO telemetry entries allowed for a refused query; got ' + payload.entries.length);
+        }
+      } else {
+        assert.equal(threw, null, 'drop: no throw');
+        assert.ok(CAPTURED_URLS.length >= 1, 'drop: dispatches');
+      }
     }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed');
-    SCENARIO_RESULTS.push({ test: 'T9', surface: 'academic', payload: { threw: threw.meta.matched_pattern } });
+    CAPTURED_URLS_ALL.length = ledgerMark;
   });
 
-  // ---------- Test 10: CANON PART 8 adversarial: leaked-meeting-fragment ----------
-  await runScenario('Test 10: CANON PART 8 adversarial leaked-meeting-fragment throws', async function () {
-    setupScopedHome();
-    clearApiKeys();
-    const queries = ['oncology meeting with Mayo Clinic Q3'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-academic.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchAcademic(queries, {});
-    } catch (e) {
-      threw = e;
-    }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed');
-    SCENARIO_RESULTS.push({ test: 'T10', surface: 'academic', payload: { threw: threw.meta.matched_pattern } });
-  });
-
-  // ---------- Test 11: CANON PART 8 adversarial: leaked-financial-figure (currency variant) ----------
-  await runScenario('Test 11: CANON PART 8 adversarial leaked-financial-figure throws', async function () {
-    setupScopedHome();
-    clearApiKeys();
-    const queries = ['oncology partnerships under $750K threshold'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-academic.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchAcademic(queries, {});
-    } catch (e) {
-      threw = e;
-    }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed');
-    SCENARIO_RESULTS.push({ test: 'T11', surface: 'academic', payload: { threw: threw.meta.matched_pattern } });
-  });
+  // ---------- Tests 8-11 (moved 369.2-06, 2026-10-05) ----------
+  // 369.2-06: the CONTENT-SET fence binds the Theo/Brain line only (ruling 2026-10-05); see the web-line and credential legs (W1, W2 above).
 
   // ---------- Test 12: chokepoint exclusivity (static grep) ----------
   await runScenario('Test 12: chokepoint exclusivity (every fetch() inside per-source dispatcher)', async function () {
@@ -669,9 +651,13 @@ console.log('=== 89.2-02 fetcher-academic suite: starting ===');
     assert.ok(fetchCount === 1,
       'expected exactly 1 native fetch() call (inside fetchWithTimeout helper); got ' + fetchCount);
 
-    // Also verify auditQueryString call count >= 1 (chokepoint enforcement).
-    const auditCount = (src.match(/auditQueryString/g) || []).length;
-    assert.ok(auditCount >= 1, 'auditQueryString must be invoked at least once; got ' + auditCount);
+    // Also verify the web-line credential check call count >= 1 (chokepoint
+    // enforcement). 369.2-06 (2026-10-05): the web line runs auditWebCredential,
+    // never the CONTENT-SET auditQueryString, so the scan pins the live name.
+    const auditCount = (src.match(/auditWebCredential/g) || []).length;
+    assert.ok(auditCount >= 1, 'auditWebCredential must be invoked at least once; got ' + auditCount);
+    const contentFenceCalls = (src.match(/auditQueryString\s*\(/g) || []).length;
+    assert.equal(contentFenceCalls, 0, 'the web line must not call the CONTENT-SET auditQueryString; got ' + contentFenceCalls);
 
     // Verify buildAcademicQuery is defined exactly once.
     const buildDefCount = (src.match(/function buildAcademicQuery/g) || []).length;
@@ -843,6 +829,6 @@ console.log('=== 89.2-02 fetcher-academic suite: starting ===');
     process.exit(1);
   }
 
-  console.log('=== 89.2-02 fetcher-academic suite: 18/18 passed ===');
+  console.log('=== 89.2-02 fetcher-academic suite: ' + passed + '/' + (passed + failed) + ' passed ===');
   process.exit(0);
 })();

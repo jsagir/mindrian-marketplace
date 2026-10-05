@@ -12,8 +12,10 @@
  * global.fetch-stub-with-call-counter idiom):
  *
  *   Test 1: openalex happy path -> normalized paper shape; source === 'openalex'.
- *   Test 2: planted FORBIDDEN_PATTERN query throws ExternalEgressViolation
- *           BEFORE global.fetch is called -- fetch call-count is 0 (fail closed).
+ *   Test 2: (moved 369.2-06, ruling 2026-10-05) the planted room string on a web
+ *           source dispatches once, q unchanged (2b); a credential-shaped query is
+ *           refused per A4 with zero fetch (2c); brain-cypher still throws on the
+ *           planted string with zero Brain call (2d).
  *   Test 3: sci-bot returns the disabled no-op envelope; zero fetch.
  *   Test 4: brain-cypher with isAvailable() false returns a degraded envelope
  *           (no throw); with isAvailable() true, the only Brain call carries a
@@ -139,14 +141,21 @@ console.log('=== 130.5-01 research-corpus suite: starting ===');
     assert.ok(fetchCallCount >= 1, 'at least one fetch issued for a clean query');
   });
 
-  // ---------- Test 2: planted violation fails closed (zero fetch) ----------
-  await runScenario('Test 2: planted FORBIDDEN_PATTERN query throws pre-egress, zero fetch (fail closed)', async function () {
-    installFetchStub(async function () {
+  // ---------- Test 2 (moved 369.2-06, 2026-10-05) ----------
+  // 369.2-06: the CONTENT-SET fence binds the Theo/Brain line only (ruling 2026-10-05); see the web-line and credential legs (Tests 2b, 2c, 2d).
+
+  // ---------- 369.2 ruling 2026-10-05 (added beside Test 2) ----------
+  // Web sources send the room's words as written; the Brain line keeps the
+  // CONTENT-SET fence; a credential in a web query is refused per A4.
+  const A4_3692 = process.env.MOS_369_2_A4 === 'drop' ? 'drop' : 'keep';
+
+  await runScenario('Test 2b: web line - the planted string dispatches once, q unchanged (369.2 ruling 2026-10-05)', async function () {
+    const urls = [];
+    installFetchStub(async function (url) {
+      urls.push(String(url));
       return { ok: true, status: 200, headers: new Map(), async json() { return makeOpenAlexResponse('x', 1); }, async text() { return '{}'; } };
     });
     const m = freshModule();
-    // Pattern 1 (currency $5.2M) -- a proprietary financial figure that must
-    // never cross the egress boundary.
     const planted = 'oncology venture valuation $5.2M cancer treatment';
     let threw = null;
     try {
@@ -154,9 +163,61 @@ console.log('=== 130.5-01 research-corpus suite: starting ===');
     } catch (e) {
       threw = e;
     }
-    assert.ok(threw, 'expected a throw on the planted user-content query');
+    assert.equal(threw, null, 'a web line must not throw on a room string; got ' + (threw && threw.name));
+    assert.equal(fetchCallCount, 1, 'exactly one dispatch; got ' + fetchCallCount);
+    assert.ok(urls[0].indexOf(encodeURIComponent(planted)) !== -1, 'the planted string is in the URL unchanged: ' + urls[0]);
+  });
+
+  await runScenario('Test 2c: A4=' + A4_3692 + ' credential-shaped web query ' + (A4_3692 === 'keep'
+    ? 'is refused pre-dispatch, zero fetch, no echo (369.2 ruling 2026-10-05)'
+    : 'dispatches like any other string (369.2 ruling 2026-10-05)'), async function () {
+    installFetchStub(async function () {
+      return { ok: true, status: 200, headers: new Map(), async json() { return makeOpenAlexResponse('x', 1); }, async text() { return '{}'; } };
+    });
+    const m = freshModule();
+    const secret = 'abc123secretvalue';
+    const q = 'oncology venture api_key=' + secret;
+    let threw = null;
+    try {
+      await m.fetchCorpus({ source: 'openalex', query: q, limit: 5 });
+    } catch (e) {
+      threw = e;
+    }
+    if (A4_3692 === 'keep') {
+      assert.ok(threw, 'expected a throw on a credential-shaped query');
+      assert.equal(threw.name, 'ExternalEgressViolation', 'throws ExternalEgressViolation');
+      assert.equal(threw.meta.matched_pattern, 'credential', 'matched_pattern is credential');
+      assert.equal(threw.meta.sample, '', 'no echo in the violation sample');
+      assert.equal(String(threw.message).indexOf(secret), -1, 'no echo in the message');
+      assert.equal(fetchCallCount, 0, 'NO fetch() before the throw; got ' + fetchCallCount);
+    } else {
+      assert.equal(threw, null, 'drop: no throw');
+      assert.equal(fetchCallCount, 1, 'drop: one dispatch');
+    }
+  });
+
+  await runScenario('Test 2d: brain-cypher (the Theo line) still throws on the planted string, zero Brain call, zero fetch (369.2 ruling 2026-10-05)', async function () {
+    installFetchStub(async function () { throw new Error('brain-cypher must NOT call global.fetch'); });
+    const m = freshModule();
+    const brain = require('./brain-client.cjs');
+    const savedIsAvailable = brain.isAvailable;
+    const savedQuery = brain.query;
+    let brainCalls = 0;
+    brain.isAvailable = function () { return true; };
+    brain.query = async function () { brainCalls += 1; return { records: [] }; };
+    let threw = null;
+    try {
+      await m.fetchCorpus({ source: 'brain-cypher', query: 'oncology venture valuation $5.2M cancer treatment' });
+    } catch (e) {
+      threw = e;
+    } finally {
+      brain.isAvailable = savedIsAvailable;
+      brain.query = savedQuery;
+    }
+    assert.ok(threw, 'expected a throw on the planted brain-cypher query');
     assert.equal(threw.name, 'ExternalEgressViolation', 'throws ExternalEgressViolation');
-    assert.equal(fetchCallCount, 0, 'NO fetch() allowed before the throw; got ' + fetchCallCount);
+    assert.equal(brainCalls, 0, 'zero Brain calls; got ' + brainCalls);
+    assert.equal(fetchCallCount, 0, 'zero fetch; got ' + fetchCallCount);
   });
 
   // ---------- Test 3: sci-bot disabled no-op envelope, zero fetch ----------

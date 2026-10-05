@@ -282,15 +282,12 @@ function proseTermIn(entries) {
   });
 }
 
-// phraseQueriesOf(plan) -> the exact composed strings of the plan's fetch queries when
-// any slot carries a room phrase (not a plain term), else []. The grant card lists them
-// so the navigator approves the run once, seeing what will leave (SEED-115).
-function phraseQueriesOf(plan) {
-  const entries = collectFetchQueries(plan);
-  const hasPhrase = entries.some(function (e) {
-    return slotTermsOf(e).some(function (t) { return families.composableTerm(t) === null; });
-  });
-  return hasPhrase ? entries.map(function (e) { return e.query.q; }) : [];
+// queriesOf(plan) -> the exact composed string of every fetch query in the plan, in plan
+// order. The run card lists them all, so the navigator approves the run once, seeing
+// everything that will leave (369.2 R02, ruling 2026-10-05; was phraseQueriesOf, which
+// listed the strings only when a slot was phrase-shaped).
+function queriesOf(plan) {
+  return collectFetchQueries(plan).map(function (e) { return e.query.q; });
 }
 
 // scopeStuck(grant, card, verdict) -> true when the active standing grant already
@@ -315,29 +312,16 @@ function stuckInfo(entries, grant, reason, index) {
 }
 
 function reaskCard(roomDir, plan, grant, reason, now) {
-  const runGrant = !!grant && grant.lifetime === 'run';
-  // 366-15 (D-09): a plan with theo leaves is always approved as a run grant, because a
-  // standing grant can never reach Theo. The card names Theo and gives the pair count.
+  // 369.2 R02 (ruling 2026-10-05, A5): the web lines carry one run grant per run on a card that
+  // lists every exact string; a standing grant never covers a web send, so the per-term
+  // new_term loop is retired here. A plan with theo leaves is the same run grant (366-15, D-09);
+  // the card then names Theo and gives the pair count.
   const theoPairs = theoLane.theoLeavesOf(plan).map(function (l) { return grants.theoPairQ(l.slots.term, l.slots.term2); });
-  let proposal;
-  if (runGrant || theoPairs.length > 0) {
-    proposal = grants.buildRunGrant(plan);
-    proposal.room_id = grants.roomIdFor(roomDir);
-  } else {
-    // SEED-104: a plan-scoped proposal covers the plan's own query families.
-    proposal = grants.buildStandingProposal(roomDir, { terms: termsForProposal(plan), families: grants.planFamilies(plan) });
-  }
-  let newTerms = [];
-  if (reason === 'new_term') {
-    const known = approvedKnown(grant);
-    const all = families.slotTerms(collectFetchQueries(plan).map(function (e) { return { slot_terms: slotTermsOf(e) }; }));
-    newTerms = all.filter(function (t) { return !known[normTerm(t)]; });
-  }
-  const cardOpts = { newTerms: newTerms, now: now };
-  const phraseQs = phraseQueriesOf(plan);
-  if (phraseQs.length > 0) cardOpts.queries = phraseQs;
+  const proposal = grants.buildRunGrant(plan);
+  proposal.room_id = grants.roomIdFor(roomDir);
+  const cardOpts = { newTerms: [], now: now, queries: queriesOf(plan), job: grants.jobOf(plan) };
   if (theoPairs.length > 0 && Array.isArray(proposal.providers) && proposal.providers.indexOf(grants.THEO_PROVIDER) !== -1) cardOpts.theoPairs = theoPairs;
-  return { proposal: proposal, new_terms: newTerms, card: grants.grantCard(proposal, cardOpts) };
+  return { proposal: proposal, new_terms: [], card: grants.grantCard(proposal, cardOpts) };
 }
 
 function slotTermsOf(entry) {
@@ -467,12 +451,14 @@ function theoVerdict(lane, theoLeaves) {
   return { vr: { verdict: verdict, plurality_ran: false, primary_count: null, cover_count: null, floor: verdictMod.GAP_COUNT_FLOOR, reasons: reasons }, line: line };
 }
 
-// egressOff(policy, entries, theoLeaves) -> the name of the egress line that stops this run from
-// sending anything, or null (366-17, ADR-E16). A plan with OpenAlex searches needs the research
-// line; a plan with nothing but Theo leaves needs the theo line. Where research runs and only the
-// theo line is off, the run goes ahead and the lane reports the off line leaf by leaf.
+// egressOff(policy, entries, theoLeaves) -> the name of what stops this run from sending anything,
+// or null (366-17, ADR-E16; web lines freed 2026-10-05, 369.2-05). 'offline' when --offline is on
+// and there is anything to send: the flag is read directly, because the web searches have no
+// policy line any more. Otherwise a plan with nothing but Theo leaves needs the theo line. Where
+// web searches run and only the theo line is off, the run goes ahead and the lane reports the off
+// line leaf by leaf.
 function egressOff(policy, entries, theoLeaves) {
-  if (entries.length > 0 && !egressPolicy.lineAllowed(policy, 'research')) return 'research';
+  if ((entries.length > 0 || theoLeaves.length > 0) && policy.offline === true) return 'offline';
   if (entries.length === 0 && theoLeaves.length > 0 && !egressPolicy.lineAllowed(policy, 'theo')) return 'theo';
   return null;
 }
@@ -481,16 +467,18 @@ function egressOff(policy, entries, theoLeaves) {
 // intact, nothing was sent, no run state or audit row is written. This is a fourth runQuick status
 // beside done, reask and refused (reask asks for a grant; here a grant would change nothing).
 function planOnly(plan, line, policy) {
-  const why = policy.offline ? 'offline mode is on' : 'the ' + line + ' egress line is off for this room';
+  const isOffline = line === 'offline';
   return {
     status: 'plan_only',
-    reason: 'egress_line_off',
+    reason: isOffline ? 'offline' : 'egress_line_off',
     line: line,
     offline: policy.offline === true,
     sent: false,
     outcome: 'plan_only_not_sent',
     run_id: plan.run_id,
-    answer_line: 'Plan only, not sent: ' + why + ', so nothing left the room. The plan is intact.',
+    answer_line: isOffline
+      ? 'Plan only, nothing sent: offline mode is on. The plan is intact; run it again without offline to search.'
+      : 'Plan only, nothing sent: the Theo line is off for this room. The plan is intact.',
     card: planMod.planReviewCard(plan),
     ignored: policy.ignored.slice(),
   };
@@ -514,7 +502,7 @@ function coverFor(roomDir, plan, opts) {
   if (proseTermIn(entries)) return { covered: false, reason: 'term_not_composed' };
   // 366-17: a line that is off is decided before any grant question; a grant would change nothing
   const offLine = egressOff(egressPolicy.loadEgressPolicy(roomDir, { offline: o.offline === true }), entries, theoLeaves);
-  if (offLine) return { covered: false, reason: 'egress_line_off', line: offLine };
+  if (offLine) return { covered: false, reason: offLine === 'offline' ? 'offline' : 'egress_line_off', line: offLine };
   const grant = grants.findActiveGrant(roomDir, { now: nowMs, lifetime: 'run', run_id: plan.run_id })
     || grants.findActiveGrant(roomDir, { now: nowMs, lifetime: 'standing' });
   const runsInWindow = trigger === 'ambient' ? grants.throttleState(roomDir, { now: nowMs }).count : 0;
@@ -685,7 +673,7 @@ async function runQuick(roomDir, plan, opts) {
       q_hash: q.q_hash,
       template_id: q.template_id,
       family: q.family,
-      part8_verdict: q.audit === 'pass' ? 'pass' : 'tripped',
+      part8_verdict: q.audit === 'pass' ? 'pass' : (q.audit === 'not_applicable' ? 'not_applicable' : 'tripped'),
       provider: PROVIDER,
       filters: {},
       pagination: { per_page: QUICK_TOP_ROWS, page: 1 },
@@ -898,7 +886,8 @@ async function runQuick(roomDir, plan, opts) {
     try { grants.recordRun(roomDir, { run_id: plan.run_id, mode: 'quick', trigger: trigger, delta_hash: null, now: nowMs }); } catch (_e) { /* ledger failure never blocks the card */ }
   }
 
-  return { status: 'done', run: run, card: card, state_dir: relDir.split(path.sep).join('/') };
+  // ruling 2026-10-05: the approval is named by its job, never by the word grant
+  return { status: 'done', run: run, card: card, state_dir: relDir.split(path.sep).join('/'), approval_line: grants.approvedLine(runQueries.length, grants.jobOf(plan)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1062,7 @@ module.exports = {
   runQuick: runQuick,
   coverFor: coverFor,
   reaskCard: reaskCard,
+  queriesOf: queriesOf,
   evidenceCard: evidenceCard,
   escalateToDeep: escalateToDeep,
   localRoomCheck: localRoomCheck,

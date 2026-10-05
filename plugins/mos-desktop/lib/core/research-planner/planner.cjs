@@ -487,7 +487,7 @@ function cardFor(roomDir, plan, opts) {
     return { next: 'revise', reason: 'needs_lens_leaves', card: notReadyCard(plan, 'Plan review: lens needs questions', lines) };
   }
   if (plan.status === 'local_only') {
-    const lines = ['## Nothing in this plan can be searched outside the room', '', 'Every sub-question either stays in the room by design or carried a search term that did not pass the egress audit. Reword the terms, or answer from the room.'];
+    const lines = ['## Nothing in this plan can be searched outside the room', '', 'Every sub-question here either stays in the room by design or has no search phrase that could be formed from its words. Reword a sub-question to search it, or answer from the room.'];
     return { next: 'local_only', reason: 'local_only', card: notReadyCard(plan, 'Plan review: room only', lines) };
   }
 
@@ -614,7 +614,7 @@ function approveStandingGrant(roomDir, proposal, opts) {
       grant = written.grant;
       created = true;
     }
-    const node = mintDecision(db, nodeId, 'Approved standing research grant ' + grant.grant_id + ' via ' + surface + '.', grant.grant_id);
+    const node = mintDecision(db, nodeId, 'Approved a standing search approval (' + grant.grant_id + ') via ' + surface + '.', grant.grant_id);
     if (!node || node.ok !== true) {
       if (created) grants.revokeGrant(roomDir, grant.grant_id, {});
       return fail('decision_node_failed');
@@ -641,7 +641,7 @@ function approvePlanReview(roomDir, runId, opts) {
     const written = grants.writeGrant(roomDir, proposal, { approved_via: { surface: surface, decision_node_id: nodeId } });
     if (!written.ok) return fail(written.reason);
     const grant = written.grant;
-    const node = mintDecision(db, nodeId, 'Approved research run ' + runId + ' with grant ' + grant.grant_id + ' via ' + surface + '.', grant.grant_id);
+    const node = mintDecision(db, nodeId, 'Approved the exact searches of research run ' + runId + ' (approval ' + grant.grant_id + ') via ' + surface + '.', grant.grant_id);
     if (!node || node.ok !== true) {
       grants.revokeGrant(roomDir, grant.grant_id, {});
       return fail('decision_node_failed');

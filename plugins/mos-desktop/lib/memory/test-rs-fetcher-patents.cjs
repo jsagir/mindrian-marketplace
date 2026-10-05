@@ -5,7 +5,7 @@
  * Copyright (c) 2026 Mindrian. BSL 1.1.
  * Phase 89.2 Plan 03 -- patents fetcher fixture suite.
  *
- * 17 scenarios total: 11 fetcher tests + 6 validator tests.
+ * 17 scenarios at 89.2; 369.2-06 retired fetcher Tests 8-11 and added W1, W2.
  *
  *   Test 1  happy path 2 sources (Google Patents + USPTO mock fetch)
  *   Test 2  dedup determinism (same input twice -> identical output)
@@ -14,10 +14,9 @@
  *   Test 5  Google Patents malformed JSON-LD graceful (uspto continues)
  *   Test 6  USPTO malformed JSON graceful (api_error logged)
  *   Test 7  per-source budget exhausted (google_patents skipped)
- *   Test 8  CANON PART 8 adversarial: leaked-artifact-body in query throws
- *   Test 9  CANON PART 8 adversarial: leaked-venture-financials throws
- *   Test 10 CANON PART 8 adversarial: leaked-meeting-fragment throws
- *   Test 11 CANON PART 8 adversarial: leaked-SSN-style figure throws
+ *   Tests 8-11 (moved 369.2-06, ruling 2026-10-05): the old adversarial-throws legs are retired;
+ *           W1 pins that the web line dispatches the same strings unchanged, W2 pins A4
+ *           (a credential-shaped query is refused pre-dispatch, zero fetch, no echo).
  *
  *   V1     validator Check A: telemetry file absent -> {severity: null}
  *   V2     validator Check B: per-source budget exceeded -> warning
@@ -421,92 +420,78 @@ console.log('=== 89.2-03 fetcher-patents suite: starting ===');
     SCENARIO_RESULTS.push({ test: 'T7', surface: 'patents', payload: out });
   });
 
-  // ---------- Test 8: CANON PART 8 adversarial: leaked-artifact-body ----------
-  await runScenario('Test 8: CANON PART 8 adversarial leaked-artifact-body throws', async function () {
+  // ---------- 369.2 ruling 2026-10-05 (added beside Tests 8-11) ----------
+  // Web line: the patents fetcher sends a room's words as written (the CONTENT-SET
+  // fence binds the Theo/Brain line only); a credential in the string is refused
+  // per A4. The ledger entries these two scenarios add are removed from the
+  // cumulative A1 ledger on purpose: A1 pins every OTHER test's outbound traffic.
+  const A4_3692 = process.env.MOS_369_2_A4 === 'drop' ? 'drop' : 'keep';
+
+  await runScenario('W1 web line: adversarial strings dispatch unchanged (patents) (369.2 ruling 2026-10-05)', async function () {
+    const ledgerMark = CAPTURED_URLS_ALL.length;
+    const items = [
+      { q: 'CRISPR <<artifact: meeting with Genentech Q4 financials>>', opts: {} },
+      { q: 'Lawrence said our patent strategy needs $5M biotech', opts: {} },
+      { q: 'biotech meeting with Pfizer about IP', opts: {} },
+      { q: 'inventor 123-45-6789 patents quantum', opts: {} },
+    ];
+    for (const it of items) {
+      const q = it.q;
     setupScopedHome();
-    // Pattern 3 (meeting with) leak.
-    const queries = ['CRISPR <<artifact: meeting with Genentech Q4 financials>>'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-patents.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchPatents(queries, {});
-    } catch (e) {
-      threw = e;
+      installMockFetch(buildAllSourcesMockOk('clean', 1));
+      const fetcher = require('../core/rs-fetcher-patents.cjs');
+      let threw = null;
+      try {
+        await fetcher.fetchPatents([q], it.opts);
+      } catch (e) {
+        threw = e;
+      }
+      assert.equal(threw, null, 'a web line must not throw on a room string; q=' + q + ' got ' + (threw && threw.name));
+      assert.ok(CAPTURED_URLS.length >= 1, 'at least one dispatch for q=' + q + '; got ' + CAPTURED_URLS.length);
+      assert.ok(
+        CAPTURED_URLS.some(function (u) { return u.indexOf(encodeURIComponent(q)) !== -1; }),
+        'expected the planted string in an outbound URL, unchanged for q=' + q);
     }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(threw.meta.surface, 'patents', 'meta.surface');
-    assert.ok(typeof threw.meta.matched_pattern === 'string'
-      && threw.meta.matched_pattern.length > 0, 'meta.matched_pattern present');
-
-    assert.equal(CAPTURED_URLS.length, 0,
-      'NO fetch() calls allowed before throw; got ' + CAPTURED_URLS.length);
-
-    const telemetry = require('../core/rs-egress-telemetry.cjs');
-    if (fs.existsSync(telemetry.TELEMETRY_FILE)) {
-      const payload = JSON.parse(fs.readFileSync(telemetry.TELEMETRY_FILE, 'utf8'));
-      assert.equal(payload.entries.length, 0,
-        'NO telemetry entries allowed; got ' + payload.entries.length);
-    }
-    SCENARIO_RESULTS.push({ test: 'T8', surface: 'patents', payload: { threw: threw.meta.matched_pattern } });
+    CAPTURED_URLS_ALL.length = ledgerMark;
   });
 
-  // ---------- Test 9: CANON PART 8 adversarial: leaked-venture-financials ----------
-  await runScenario('Test 9: CANON PART 8 adversarial leaked-venture-financials throws', async function () {
+  await runScenario('W2 A4=' + A4_3692 + ' credential-shaped query (patents) ' + (A4_3692 === 'keep'
+    ? 'is refused pre-dispatch: zero fetch, no echo (369.2 ruling 2026-10-05)'
+    : 'dispatches like any other string (369.2 ruling 2026-10-05)'), async function () {
+    const ledgerMark = CAPTURED_URLS_ALL.length;
+    for (const q of ['CRISPR api_key=abc123secretvalue', 'CRISPR Bearer abcdefghijklmnopqrstu']) {
     setupScopedHome();
-    // Pattern 1 (currency $5M) leak.
-    const queries = ['Lawrence said our patent strategy needs $5M biotech'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-patents.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchPatents(queries, {});
-    } catch (e) {
-      threw = e;
+      installMockFetch(buildAllSourcesMockOk('clean', 1));
+      const fetcher = require('../core/rs-fetcher-patents.cjs');
+      let threw = null;
+      try {
+        await fetcher.fetchPatents([q], {});
+      } catch (e) {
+        threw = e;
+      }
+      if (A4_3692 === 'keep') {
+        assert.ok(threw, 'expected a throw on a credential-shaped query: ' + q);
+        assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
+        assert.equal(threw.meta.surface, 'patents', 'meta.surface');
+        assert.equal(threw.meta.matched_pattern, 'credential', 'matched_pattern is credential');
+        assert.equal(threw.meta.sample, '', 'no echo in the violation sample');
+        assert.equal(String(threw.message).indexOf('abc123secretvalue'), -1, 'no echo in the message');
+        assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed before throw; got ' + CAPTURED_URLS.length);
+        const telemetry = require('../core/rs-egress-telemetry.cjs');
+        if (fs.existsSync(telemetry.TELEMETRY_FILE)) {
+          const payload = JSON.parse(fs.readFileSync(telemetry.TELEMETRY_FILE, 'utf8'));
+          assert.equal(payload.entries.length, 0, 'NO telemetry entries allowed for a refused query; got ' + payload.entries.length);
+        }
+      } else {
+        assert.equal(threw, null, 'drop: no throw');
+        assert.ok(CAPTURED_URLS.length >= 1, 'drop: dispatches');
+      }
     }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed');
-    SCENARIO_RESULTS.push({ test: 'T9', surface: 'patents', payload: { threw: threw.meta.matched_pattern } });
+    CAPTURED_URLS_ALL.length = ledgerMark;
   });
 
-  // ---------- Test 10: CANON PART 8 adversarial: leaked-meeting-fragment ----------
-  await runScenario('Test 10: CANON PART 8 adversarial leaked-meeting-fragment throws', async function () {
-    setupScopedHome();
-    const queries = ['biotech meeting with Pfizer about IP'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-patents.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchPatents(queries, {});
-    } catch (e) {
-      threw = e;
-    }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed');
-    SCENARIO_RESULTS.push({ test: 'T10', surface: 'patents', payload: { threw: threw.meta.matched_pattern } });
-  });
-
-  // ---------- Test 11: CANON PART 8 adversarial: leaked-SSN ----------
-  await runScenario('Test 11: CANON PART 8 adversarial leaked-SSN-style throws', async function () {
-    setupScopedHome();
-    // Pattern 5 (SSN-style 123-45-6789) leak.
-    const queries = ['inventor 123-45-6789 patents quantum'];
-    installMockFetch(buildAllSourcesMockOk('clean', 1));
-    const fetcher = require('../core/rs-fetcher-patents.cjs');
-    let threw = null;
-    try {
-      await fetcher.fetchPatents(queries, {});
-    } catch (e) {
-      threw = e;
-    }
-    assert.ok(threw, 'expected throw on adversarial query');
-    assert.equal(threw.name, 'ExternalEgressViolation', 'class name');
-    assert.equal(CAPTURED_URLS.length, 0, 'NO fetch() calls allowed');
-    SCENARIO_RESULTS.push({ test: 'T11', surface: 'patents', payload: { threw: threw.meta.matched_pattern } });
-  });
+  // ---------- Tests 8-11 (moved 369.2-06, 2026-10-05) ----------
+  // 369.2-06: the CONTENT-SET fence binds the Theo/Brain line only (ruling 2026-10-05); see the web-line and credential legs (W1, W2 above).
 
   // ---------- V1: validator Check A telemetry-file-absent ----------
   await runScenario('V1: validator Check A telemetry-file-absent -> {severity: null}', async function () {
@@ -669,6 +654,6 @@ console.log('=== 89.2-03 fetcher-patents suite: starting ===');
     process.exit(1);
   }
 
-  console.log('=== 89.2-03 fetcher-patents suite: 17/17 passed ===');
+  console.log('=== 89.2-03 fetcher-patents suite: ' + passed + '/' + (passed + failed) + ' passed ===');
   process.exit(0);
 })();
