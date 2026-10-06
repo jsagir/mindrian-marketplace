@@ -30,8 +30,10 @@
  *   STEP 5 -- reconcileMemoryArtifacts (cortex + SENS-08 scalars live)
  *   STEP 6 -- migrateToRoom (drains banked opportunities + highlights; gate
  *     answers consumed in STEP 2 via drainBirthGateAnswers are safe)
- *   STEP 7 -- BRAIN derivation enqueue (log line only; Phase 90 enqueue is
- *     optional here; the comment prevents a future plan from omitting it)
+ *   STEP 7 -- FeyMinto faces (369.25 plan 17): every core section's BRAIN.md is written as the Theo face "not
+ *     asked: the room was just created" (brain-derivation writeNotAskedFace, synchronous) and every FEYNMAN.md is
+ *     stamped with the room id (feyminto/feynman-blocks stampFaceRoomId). Nothing is enqueued here; the old STEP 7 log
+ *     line claimed an enqueue while enqueueing nothing (RESEARCH Pitfall 15) and is gone.
  *
  * The scaffold-before-registry order is the primary correction from RESEARCH Q1:
  * registry-first would dangle the active pointer during the structurally-
@@ -50,6 +52,14 @@
  *   path. No CHOSE edge is written anywhere (CHOSE is not in ALLOWED_EDGE_TYPES;
  *   RESEARCH Pitfall 7 verified).
  *
+ * Phase 369.25 RID-01/RID-02: the owner commits the identity in STEP 2 and reads it back in STEP 4b before ok:true;
+ * ROOM.md, .room-root and the registry are projections of it. The seven room.* keys and the Room node are written
+ * by room-identity.cjs writeRoomIdentity inside the STEP 2 transaction (no try/catch around it, so a failed identity
+ * write rolls the whole birth back); STEP 4b reads them through a different door (a copy opened read-only) and
+ * compares all seven values; a mismatch runs the l9o rollback and returns identity_readback_failed. A retry into a
+ * pre-existing directory reuses the room_id already in its room.db (RFT-08) and a directory whose room.db names a
+ * different slug or path is refused with identity_conflict before any byte is written.
+ *
  * T-155-02-02 mitigation: roomDir path traversal in subprocess calls. Validate
  *   roomDir is absolute and reject paths containing '..' before execSync.
  *   Shell args are double-quoted in the execSync command.
@@ -62,8 +72,14 @@ const path = require('node:path');
 const os = require('node:os');
 const { execSync } = require('node:child_process');
 
+const crypto = require('node:crypto');
+
 const roomDbMod = require('../room-db.cjs');
 const scaffold = require('../room-skeleton-scaffold.cjs');
+// Phase 369.25: the one owner of a room's identity in room.db, and the repo version it is stamped with.
+const roomIdentity = require('./room-identity.cjs');
+const repoVersionMod = require('../repo-version.cjs');
+const { isSafeSlug: _isSafeSlug } = require('../session-binding.cjs');
 // Phase 353 Plan 01 Task 6: isDeclaredJob validates a birth card's job_id
 // answer against the closed vocabulary before any byte is written. No cycle:
 // section-registry.cjs has zero deps on navigation/ or room-birth.cjs.
@@ -446,6 +462,104 @@ function _computeDepth(roomsHome, parentSlug) {
   return (Number.isFinite(pd) && pd >= 0) ? pd + 1 : 1;
 }
 
+// Phase 369.25 RID-02: a registry depth read for the identity. Unlike the registry-lineage depth helper above it NEVER defaults: a parent
+// whose depth is unknown yields null so the identity records the literal 'unknown'.
+function _registryDepthPlusOne(roomsHome, parentSlug) {
+  const entry = _registryEntry(_readRegistry(roomsHome), parentSlug);
+  if (!entry || entry.depth === undefined || entry.depth === null || !/^[0-9]+$/.test(String(entry.depth))) return null;
+  return String(Number(entry.depth) + 1);
+}
+
+function _isRoomSlug(v) {
+  return typeof v === 'string' && v.length > 0 && _isSafeSlug(v) && !/[\\/]/.test(v);
+}
+
+// The identity depth of a child: the parent's identity depth + 1, else the parent's registry depth + 1, else
+// 'unknown'. Never a default (RID-02; the defaulting helper is not used here).
+function _identityDepth(parentSlug, parentRoomDir, roomsHome) {
+  try {
+    if (parentRoomDir && fs.existsSync(parentRoomDir)) {
+      const pid = roomIdentity.readRoomIdentity(parentRoomDir, { checkRegistry: false, roomsHome: roomsHome });
+      if (pid && pid.state === 'ready' && /^[0-9]+$/.test(String(pid.depth))) return String(Number(pid.depth) + 1);
+    }
+  } catch (_e) { /* fall through to the registry */ }
+  const viaRegistry = _registryDepthPlusOne(roomsHome, parentSlug);
+  return viaRegistry !== null ? viaRegistry : roomIdentity.UNKNOWN;
+}
+
+function _samePathForIdentity(a, b) {
+  const x = roomIdentity.normalizeRoomPath(a);
+  const y = roomIdentity.normalizeRoomPath(b);
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+// Phase 369.25 RFT-08: what a pre-existing room.db already says about this folder. Returns
+// { conflict:true, detail } when it names a different slug or canonical path, { room_id } when it holds a room_id for
+// THIS room (reuse it), or {} when it holds nothing to reconcile (mint a new one). Writes nothing in roomDir.
+function _reconcilePriorIdentity(roomDir, slug, roomsHome) {
+  if (!fs.existsSync(path.join(roomDir, '.mindrian', 'room.db'))) return {};
+  const prior = roomIdentity.readRoomIdentity(roomDir, { checkRegistry: false, roomsHome: roomsHome });
+  const stored = prior.state === 'ready'
+    ? { 'room.room_id': prior.room_id, 'room.slug': prior.slug, 'room.canonical_path': prior.canonical_path }
+    : (prior.stored || {});
+  const storedSlug = stored['room.slug'];
+  const storedPath = stored['room.canonical_path'];
+  let real = roomDir;
+  try { real = fs.realpathSync(roomDir); } catch (_e) { /* keep the given path */ }
+  if (typeof storedSlug === 'string' && storedSlug !== slug) {
+    return { conflict: true, detail: 'room.db names slug ' + storedSlug + ' but this birth is ' + slug };
+  }
+  if (typeof storedPath === 'string' && !_samePathForIdentity(storedPath, real)) {
+    return { conflict: true, detail: 'room.db names ' + storedPath + ' but this room is at ' + real };
+  }
+  const id = stored['room.room_id'];
+  return (typeof id === 'string' && id.length > 0) ? { room_id: id } : {};
+}
+
+// The first of the seven identity values (or the room node) that differs between what STEP 2 committed and what the
+// fresh read returned, or null when they agree. Compared as strings; the path through normalizeRoomPath.
+function _identityDifference(ident, rb) {
+  if (!rb || rb.state !== 'ready') return 'not_ready:' + String((rb && rb.reason) || 'unknown');
+  if (rb.room_id !== ident.room_id) return 'room_id';
+  if (rb.slug !== ident.slug) return 'slug';
+  if (!_samePathForIdentity(rb.canonical_path, ident.canonical_path)) return 'canonical_path';
+  if (String(rb.parent) !== String(ident.parent)) return 'parent';
+  if (String(rb.depth) !== String(ident.depth)) return 'depth';
+  if (rb.created_at !== ident.created_at) return 'created_at';
+  if (rb.birth_version !== ident.birth_version) return 'birth_version';
+  if (rb.room_node !== true) return 'room_node';
+  return null;
+}
+
+// Phase 369.25 RID-03: regenerate the projections from the committed identity. A failed projection is reported in
+// the returned object (a visible gap), never thrown and never silently skipped. Shape on full success:
+// { sentinel:true, registry:true, room_md:true }; detail is added only when something did not project.
+function _projectIdentity(roomDir, readback, roomsHome) {
+  const out = { sentinel: false, registry: false, room_md: false };
+  const detail = {};
+  try {
+    const pr = roomIdentity.projectRoomIdentity(roomDir, readback, { roomsHome: roomsHome });
+    out.sentinel = pr.sentinel === true;
+    out.registry = pr.registry === true ? true : pr.registry;
+    if (pr.detail && Object.keys(pr.detail).length > 0) detail.project = pr.detail;
+  } catch (e) {
+    detail.project = String((e && e.message) || e).slice(0, 160);
+  }
+  try {
+    // eslint-disable-next-line global-require
+    const roomMap = require('../room-map.cjs');
+    const map = roomMap.buildRoomMap(roomDir, { identity: readback });
+    const w = roomMap.writeRoomMap(roomDir, map);
+    const sb = roomMap.writeSelfBlocks(roomDir, map);
+    out.room_md = !!(w && w.ok) && sb.errors.length === 0 && sb.written.indexOf('.') !== -1;
+    if (!out.room_md) detail.room_md = { map: w && w.ok, errors: sb.errors };
+  } catch (e) {
+    detail.room_md = String((e && e.message) || e).slice(0, 160);
+  }
+  if (Object.keys(detail).length > 0) out.detail = detail;
+  return out;
+}
+
 // Reverse-order compensating teardown (clone of room-discard-cascade order:
 // close db handle -> remove filesystem scaffold -> purge registry key). Leaves
 // NO half-born orphan (Part 11 R1/R2 fail-closed).
@@ -748,7 +862,7 @@ const FEYNMAN_BIRTH_SEED_TEMPLATE =
   'Seeded at birth -- replace with your content for the {{SECTION_SLUG}} section of your venture.';
 
 // Write a minimal BRAIN.md stub at birth so the 6-file complement is 6/6
-// synchronously (Phase 90 Brain derivation overwrites it later, STEP 7).
+// synchronously (Phase 90 Brain derivation overwrites it later).
 // Idempotent (only writes when absent).
 function _writeBrainStub(roomDir, slug) {
   const brainPath = path.join(roomDir, 'BRAIN.md');
@@ -986,6 +1100,18 @@ function birthRoom(opts) {
   // Recorded BEFORE the mkdir: a failed registry flip may only delete a tree this
   // call created (see _rollbackFailedBirth).
   const dirPreexisted = fs.existsSync(roomDir);
+
+  // Phase 369.25 RFT-08 / T-369.25-07-04: reconcile a pre-existing room.db BEFORE any byte is written. A folder whose
+  // room.db names a different slug or path is refused; one that already holds this room's room_id keeps it.
+  let reuseRoomId = null;
+  if (dirPreexisted) {
+    const prior = _reconcilePriorIdentity(roomDir, slug, roomsHomeForBirth);
+    if (prior.conflict) {
+      return { ok: false, reason: 'identity_conflict', detail: prior.detail, roomDir: roomDir, slug: slug };
+    }
+    if (prior.room_id) reuseRoomId = prior.room_id;
+  }
+
   try {
     fs.mkdirSync(roomDir, { recursive: true });
 
@@ -1035,7 +1161,7 @@ function birthRoom(opts) {
     // seedSection per section to close the 4/6 -> 6/6 memory complement gap.
     // scaffold writes ROOM.md / STATE.md / MINTO.md / USER.md; FEYNMAN.md and
     // BRAIN.md have no scaffold templates. feynman-seed-writer closes FEYNMAN.md.
-    // (BRAIN.md is written by Phase 90 brain-derivation; STEP 7 enqueues it.)
+    // (The per-section BRAIN.md is the FeyMinto face STEP 7 writes; brain-derivation overwrites it later.)
     // Lazy-require feynman-seed-writer here (not at file top) to avoid the
     // circular dep: feynman-seed-writer -> navigation -> room-birth -> feynman-seed-writer.
     let feynmanSeedWriter = null;
@@ -1094,6 +1220,38 @@ function birthRoom(opts) {
   // --------------------------------------------------------------------------
   let db;
   let ventureNodeId = null;
+
+  // Phase 369.25 RID-01/RID-02: the identity this birth commits. Never the defaulting helper (it returns 1): a depth
+  // the parent cannot give is the literal 'unknown'. created_at is the .room-root born value STEP 1 wrote.
+  let ident;
+  try {
+    let born = '';
+    try { born = JSON.parse(fs.readFileSync(path.join(roomDir, '.room-root'), 'utf8')).born; } catch (_e) { born = ''; }
+    let version = roomIdentity.UNKNOWN;
+    try {
+      const v = repoVersionMod.readRepoVersion().version;
+      if (typeof v === 'string' && v.length > 0) version = v;
+    } catch (_e) { /* a worktree checkout or a missing manifest: unknown, never invented */ }
+    let parentValue = roomIdentity.NO_PARENT;
+    let depthValue = '0';
+    if (parent.length > 0) {
+      parentValue = _isRoomSlug(parent) ? parent : roomIdentity.UNKNOWN;
+      const pDir = parentRoomDir || (typeof options.parentRoomDir === 'string' ? options.parentRoomDir : '')
+        || _resolveRoomDirFromRegistry(parent, roomsHomeForBirth);
+      depthValue = _identityDepth(parent, pDir, roomsHomeForBirth);
+    }
+    ident = {
+      room_id: reuseRoomId || crypto.randomUUID(),
+      slug: slug,
+      canonical_path: fs.realpathSync(roomDir),
+      parent: parentValue,
+      depth: depthValue,
+      created_at: (typeof born === 'string' && born.length > 0) ? born : new Date().toISOString(),
+      birth_version: version,
+    };
+  } catch (e) {
+    return { ok: false, reason: 'identity_build_failed', detail: String((e && e.message) || e).slice(0, 200) };
+  }
 
   try {
     db = roomDbMod.openRoomDb(roomDir);
@@ -1182,32 +1340,24 @@ function birthRoom(opts) {
       source_path: 'birth:room_created',
     });
 
+    // Phase 369.25 RID-01 (T-369.25-07-01): the seven room.* identity keys AND the Room node room:<slug> are written
+    // here, for every birth, by the one owner. No try/catch: a failed identity write throws, the catch below runs
+    // ROLLBACK, and nothing of this birth (venture claim, section nodes, keys) survives. This replaces the
+    // born-wired-only Room-node insert whose failure used to be swallowed.
+    roomIdentity.writeRoomIdentity(db, ident);
+    // Test-only fault seam (never set in production): a throw right after the identity write, inside the transaction.
+    if (options._faultInject === 'identity') {
+      throw new Error('fault_inject_identity');
+    }
+
     // Phase 195-03 (FCM-05 side-effect 3): the child->parent NESTED_WITHIN
     // lineage edge, written INSIDE this ACID block so lineage is ATOMIC with
-    // birth (today the edge is written by the 169 heal path, not birthRoom). A
-    // Room node for the sub-room is inserted first (system-bookkeeping structural
-    // anchor). Part 8: properties are ENUM/scalar ONLY (relation enum + parent
+    // birth (today the edge is written by the 169 heal path, not birthRoom). The
+    // Room node for the sub-room is now inserted by writeRoomIdentity above.
+    // Part 8: properties are ENUM/scalar ONLY (relation enum + parent
     // slug handle + depth scalar); never prose. bornWired only; a failed edge
     // write THROWS so the whole transaction ROLLBACKs (born WIRED or fail CLOSED).
     if (bornWired) {
-      try {
-        insertNode(
-          db,
-          'room:' + slug,
-          'Room',
-          JSON.stringify({ room: slug, parent: parent, created_by: 'system' }),
-          {
-            source_path: 'system:room-node',
-            created_by: 'system',
-            // R17-02: 'observation' -- system-bookkeeping structural anchor
-            // (same class as the umbilical Project/Room handles).
-            epistemic_type: 'observation',
-          }
-        );
-      } catch (_e) {
-        // Tolerate node-anchor upsert failure; the edges table has no FK, so the
-        // NESTED_WITHIN edge below still lands. The verify gate is the authority.
-      }
       const nwRes = edges.writeEdge(db, {
         source_id: 'room:' + slug,
         target_id: 'room:' + parent,
@@ -1268,6 +1418,9 @@ function birthRoom(opts) {
   // The atomic tmp+mv registry flip is the LAST structural step. Registry-first
   // would dangle the active pointer during the structurally-incomplete window.
   // --------------------------------------------------------------------------
+  // 369.25 RFT-03: what the session bind below actually did; reported on the result.
+  let sessionBound = 'not_applicable';
+  let bindingReason = null;
   try {
     const registryScript = path.join(REPO_ROOT, 'scripts', 'room-registry');
     // Determine ROOMS_HOME from the environment (the same source room-registry uses).
@@ -1317,9 +1470,12 @@ function birthRoom(opts) {
     // active. Reuse the shipped session-binding writer (Canon Part 7; no new
     // binding writer) and keep the write LOCAL (Canon Part 8; zero Brain egress).
     //
-    // Design (navigator-locked): UNION the new slug into the bound SET and make
+    // Design (navigator-locked): ADD the new slug to the bound SET and make
     // it PRIMARY -- do NOT replace the set (a session may legitimately span
-    // rooms). Gate on a REAL interactive session (sessionId present and not the
+    // rooms). 369.25 RID-10: this is now the same verb room_bind and openRoom use,
+    // session-binding.addSessionRoom, which reads the binding back; the result is
+    // REPORTED (session_bound, binding_reason) and a failure still never blocks birth.
+    // Gate on a REAL interactive session (sessionId present and not the
     // 'nosession' sentinel), which naturally excludes the graph-self-heal /
     // migration / backfill callers that birth rooms with no session. This runs
     // only after the registry create above SUCCEEDED (an execSync throw jumps to
@@ -1329,17 +1485,18 @@ function birthRoom(opts) {
     if (typeof sessionId === 'string' && sessionId.length > 0 && sessionId !== 'nosession') {
       try {
         const sb = require('../session-binding.cjs');
-        const prior = sb.readSessionBinding(sessionId, { home: roomsHome });
-        const priorBound = (prior && Array.isArray(prior.bound)) ? prior.bound : [];
-        const bound = Array.from(new Set(priorBound.concat([slug])));
-        sb.writeSessionBinding(
-          sessionId,
-          { bound: bound, primary: slug, sticky: prior ? prior.sticky : false },
-          { home: roomsHome }
-        );
+        const bind = sb.addSessionRoom(sessionId, slug, { home: roomsHome });
+        sessionBound = bind.ok === true && bind.effective === true;
+        if (!sessionBound) bindingReason = bind.reason || 'binding_not_effective';
       } catch (_eBind) {
-        // Fire-and-forget: a session-binding write failure never blocks birth.
+        // A session-binding failure never blocks birth; it is reported, not hidden.
+        sessionBound = false;
+        bindingReason = 'binding_write_failed';
       }
+    } else {
+      // Brief section 4: a non-interactive birth (migration, repair, heal) has no session binding
+      // requirement; record that as not applicable, not failed or silently absent.
+      sessionBound = 'not_applicable';
     }
   } catch (_e) {
     // RCA test-birth-registry-leak: the registry writer's structural guard refused
@@ -1388,6 +1545,23 @@ function birthRoom(opts) {
       return { ok: false, reason: ready.reason, detail: ready.detail, rolled_back: rolledBack, roomDir: roomDir, slug: slug };
     }
   }
+
+  // STEP 4b, identity (Phase 369.25 RID-02, T-369.25-07-02): ok:true only after a fresh read through a DIFFERENT
+  // door (a copy opened read-only, not the handle STEP 2 wrote through) returns the same seven values. A mismatch
+  // runs the l9o rollback: a directory this call created is removed, a pre-existing one is kept.
+  const identityReadback = options._faultInject === 'identity_readback'
+    ? { ok: false, state: 'not_ready', reason: 'fault_inject_identity_readback' }
+    : roomIdentity.readRoomIdentity(roomDir, { roomsHome: roomsHomeForBirth });
+  {
+    const differs = _identityDifference(ident, identityReadback);
+    if (differs) {
+      const rolledBack = _rollbackFailedBirth(roomDir, slug, roomsHomeForBirth, db, parent, parentRoomDir, dirPreexisted);
+      process.stderr.write('[room-birth] identity readback FAILED for ' + slug + ' (' + rolledBack + '): ' + differs + '\n');
+      return { ok: false, reason: 'identity_readback_failed', detail: differs, rolled_back: rolledBack, roomDir: roomDir, slug: slug };
+    }
+  }
+  // The projections, regenerated from the committed identity (never the other way round).
+  const projections = _projectIdentity(roomDir, identityReadback, roomsHomeForBirth);
 
   // --------------------------------------------------------------------------
   // STEP 5: reconcileMemoryArtifacts (cortex + SENS-08 scalars live before
@@ -1439,16 +1613,39 @@ function birthRoom(opts) {
   }
 
   // --------------------------------------------------------------------------
-  // STEP 7: BRAIN derivation enqueue (deferred enrichment).
+  // STEP 7: FeyMinto faces (369.25 plan 17, TFACE-06, FEYM-03, RESEARCH Pitfall 15).
   //
-  // The actual Phase 90 enqueue is optional here; the log line makes the intent
-  // explicit and prevents a future plan from forgetting it.
-  // T-155-02-05: STEP 7 is a log line only (no real enqueue in this plan); the
-  // Phase 90 enqueue sends only generic handles (Part 8).
+  // The room identity was read back above, so the room is ready. For every core section directory present:
+  //   - BRAIN.md is written as the FeyMinto Theo face with Theo "not asked: the room was just created" (Canon
+  //     Part 8: nothing is sent; the face records that nothing was). It is staleness unavailable, so it holds no
+  //     tier above tier_0 and never stops the first real derivation.
+  //   - FEYNMAN.md gains the room id (the seed was written in STEP 1, before the identity existed).
+  // A face that fails to write is REPORTED in result.feyminto and never fails the birth. The old log line that
+  // claimed a derivation was enqueued is gone: nothing was enqueued, so it said something false.
   // --------------------------------------------------------------------------
-  // BRAIN derivation enqueued for room: log entry here; Phase 90 enqueue picks
-  // up on next session-start when Brain is reachable.
-  process.stdout.write('[room-birth] BRAIN derivation enqueued for room: ' + slug + '\n');
+  const feyminto = { faces_written: 0, theo: 'not asked: at birth' };
+  try {
+    if (identityReadback && identityReadback.ok === true && typeof identityReadback.room_id === 'string') {
+      const coreSections = Object.keys(require('../section-registry.cjs').CORE_SECTIONS);
+      const brainDerivation = require('../brain-derivation.cjs');
+      const faceBlocks = require('../feyminto/feynman-blocks.cjs');
+      const failed = [];
+      coreSections.forEach(function (sectionName) {
+        if (!fs.existsSync(path.join(roomDir, sectionName))) return;
+        const w = brainDerivation.writeNotAskedFace(roomDir, sectionName, 'at_birth', identityReadback);
+        if (w && w.ok === true) feyminto.faces_written += 1;
+        else failed.push({ section: sectionName, face: 'BRAIN.md', reason: (w && w.reason) || 'unknown' });
+        const st = faceBlocks.stampFaceRoomId(path.join(roomDir, sectionName, 'FEYNMAN.md'), identityReadback.room_id);
+        if (!st || st.ok !== true) failed.push({ section: sectionName, face: 'FEYNMAN.md', reason: (st && st.reason) || 'unknown' });
+      });
+      if (failed.length > 0) feyminto.failed = failed;
+      process.stdout.write('[room-birth] FeyMinto faces written for ' + feyminto.faces_written + ' sections; Theo not asked (the room was just created)\n');
+    } else {
+      feyminto.theo = 'not written: the room identity was not ready';
+    }
+  } catch (eFace) {
+    feyminto.failed = [{ section: '*', face: 'all', reason: String((eFace && eFace.message) || eFace).slice(0, 120) }];
+  }
 
   // Close the db handle (if still open from STEP 2).
   try {
@@ -1502,17 +1699,34 @@ function birthRoom(opts) {
       _bornWiredRollback(roomDir, slug, roomsHomeForBirth, null, parent, parentRoomDir);
       return { ok: false, reason: 'born_wired_incomplete', side_effects: se };
     }
-    return {
+    const bornResult = {
       ok: true,
       roomDir: roomDir,
       slug: slug,
       db_created: true,
       born_wired: true,
       side_effects: se,
+      room_id: ident.room_id,
+      projections: projections,
+      session_bound: sessionBound,
+      feyminto: feyminto,
     };
+    if (bindingReason) bornResult.binding_reason = bindingReason;
+    return bornResult;
   }
 
-  return { ok: true, roomDir: roomDir, slug: slug, db_created: true };
+  const result = {
+    ok: true,
+    roomDir: roomDir,
+    slug: slug,
+    db_created: true,
+    room_id: ident.room_id,
+    projections: projections,
+    session_bound: sessionBound,
+    feyminto: feyminto,
+  };
+  if (bindingReason) result.binding_reason = bindingReason;
+  return result;
 }
 
 module.exports = {

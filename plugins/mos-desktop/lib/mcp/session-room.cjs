@@ -30,7 +30,9 @@
 //
 // Canon Part 8/9: LOCAL filesystem reads only (the core ladder's own
 // registry.json / session-binding-file reads), zero network egress, zero
-// graph-chokepoint token -- this module never opens room.db.
+// graph-chokepoint token -- this module never opens room.db itself; the room id is
+// read through lib/core/navigation/room-identity.cjs readRoomIdentity, the one identity
+// reader (369.25 RID-06).
 //
 // The census contract: tests/test-248-resolver-census.cjs turns red on any
 // second `function resolveSessionRoomDir` under lib/mcp/, any executable
@@ -54,6 +56,79 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { resolveSessionRoom, resolveWriteRoom } = require('../core/resolve-active-room.cjs');
+
+// 369.25 RID-06: the room id the adapters report is read from room.db through the ONE identity reader, door
+// in_place (live room.db files measure 15-28 MB; no copy on a hot path). Required lazily so a load failure of the
+// identity module can never take the resolver down with it. This is a reader, not a resolver: no second resolver
+// (tests/test-248-resolver-census.cjs) and nothing is added to resolve-active-room.cjs (rar.12).
+let _identityMod = null;
+function loadIdentityMod() {
+  if (_identityMod !== null) return _identityMod;
+  try { _identityMod = require('../core/navigation/room-identity.cjs'); } catch (_e) { _identityMod = false; }
+  return _identityMod;
+}
+
+/**
+ * readIdentityRaw(dir) -- private. The readRoomIdentity result for a room directory (door in_place), or a synthetic
+ * not_ready result when the owner module cannot load or throws; null for an unusable dir. Never throws.
+ */
+function readIdentityRaw(dir) {
+  if (typeof dir !== 'string' || dir.length === 0) return null;
+  try {
+    const mod = loadIdentityMod();
+    if (!mod || typeof mod.readRoomIdentity !== 'function') {
+      return { ok: false, state: 'not_ready', reason: 'room_db_unreadable' };
+    }
+    return mod.readRoomIdentity(dir, { door: 'in_place' });
+  } catch (_e) {
+    return { ok: false, state: 'not_ready', reason: 'room_db_unreadable' };
+  }
+}
+
+/**
+ * identityFromRaw(raw) -- private. { room_id, room_identity } from a readIdentityRaw result. ready -> the committed
+ * room_id and {state:'ready'}; not ready -> room_id from stored.room_id when the row survived (a moved folder still
+ * names its id), else null, and {state:'not_ready', reason}. Never throws.
+ */
+function identityFromRaw(id) {
+  if (!id || typeof id !== 'object') return { room_id: null, room_identity: null };
+  if (id.ok === true && id.state === 'ready') {
+    return { room_id: id.room_id, room_identity: { state: 'ready' } };
+  }
+  const stored = (id.stored && typeof id.stored === 'object') ? id.stored : null;
+  const storedId = stored && typeof stored['room.room_id'] === 'string' && stored['room.room_id'].length > 0
+    ? stored['room.room_id'] : null;
+  return {
+    room_id: storedId,
+    room_identity: { state: 'not_ready', reason: (typeof id.reason === 'string') ? id.reason : 'room_db_unreadable' },
+  };
+}
+
+/** identityFor(dir) -- private. One read, compact view. */
+function identityFor(dir) {
+  return identityFromRaw(readIdentityRaw(dir));
+}
+
+// 369.25 plan 13 (HEAL-02, failure test 1): the per-operation readiness answer and the recovery card. Both are
+// required lazily so a load failure of either can never take the resolver down with it (a missing readiness module
+// leaves a write as it was before this plan; the module ships in the same commit, so that is a packaging fault, not
+// a mode).
+let _readinessMod = null;
+function loadReadinessMod() {
+  if (_readinessMod !== null) return _readinessMod;
+  try { _readinessMod = require('../core/room-readiness.cjs'); } catch (_e) { _readinessMod = false; }
+  return _readinessMod;
+}
+let _gateMod = null;
+function loadRecoveryGateMod() {
+  if (_gateMod !== null) return _gateMod;
+  try { _gateMod = require('./room-readiness-gate.cjs'); } catch (_e) { _gateMod = false; }
+  return _gateMod;
+}
+
+// The typed refusal reason a governed write returns when the room cannot hold it (room.db missing, damaged or not
+// writable). Never rename without updating tests/test-36925-readiness-gate.cjs.
+const ROOM_NOT_READY = 'room_not_ready';
 
 // The stable stderr token for the D-04 compat-shim deprecation log (SPEC-1
 // acceptance, Part 11 threat T-198-08), moved here verbatim from
@@ -186,13 +261,26 @@ function isOperatorPinnedRoom(hit) {
  *     failing later as an opaque no_room_db.
  *   - 'none' is refused.
  *
+ * 369.25 plan 13 (HEAL-02, brief failure test 1): after the resolution, the room must also be able to hold the
+ * write. lib/core/room-readiness.cjs readinessFor(dir, 'governed_write') is asked once; a room whose room.db is
+ * missing (in a folder with .room-root), unreadable or not writable is refused room_not_ready, with not_ready_reason,
+ * the failed requirement in plain words, a remediation, and (for recover_room_record, when the session has an
+ * identity to answer with) a recovery card whose approval runs the heal net (lib/mcp/room-readiness-gate.cjs). A
+ * room that is only missing its identity (a legacy room) is NOT refused: the result's room_identity shows the
+ * requirement and carries the same one card. The plugin never changes permissions.
+ *
  * @param {{sessionId?: string, ctx?: {fallbackRoomDir?: string, surface?: string},
  *   walkUp?: boolean}} [opts] walkUp: true adds the `.room-root` cwd walk-up leg
  *   (the tool-router write sites have always had it); false keeps the read-side
  *   ladder the nine tool modules have always used.
- * @returns {{ok: true, dir: string, slug: string|null, source: string}
+ * @returns {{ok: true, dir: string, slug: string|null, source: string,
+ *      room_id: string|null, room_identity: {state: string, reason?: string, requirement?: string,
+ *      recovery_gate_id?: string}|null}
  *   | {ok: false, dir: null, slug: null, source: string,
- *      refusal: {ok: false, reason: string, message: string}}}
+ *      refusal: {ok: false, reason: string, message: string}}
+ *   | {ok: false, dir: string, slug: string|null, source: string, room_id: string|null, room_identity: object|null,
+ *      refusal: {ok: false, reason: 'room_not_ready', not_ready_reason: string, requirement: string,
+ *      remediation: string, message: string, recovery_gate_id?: string, recovery_card?: object}}}
  */
 function resolveMcpWriteRoom(opts) {
   const o = (opts && typeof opts === 'object') ? opts : {};
@@ -232,7 +320,57 @@ function resolveMcpWriteRoom(opts) {
       );
     } catch (_logErr) { /* stderr write failure never blocks the write */ }
   }
-  return { ok: true, dir: hit.dir, slug: hit.slug, source: hit.source };
+  const raw = readIdentityRaw(hit.dir);
+  const ident = identityFromRaw(raw);
+  const rdMod = loadReadinessMod();
+  const readiness = (rdMod && typeof rdMod.readinessFor === 'function')
+    ? rdMod.readinessFor(hit.dir, 'governed_write', { identity: raw })
+    : null;
+  if (readiness && readiness.state === 'not_ready') {
+    // The recovery card is offered only to a session that can answer it (it has an identity), and only for a
+    // reason the heal net repairs; restore_write_permission is a person's action and never gets a card.
+    let card = null;
+    if (readiness.remediation === 'recover_room_record' && hasIdentity && readiness.reason !== 'identity_path_mismatch') {
+      const gm = loadRecoveryGateMod();
+      if (gm && typeof gm.mintRecoveryGate === 'function') {
+        const minted = gm.mintRecoveryGate({ roomDir: hit.dir, sessionId: sessionId, readiness: readiness });
+        if (minted && minted.ok === true) card = minted;
+      }
+    }
+    if (readiness.blocking) {
+      const refusal = {
+        ok: false,
+        reason: ROOM_NOT_READY,
+        not_ready_reason: readiness.reason,
+        requirement: readiness.requirement,
+        remediation: readiness.remediation,
+        message: readiness.requirement + '. Nothing was written. ' + (
+          readiness.remediation === 'restore_write_permission'
+            ? 'Restore write permission on the room folder, then retry.'
+            : (card
+              ? 'Answer the recovery card to rebuild the room record, then retry.'
+              : 'Rebuild the room record with /mos:graph --derive (it asks first), then retry.')),
+      };
+      if (card) { refusal.recovery_gate_id = card.gate_id; refusal.recovery_card = card.card; }
+      return {
+        ok: false, dir: hit.dir, slug: hit.slug, source: hit.source,
+        room_id: ident.room_id, room_identity: ident.room_identity,
+        refusal: refusal,
+      };
+    }
+    // Not ready but this operation does not need the missing piece (a legacy room whose identity is absent): the
+    // write goes ahead and its result shows the gap, with the one card for the session when it can be offered.
+    const shown = Object.assign({}, ident.room_identity, { requirement: readiness.requirement });
+    if (card) shown.recovery_gate_id = card.gate_id;
+    return {
+      ok: true, dir: hit.dir, slug: hit.slug, source: hit.source,
+      room_id: ident.room_id, room_identity: shown,
+    };
+  }
+  return {
+    ok: true, dir: hit.dir, slug: hit.slug, source: hit.source,
+    room_id: ident.room_id, room_identity: ident.room_identity,
+  };
 }
 
 /**
@@ -255,30 +393,59 @@ function claimSessionRefusal() {
 }
 
 /**
- * describeRoomBinding(resolution) -- the label a READ response carries so a
+ * describeRoomBinding(resolution, opts) -- the label a READ response carries so a
  * registry-fallback room is never mistaken for a binding (navigator ruling,
- * point 2). Pure; takes the { dir, slug, source } resolveMcpSessionRoom returns.
+ * point 2). Takes the { dir, slug, source } resolveMcpSessionRoom returns (a
+ * resolveMcpWriteRoom result also works: its room_id and room_identity are used
+ * as given). 369.25 RID-06: it also reports the room id and the identity state,
+ * read through readRoomIdentity (door in_place); a fallback note names the
+ * fallback room and, when known, its id. opts.identity ({room_id, room_identity})
+ * overrides the read. dir null -> room_id null, identity null. Never throws.
  *
- * @param {{dir?: string|null, slug?: string|null, source?: string}} resolution
+ * @param {{dir?: string|null, slug?: string|null, source?: string,
+ *   room_id?: string|null, room_identity?: object|null}} resolution
+ * @param {{identity?: {room_id: string|null, room_identity: object|null}}} [opts]
  * @returns {{bound: boolean, source: string, registry_fallback: boolean,
- *   slug: string|null, operator_pinned?: boolean, note?: string}}
+ *   slug: string|null, room_id: string|null, identity: object|null,
+ *   operator_pinned?: boolean, note?: string}}
  */
-function describeRoomBinding(resolution) {
+function describeRoomBinding(resolution, opts) {
   const r = (resolution && typeof resolution === 'object') ? resolution : {};
+  const o = (opts && typeof opts === 'object') ? opts : {};
   const source = typeof r.source === 'string' ? r.source : 'none';
   const bound = source === 'session.primary' || source === 'room-root';
   const pinned = isOperatorPinnedRoom(r);
-  const label = pinned ? 'the room pinned for this server by CLAUDE_ACTIVE_ROOM' : {
-    'reg.active': 'the registry fallback (the registry active room)',
-    'boot-fallback': 'the server default room (a fallback)',
-    'cwd': 'the working directory (a fallback)',
+  const hasDir = typeof r.dir === 'string' && r.dir.length > 0;
+  let ident;
+  if (o.identity && typeof o.identity === 'object') {
+    ident = {
+      room_id: typeof o.identity.room_id === 'string' ? o.identity.room_id : null,
+      room_identity: (o.identity.room_identity && typeof o.identity.room_identity === 'object') ? o.identity.room_identity : null,
+    };
+  } else if (!hasDir) {
+    ident = { room_id: null, room_identity: null };
+  } else if (Object.prototype.hasOwnProperty.call(r, 'room_identity') && r.room_identity) {
+    ident = { room_id: typeof r.room_id === 'string' ? r.room_id : null, room_identity: r.room_identity };
+  } else {
+    ident = identityFor(r.dir);
+  }
+  const slug = typeof r.slug === 'string' ? r.slug : null;
+  const roomWords = slug
+    ? ' (room ' + slug + (ident.room_id ? ', id ' + ident.room_id : '') + ')'
+    : (ident.room_id ? ' (id ' + ident.room_id + ')' : '');
+  const label = pinned ? 'the room pinned for this server by CLAUDE_ACTIVE_ROOM' + roomWords : {
+    'reg.active': 'the registry fallback' + (roomWords || ' (the registry active room)'),
+    'boot-fallback': 'the server default room (a fallback)' + roomWords,
+    'cwd': 'the working directory (a fallback)' + roomWords,
     'none': 'no room',
-  }[source] || 'a fallback room';
+  }[source] || 'a fallback room' + roomWords;
   const out = {
     bound: bound,
     source: source,
     registry_fallback: source === 'reg.active' && !pinned,
-    slug: typeof r.slug === 'string' ? r.slug : null,
+    slug: slug,
+    room_id: ident.room_id,
+    identity: ident.room_identity,
   };
   if (pinned) out.operator_pinned = true;
   if (!bound) {
@@ -297,4 +464,5 @@ module.exports = {
   MCP_FIRST_DEPRECATED_ACTIVE_WRITE,
   NO_BOUND_ROOM,
   NO_BOUND_ROOM_MESSAGE,
+  ROOM_NOT_READY,
 };

@@ -536,22 +536,26 @@ function noWriteBanner(realPathSentence) {
 
 /**
  * Format a Suggested Next section for pipeline chaining (MCP-05).
- * @param {string} tool - MCP tool name (e.g., 'room_state')
- * @param {Object} args - Tool arguments
- * @param {string} rationale - Why this is the logical next step
+ *
+ * Phase 369.25 plan 21 (FBRIEF-04, Pitfall 19: footers are many): no tool footer recommends a command on its own any
+ * more. The footer keeps its marker (17+ test files split a response on `## Suggested Next`) and points at the one
+ * decision path: suggest_next, and the nest's BRIEF.md, both composed by lib/core/feyminto/next-move.cjs
+ * nextMoveForSection, the same function the navigation engine reads. It names no other command, so a footer can
+ * never disagree with the decision path. The Phase 205-01 surface fence stays as it was: a call site that offered a
+ * plumbing (surface:internal) command still emits nothing (tests/test-205-surface-fence.cjs pins the filterToNavigator
+ * call here), though what it would have offered is never echoed. The signature is unchanged so every call site stays
+ * as it was.
+ * @param {string} tool - MCP tool name (unused: the footer no longer echoes the call site's recommendation)
+ * @param {Object} args - Tool arguments (read only for the surface fence; never echoed)
+ * @param {string} rationale - The call site's rationale (unused: it described a recommendation this footer no longer makes)
  * @returns {string} Formatted markdown section
  */
-function formatSuggestedNext(tool, args, rationale) {
-  // Phase 205-01 item 0b: enforce the surface fence on the MCP surface. The
-  // command being offered as the next move must be a navigator surface; a
-  // plumbing (surface:internal) command is never surfaced to Desktop/Cowork.
-  // filterToNavigator is the single-source-of-truth chokepoint (never re-derived
-  // recall). A suppressed suggestion emits nothing rather than a plumbing move.
+function formatSuggestedNext(tool, args, rationale) { // eslint-disable-line no-unused-vars
   const offered = args && args.command;
   if (offered && filterToNavigator([offered]).length === 0) {
     return '';
   }
-  return `\n\n## Suggested Next\n\n**Tool:** \`${tool}\`\n**Args:** \`${JSON.stringify(args)}\`\n**Rationale:** ${rationale}`;
+  return '\n\n## Suggested Next\n\n**Tool:** `suggest_next`\n**Rationale:** The next move comes from this nest\'s FeyMinto brief (one decision path). Call suggest_next, or read the nest\'s BRIEF.md.';
 }
 
 /**
@@ -2143,7 +2147,7 @@ function registerRouterTools(server, roomDir, pluginRoot, larryContext, surface)
       if (!effectiveSessionId) {
         return textResponse(JSON.stringify({ ok: false, reason: 'no_session_id' }, null, 2), true);
       }
-      const { writeSessionBinding } = require('../core/session-binding.cjs');
+      const { addSessionRoom } = require('../core/session-binding.cjs');
 
       // Phase 248-02 (CTX-02 return half): the write above can silently no-op
       // (an unsafe slug) or write a slug that has no directory on disk (the
@@ -2153,7 +2157,7 @@ function registerRouterTools(server, roomDir, pluginRoot, larryContext, surface)
       // an in-process seam-liveness proof: the write end and the read end
       // are verified against each other on every call. Additive fields only
       // - the needs_binding_card branch below is untouched.
-      function honestBindResult(baseFields, boundSlug) {
+      function honestBindResult(baseFields, boundSlug, bindResult) {
         const check = require('./session-room.cjs').resolveMcpSessionRoom({
           sessionId: effectiveSessionId,
           ctx: { fallbackRoomDir: roomDir, surface: surface },
@@ -2179,6 +2183,18 @@ function registerRouterTools(server, roomDir, pluginRoot, larryContext, surface)
             + 'connection resolve this connection\'s own session, not that id, so they will not see it. '
             + 'Call room_bind again without sessionId to bind this connection.';
         }
+        // 369.25 RID-06: the bound room's id from its own room.db (read-only, in place), or the
+        // typed reason it is not ready. A room_bind that cannot say which room it bound is a half answer.
+        try {
+          const rid = require('../core/navigation/room-identity.cjs');
+          const idr = check.dir
+            ? rid.readRoomIdentity(check.dir, { door: 'in_place' })
+            : { ok: false, state: 'not_ready', reason: 'room_db_missing' };
+          if (idr && idr.ok) result.room_id = idr.room_id;
+          else result.room_identity = { state: 'not_ready', reason: (idr && idr.reason) || 'room_db_unreadable' };
+        } catch (_eId) {
+          result.room_identity = { state: 'not_ready', reason: 'room_db_unreadable' };
+        }
         if (!effective) {
           // room_not_on_disk: a write of a safe slug that the resolver could
           // not turn into a session.primary hit (the existsSync gate in
@@ -2189,13 +2205,21 @@ function registerRouterTools(server, roomDir, pluginRoot, larryContext, surface)
             ? 'room_not_on_disk'
             : 'binding_not_effective';
         }
+        // 369.25 RFT-03 (Pitfall 10): a binding that could not be persisted is never reported as
+        // effective, and the reason names the real cause.
+        if (bindResult && bindResult.ok !== true) {
+          result.effective = false;
+          result.reason = 'binding_write_failed';
+          if (bindResult.reason && bindResult.reason !== 'binding_write_failed') result.binding_reason = bindResult.reason;
+        }
         return result;
       }
 
       if (room) {
-        writeSessionBinding(effectiveSessionId, { primary: room, bound: [room] });
+        // 369.25 RID-10 (ruling 2026-10-06): room_bind ADDS the room to the bound set and makes it primary.
+        const bindRes = addSessionRoom(effectiveSessionId, room);
         persistBindHealth(effectiveSessionId, room, null);
-        const payload = honestBindResult({ ok: true, bound: true, primary: room, source: 'explicit' }, room);
+        const payload = honestBindResult({ ok: true, bound: true, primary: room, source: 'explicit' }, room, bindRes);
         return textResponse(JSON.stringify(payload, null, 2)
           + formatSuggestedNext('room_state', { command: 'status' }, 'Session bound - check room status for the newly bound room'));
       }
@@ -2206,9 +2230,9 @@ function registerRouterTools(server, roomDir, pluginRoot, larryContext, surface)
         const cwdRoomDir = roomRoot.resolveRoomRoot(process.cwd());
         if (cwdRoomDir) {
           const slug = path.basename(cwdRoomDir);
-          writeSessionBinding(effectiveSessionId, { primary: slug, bound: [slug] });
+          const bindRes = addSessionRoom(effectiveSessionId, slug);
           persistBindHealth(effectiveSessionId, slug, cwdRoomDir);
-          const payload = honestBindResult({ ok: true, bound: true, primary: slug, source: 'cwd' }, slug);
+          const payload = honestBindResult({ ok: true, bound: true, primary: slug, source: 'cwd' }, slug, bindRes);
           return textResponse(JSON.stringify(payload, null, 2)
             + formatSuggestedNext('room_state', { command: 'status' }, 'Session auto-bound from cwd - check room status'));
         }
@@ -2376,7 +2400,7 @@ const MCP_TOOL_CONNECTORS = [
   },
 ];
 
-module.exports = { registerRouterTools, ALL_TOOL_COMMANDS, MCP_TOOL_CONNECTORS };
+module.exports = { registerRouterTools, ALL_TOOL_COMMANDS, MCP_TOOL_CONNECTORS, UNIMPLEMENTED_MUTATING_ORCHESTRATION };
 
 // 87-05: Export validation primitives for unit tests
 // (kept out of the registerRouterTools surface area).

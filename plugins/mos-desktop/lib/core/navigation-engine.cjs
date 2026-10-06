@@ -452,19 +452,24 @@ function groundingForFireSkill(fireSkill, sensorReaches, brain, navigatedNeighbo
 
 // ---------- Section consumption ----------
 
+// 369.25-17: a legacy section body that carries no content: the empty-answer sentinel (a query that ran and returned
+// nothing), a "not asked: <reason>" line (the query never ran or was refused) or the shape line (the answer was in a
+// shape the section does not read). None of them is a section the engine consumed.
+const NO_CONTENT_BODY_RE = /^\s*(\(no signal\)|not asked:[^\n]*|the answer came in a shape this section does not read)\s*$/i;
+
 function consumedSections(brain) {
   if (!brain || typeof brain !== 'object' || !brain.sections) return [];
   const out = [];
   // Required first (canonical order), then optional.
   for (const k of REQUIRED_SECTION_KEYS) {
     const v = brain.sections[k];
-    if (v !== null && v !== undefined && typeof v === 'object' && typeof v.body === 'string' && v.body.length > 0 && !/^\s*\(no signal\)\s*$/i.test(v.body)) {
+    if (v !== null && v !== undefined && typeof v === 'object' && typeof v.body === 'string' && v.body.length > 0 && !NO_CONTENT_BODY_RE.test(v.body)) {
       out.push(k);
     }
   }
   for (const k of OPTIONAL_SECTION_KEYS) {
     const v = brain.sections[k];
-    if (v !== null && v !== undefined && typeof v === 'object' && typeof v.body === 'string' && v.body.length > 0 && !/^\s*\(no signal\)\s*$/i.test(v.body)) {
+    if (v !== null && v !== undefined && typeof v === 'object' && typeof v.body === 'string' && v.body.length > 0 && !NO_CONTENT_BODY_RE.test(v.body)) {
       out.push(k);
     }
   }
@@ -1131,6 +1136,49 @@ function decide(turn, context) {
   // introduced here. Absent either input, this block is a byte-identical
   // no-op: ctx.tierCandidates stays unset and rankForSelector behaves
   // exactly as it did before this phase (the sensor order, unchanged).
+  // Phase 369.25 plan 21 (FBRIEF-03): the FeyMinto face first, the ledger as the fallback. One decision path: the same
+  // nextMoveForSection that renders BRIEF.md and answers suggest_next fills ctx.tierCandidates here, so the engine,
+  // the tool and the brief propose the same move for the nest. Local reads only (Canon Part 8 posture in the header:
+  // the nest's own files through next-move.cjs, readQuadruple's allowed path among them; no Brain call, no network);
+  // the 1200 ms NAV budget is held (tests/test-36925-next-move.cjs X3 measures it). A caller-threaded
+  // ctx.tierCandidates wins as the test seam, exactly as for the ledger below. The ids are written in the
+  // '/mos:<name>' form the ranker's rows carry: toTierCandidates returns bare names (plan 18 tested its shape only),
+  // and a bare id never matches a ranker row, so the fusion would silently do nothing (X6 pins both sides).
+  // When the face has no runnable primary, the ledger block below runs unchanged and the reason is named on
+  // ctx.tierCandidatesFallbackReason ('no_room_dir', 'bad_section', 'no_runnable_primary', 'face_read_failed').
+  if (!Array.isArray(ctx.tierCandidates) && typeof ctx.section === 'string' && ctx.section) {
+    if (typeof ctx.roomDir !== 'string' || !ctx.roomDir) {
+      ctx.tierCandidatesFallbackReason = 'no_room_dir';
+    } else if (!/^[a-z0-9-]+$/.test(ctx.section)) {
+      ctx.tierCandidatesFallbackReason = 'bad_section';
+    } else {
+      try {
+        const feyNextMove = require('./feyminto/next-move.cjs');
+        const nm = feyNextMove.nextMoveForSection({
+          roomDir: ctx.roomDir,
+          sectionDir: require('node:path').join(ctx.roomDir, ctx.section),
+          surface: ctx.surface === 'cli' ? 'cli' : 'mcp',
+        });
+        const faceTier = nm && nm.primary ? feyNextMove.toTierCandidates(nm) : null;
+        if (Array.isArray(faceTier) && faceTier.length > 0) {
+          ctx.tierCandidates = faceTier.map(function (entry) {
+            return {
+              source: entry.source,
+              items: entry.items.map(function (it) {
+                return { id: '/mos:' + String(it.id).replace(/^\/mos:/, ''), confidence: it.confidence, source: it.source };
+              }),
+            };
+          });
+          ctx.tierCandidatesSource = 'feyminto_face';
+        } else {
+          ctx.tierCandidatesFallbackReason = 'no_runnable_primary';
+        }
+      } catch (_e) {
+        // soft-fail: the ledger block below runs exactly as before
+        ctx.tierCandidatesFallbackReason = 'face_read_failed';
+      }
+    }
+  }
   if (!Array.isArray(ctx.tierCandidates)) {
     try {
       const sectionRulingCandidates = require('./section-ruling-candidates.cjs');

@@ -21,6 +21,7 @@
  *   node scripts/real-room-run.cjs [--read-by "<name>"] [--offline] [--json]
  *        [--rooms-home <dir>] [--seed <dir>] [--receipt-dir <dir>]
  *   node scripts/real-room-run.cjs --desktop-verified mac|win [--receipt-dir <dir>]
+ *   node scripts/real-room-run.cjs --negative-only [--json]
  *
  *   --read-by         the person who read the report. Writes the receipt for the HEAD sha.
  *                     Without it the web lines are NOT approved (dry) and no receipt is written.
@@ -30,6 +31,9 @@
  *   --desktop-verified mac|win
  *                     records, on the existing receipt for HEAD, that the person ran the cut's
  *                     Desktop copy on that machine. Refuses no_receipt_for_head when absent.
+ *   --negative-only   runs only the negative leg (369.25-23): quick, deep, Eureka and analogies must each REFUSE the
+ *                     never-ready fixture with room.db missing and with room.db corrupted (room_not_ready, naming the
+ *                     failed requirement). Exit 0 only when all eight refused. Writes no receipt.
  *   --json            prints the full result object (run ids included) instead of the report.
  *   --rooms-home      where the throwaway room is born (default <receipt-dir>/rooms).
  *   --receipt-dir     default $MINDRIAN_REAL_ROOM_RECEIPT_DIR, else $HOME/.mindrian/release-real-room.
@@ -37,6 +41,8 @@
  * Receipt <receipt-dir>/<full sha>.json:
  *   { schema, sha, version, room, reader, read_at, offline,
  *     perspectives: { quick|deep|eureka|analogies: { status, counts: {numbers} } },
+ *     feyminto: { nests: [{ nest, asked, not_asked_reason, frameworks_named: <count>, commands_runnable_here: <count> }] },
+ *     negative_leg: { fixture, rooms: [{ injection, jobs: { <job>: { refused, not_ready_reason } } }], all_refused },
  *     providers: { tavily, openalex }, desktop_verified: { mac, win } }
  *
  * Canon Part 8: the room is the fixture's invented text; what can leave it is the planner's
@@ -62,6 +68,8 @@ const PLANNER_CLI = path.join(ROOT, 'scripts', 'research-planner.cjs');
 const DEFAULT_SEED = path.join(ROOT, 'tests', 'fixtures', 'release-room');
 const SCHEMA = 'mos.real-room-receipt/1';
 const MAX_DEEP_STEPS = 80;
+const negativeLeg = require(path.join(ROOT, 'scripts', 'release-lib', 'real-room-negative-leg.cjs'));
+const roomRead = require(path.join(ROOT, 'lib', 'core', 'feyminto', 'room-read.cjs'));
 
 // -- small helpers -------------------------------------------------------------
 function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -88,7 +96,7 @@ function refuse(reason, detail) {
 
 // -- argv ----------------------------------------------------------------------
 const VALUE_FLAGS = ['--rooms-home', '--seed', '--receipt-dir', '--read-by', '--desktop-verified'];
-const BOOL_FLAGS = ['--offline', '--json', '--help'];
+const BOOL_FLAGS = ['--offline', '--json', '--help', '--negative-only'];
 
 function parseArgs(argv) {
   const opts = { offline: false, json: false, help: false };
@@ -97,6 +105,7 @@ function parseArgs(argv) {
     if (BOOL_FLAGS.indexOf(tok) !== -1) {
       if (tok === '--offline') opts.offline = true;
       else if (tok === '--json') opts.json = true;
+      else if (tok === '--negative-only') opts.negativeOnly = true;
       else opts.help = true;
       continue;
     }
@@ -567,6 +576,10 @@ function reportText(res) {
   a.examples.forEach(function (s) { L.push('  pair: ' + s); });
   L.push('  It could not: fill the SAPPhIRE statement - ' + a.statement_note + '.');
   L.push('');
+  L.push(roomRead.formatFeyMintoBlock(res.jobs.feyminto));
+  L.push('');
+  L.push(negativeLeg.formatNegativeBlock(res.negative_leg));
+  L.push('');
   if (res.receipt && res.receipt.written) {
     L.push('RECEIPT: written for ' + res.sha.slice(0, 12) + ' read by ' + res.read_by + ' at ' + res.receipt.read_at + (res.offline ? ' (recorded as OFFLINE; release.sh refuses an offline receipt)' : '') + '.');
     L.push('  next: if this cut ships a Desktop copy, run it on a Mac and a PC, then: node scripts/real-room-run.cjs --desktop-verified mac|win');
@@ -578,6 +591,19 @@ function reportText(res) {
 
 // -- receipt -----------------------------------------------------------------------------------------------
 function receiptPath(receiptDir, sha) { return path.join(receiptDir, sha + '.json'); }
+
+// 369.25-23: the receipt keeps each job's outcome (refused and why), not the run's scratch paths or requirement prose.
+function negativeSummary(leg) {
+  return {
+    fixture: leg.fixture,
+    rooms: leg.rooms.map(function (r) {
+      const jobs = {};
+      Object.keys(r.jobs).forEach(function (k) { jobs[k] = { refused: r.jobs[k].refused === true, not_ready_reason: r.jobs[k].not_ready_reason }; });
+      return { injection: r.injection, jobs: jobs };
+    }),
+    all_refused: leg.all_refused === true,
+  };
+}
 
 function buildReceipt(res) {
   const q = res.jobs.quick; const d = res.jobs.deep; const e = res.jobs.eureka; const a = res.jobs.analogies;
@@ -596,6 +622,8 @@ function buildReceipt(res) {
       analogies: { status: a.status, counts: { pairs: a.pairs, structural_pairs: a.structural_pairs, things: a.things } },
     },
     providers: { tavily: res.providers.tavily, openalex: res.providers.openalex },
+    feyminto: { nests: res.jobs.feyminto.map(function (n) { return { nest: n.nest, asked: n.asked, not_asked_reason: n.not_asked_reason, frameworks_named: n.frameworks_named.length, commands_runnable_here: n.commands_runnable_here.length }; }) },
+    negative_leg: negativeSummary(res.negative_leg),
     desktop_verified: { mac: null, win: null },
   };
 }
@@ -637,12 +665,17 @@ async function runCeremony(opts, receiptDir) {
     const eureka = jobEureka(ctx);
     progress('analogies');
     const analogies = jobAnalogies(ctx);
+    progress('feyminto');
+    const feyminto = await roomRead.feymintoLeg(room.roomDir, { offline: opts.offline });
+    progress('negative leg');
+    const negative = negativeLeg.runNegativeLeg({ roomsHome: roomsHome, sha: sha, plannerCli: PLANNER_CLI, seedDir: seedDir, scratch: SCRATCH });
     const res = {
       ok: true,
       sha: sha, version: version, offline: opts.offline, read_by: opts.readBy || null,
       providers: providers,
       room: { slug: room.slug, dir: room.roomDir, indexed: room.indexed, seeded: room.seeded, registered: room.registered },
-      jobs: { quick: quick, deep: deep, eureka: eureka, analogies: analogies },
+      jobs: { quick: quick, deep: deep, eureka: eureka, analogies: analogies, feyminto: feyminto },
+      negative_leg: negative,
       receipt: { written: false, file: null, read_at: null },
     };
     if (opts.readBy) {
@@ -658,7 +691,21 @@ async function runCeremony(opts, receiptDir) {
   }
 }
 
+// 369.25-23: only the negative leg (quick, deep, Eureka and analogies must refuse a room with no usable room.db).
+// Writes no receipt and births no fixture room; exit 0 only when every job refused, else 1.
+function runNegativeOnly(opts) {
+  const seedDir = path.resolve(opts.seed || DEFAULT_SEED);
+  const sha = headSha();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mos-real-room-negative-'));
+  try {
+    return negativeLeg.runNegativeLeg({ roomsHome: null, sha: sha, plannerCli: PLANNER_CLI, seedDir: seedDir, scratch: scratch });
+  } finally {
+    try { fs.rmSync(scratch, { recursive: true, force: true }); } catch (_e) { /* tmp */ }
+  }
+}
+
 const HELP = 'Usage: node scripts/real-room-run.cjs [--read-by "<name>"] [--offline] [--json] [--rooms-home <dir>] [--seed <dir>] [--receipt-dir <dir>]\n'
+  + '       node scripts/real-room-run.cjs --negative-only [--json]   (only the negative leg; writes no receipt)\n'
   + '       node scripts/real-room-run.cjs --desktop-verified mac|win [--receipt-dir <dir>]\n';
 
 async function main(argv) {
@@ -674,6 +721,11 @@ async function main(argv) {
       const r = await runDesktopVerified(opts, receiptDir);
       process.stdout.write(opts.json ? JSON.stringify(r) + '\n' : 'Desktop leg recorded: ' + opts.desktopVerified + ' verified at ' + r.desktop_verified[opts.desktopVerified] + ' on the receipt for ' + r.sha.slice(0, 12) + '\n');
       return 0;
+    }
+    if (opts.negativeOnly) {
+      const leg = runNegativeOnly(opts);
+      process.stdout.write(opts.json ? JSON.stringify({ ok: leg.all_refused, negative_leg: leg }) + '\n' : negativeLeg.formatNegativeBlock(leg) + '\n');
+      return leg.all_refused ? 0 : 1;
     }
     const res = await runCeremony(opts, receiptDir);
     process.stdout.write(opts.json ? JSON.stringify(res) + '\n' : reportText(res));

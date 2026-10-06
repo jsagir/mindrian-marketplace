@@ -179,6 +179,8 @@ function firstArtifactBodyLine(content) {
  */
 function fileArtifact(db, roomDir, params) {
   const p = params || {};
+  // 369.25 AN-01 (amendment 9): the room id the write resolution read from room.db; the anchor edge carries it.
+  const roomIdForAnchor = (typeof p.roomId === 'string' && p.roomId.length > 0) ? p.roomId : null;
   // Phase 354-05 (SYS-01, CTX-SYMLINK): safeResolveSection now also asserts
   // realpath containment (lib/mcp/tool-router.cjs), so an existing symlinked
   // section (lexically inside roomDir, realpath outside it) is refused HERE,
@@ -320,7 +322,9 @@ function fileArtifact(db, roomDir, params) {
                 source_id: nodeId,
                 target_id: navigation.JTBD_ANCHOR_ID(gateResult.section_job),
                 edge_type: 'SOURCED_FROM',
-                properties: { relation: 'sourced_from', origin: 'artifact_file' },
+                properties: roomIdForAnchor
+                  ? { relation: 'sourced_from', origin: 'artifact_file', room_id: roomIdForAnchor }
+                  : { relation: 'sourced_from', origin: 'artifact_file' },
               });
             } else {
               anchorEdge = { ok: false, reason: 'anchor_mint_failed' };
@@ -357,6 +361,16 @@ function fileArtifact(db, roomDir, params) {
       }
     } catch (e) {
       reasoningNode = { ok: false, reason: 'reasoning_write_threw', detail: String((e && e.message) || e).slice(0, 80) };
+    }
+  }
+
+  // AN-01 (369.25-04, amendment 9) and the brief's minimum rule: a missing or failed check stays visible. A filing
+  // that did not anchor says why, typed, never a bare null. no_filed_node first (nothing was written to anchor).
+  if (anchorEdge === null) {
+    if (!reasoningNode || reasoningNode.ok !== true) {
+      anchorEdge = { ok: false, reason: 'no_filed_node' };
+    } else if (!gateResult.section_job) {
+      anchorEdge = { ok: false, reason: 'section_job_unresolved', gate_reason: gateResult.reason || null };
     }
   }
 
@@ -481,8 +495,9 @@ function register(server, ctx) {
           section, filename, content,
           epistemicType: epistemic_type,
           evidenceNodeIds: evidence_node_ids,
+          roomId: writeRoom.room_id,
         });
-        return textResponse(Object.assign({ room_dir: roomDir }, result), !result.ok);
+        return textResponse(Object.assign({ room_dir: roomDir, room_id: writeRoom.room_id, room_identity: writeRoom.room_identity }, result), !result.ok);
       } finally {
         navigation.closeRoomDbForCaller(db);
       }

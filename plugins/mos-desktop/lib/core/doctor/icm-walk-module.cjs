@@ -35,8 +35,20 @@
  *   I7  bytes and approximate tokens of ROOM.md + CONTEXT.md + MINTO.md + FEYNMAN.md (+ BRIEF.md); over 8000
  *       tokens; FEYNMAN.md body tokens against the 1500 budget
  *   I8a MINTO.md `sources:` entries that are also ROOM.md wikilinks, and the ones that appear nowhere in it
- *   I8b MINTO.md `room:` value vs the room slug; room-level: room.db, the `room:<slug>` Room node, identity rows
- *   I8c BRAIN.md present, brain_query_count, CONTEXT.md section-2 command names that BRAIN.md also names
+ *   I8b MINTO.md `room:` value vs the room slug and vs the room id room.db holds (369.25 RID-09), and (369.25-17) the
+ *       same comparison per face: MINTO.md `room`, FEYNMAN.md `room_id`, BRAIN.md `room_id` (`faces`, each
+ *       `{ value, matches_room_id }`, null when the face has no key or the room has no id) plus MINTO.md `room_slug`
+ *       against the slug; room-level: room.db,
+ *       the `room:<slug>` Room node, and the seven room.* identity keys (count, room_id, ready = all seven AND
+ *       room.slug equals the walked slug; RESEARCH Pitfall 17: a substring match on the slug read "yes" for any room
+ *       with a Room node). This walk reads them with its own SQL through openRoomDbReadOnlyForCaller and never
+ *       requires the room-identity module: it is the reader other than the writer (amendment 4).
+ *   I8c BRAIN.md present, brain_query_count, CONTEXT.md section-2 command names that BRAIN.md restates WITHOUT a
+ *       source tag. REDEFINED in 369.25 plan 17 (RESEARCH Open Question 5 and Pitfall 20, decided there): the Theo face
+ *       links to CONTEXT.md section 2 and prints only the names that disagree across the three command sources, and
+ *       every name line carries a "(source: ...)" tag, so a tagged line is a pointer, not a copy. `restated` counts the
+ *       section-2 names found on a BRAIN.md line with no "(source: " tag (a copy); `tagged` counts the names found only
+ *       on tagged lines; `asked` and `not_asked_reason` come from the face frontmatter (null on a legacy BRAIN.md).
  *   I9  STATE.md present, its last activity vs the newest file mtime in the nest; research-run counts (room)
  *   I10 files carrying auto_scaffolded, files carrying the seeded-at-birth template line
  *   I0  (room block) core sections present N of 11 (lib/core/section-registry.cjs CORE_SECTIONS, a directory
@@ -217,9 +229,19 @@ function countReferrers() {
 
 // -- room.db (read through the navigation read door, on a throwaway copy) ----------------------------------------
 
+// The seven identity keys 369.25 commits at birth (IDENTITY_KEYS in the navigation room-identity module). Listed here on
+// purpose and not required from that module: this walk is the reader other than the writer (amendment 4), so it keeps
+// its own copy of the key names and its own SQL. tests/test-36925-rid-reader.cjs D3 fails if the require ever appears.
+const IDENTITY_KEYS = [
+  'room.room_id', 'room.slug', 'room.canonical_path', 'room.parent', 'room.depth', 'room.created_at', 'room.birth_version',
+];
+
 function readRoomDb(roomDir, slug) {
   const src = path.join(roomDir, '.mindrian', 'room.db');
-  const empty = { room_db: 'missing', room_node: null, identity_rows_total: null, identity_rows_naming_room: null, slug_db_agreement: null };
+  const empty = {
+    room_db: 'missing', room_node: null, identity_rows_total: null,
+    identity_keys_present: null, room_id: null, identity_ready: null,
+  };
   if (!isFile(src)) return empty;
   let tmp = null;
   let db = null;
@@ -237,15 +259,24 @@ function readRoomDb(roomDir, slug) {
       : db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE id = ?').get('room:' + slug).n > 0;
     const idCols = db.prepare('PRAGMA table_info(identity)').all().map(function (c) { return c.name; });
     let total = null;
-    let naming = null;
+    let keysPresent = null;
+    let roomId = null;
+    let ready = null;
     if (idCols.indexOf('key') !== -1 && idCols.indexOf('value') !== -1) {
       const rows = db.prepare('SELECT key, value FROM identity').all();
       total = rows.length;
-      naming = rows.filter(function (r) { return String(r.key).indexOf(slug) !== -1 || String(r.value).indexOf(slug) !== -1; }).length;
+      const stored = {};
+      rows.forEach(function (r) { if (IDENTITY_KEYS.indexOf(String(r.key)) !== -1) stored[String(r.key)] = String(r.value); });
+      keysPresent = IDENTITY_KEYS.filter(function (k) { return Object.prototype.hasOwnProperty.call(stored, k); }).length;
+      roomId = typeof stored['room.room_id'] === 'string' && stored['room.room_id'].length > 0 ? stored['room.room_id'] : null;
+      // ready: all seven keys are there AND the identity names the folder being walked (369.25 RID-09, Pitfall 17: a
+      // Room node or a row that merely contains the slug no longer reads as an identity)
+      ready = keysPresent === IDENTITY_KEYS.length && stored['room.slug'] === slug;
     }
-    let agreement = null;
-    if (roomNode !== null || naming !== null) agreement = roomNode === true || (naming !== null && naming > 0);
-    return { room_db: 'present', room_node: roomNode, identity_rows_total: total, identity_rows_naming_room: naming, slug_db_agreement: agreement };
+    return {
+      room_db: 'present', room_node: roomNode, identity_rows_total: total,
+      identity_keys_present: keysPresent, room_id: roomId, identity_ready: ready,
+    };
   } catch (_e) {
     return Object.assign({}, empty, { room_db: 'unreadable' });
   } finally {
@@ -310,7 +341,7 @@ function truthy(v) {
   return true;
 }
 
-function measureBlock(dir, rel, kind, slug, nestSet, referrers) {
+function measureBlock(dir, rel, kind, slug, nestSet, referrers, roomId) {
   const text = {};
   const fm = {};
   const present = {};
@@ -412,17 +443,61 @@ function measureBlock(dir, rel, kind, slug, nestSet, referrers) {
 
   // I8b
   const mintoRoom = present['MINTO.md'] && typeof fm['MINTO.md'].data.room === 'string' ? fm['MINTO.md'].data.room : null;
-  const I8b = { minto_room: mintoRoom, matches_slug: mintoRoom === null ? null : mintoRoom === slug };
+  // 369.25 RID-09: the face room value is also compared with the room id room.db holds (null when either is missing);
+  // minto_room and matches_slug stay for rooms whose faces carry the slug.
+  const roomIdExpected = typeof roomId === 'string' && roomId.length > 0 ? roomId : null;
+  // 369.25-17: the same room id comparison for each face. MINTO carries it in `room`, FEYNMAN and BRAIN in `room_id`;
+  // MINTO also carries the `room_slug` projection. A face that is missing, or has no such key, reads null (not false).
+  const faceRoomValue = function (file, key) {
+    if (!present[file]) return null;
+    const v = fm[file].data[key];
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  };
+  const faceRoom = function (value) {
+    return { value: value, matches_room_id: value === null || roomIdExpected === null ? null : value === roomIdExpected };
+  };
+  const mintoRoomSlug = faceRoomValue('MINTO.md', 'room_slug');
+  const I8b = {
+    minto_room: mintoRoom,
+    matches_slug: mintoRoom === null ? null : mintoRoom === slug,
+    room_id_expected: roomIdExpected,
+    matches_room_id: mintoRoom === null || roomIdExpected === null ? null : mintoRoom === roomIdExpected,
+    minto_room_slug: mintoRoomSlug,
+    matches_room_slug: mintoRoomSlug === null ? null : mintoRoomSlug === slug,
+    faces: {
+      'MINTO.md': faceRoom(mintoRoom),
+      'FEYNMAN.md': faceRoom(faceRoomValue('FEYNMAN.md', 'room_id')),
+      'BRAIN.md': faceRoom(faceRoomValue('BRAIN.md', 'room_id')),
+    },
+  };
 
   // I8c
   const names = ctx ? sectionTwoNames(text['CONTEXT.md']) : null;
   const brain = present['BRAIN.md'];
   const queryCount = brain && typeof fm['BRAIN.md'].data.brain_query_count === 'number' ? fm['BRAIN.md'].data.brain_query_count : null;
+  // 369.25-17: a name is "restated" only on a BRAIN.md line that has no source tag; a name found only on tagged lines
+  // is counted as `tagged`. The name must end at a command-name boundary (/mos:plan is not found in /mos:plan-sequence).
+  let restatedCount = null;
+  let taggedCount = null;
+  if (names !== null && brain) {
+    const brainLines = text['BRAIN.md'].split(/\r?\n/);
+    restatedCount = 0;
+    taggedCount = 0;
+    names.forEach(function (n) {
+      const re = new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![a-z0-9-])');
+      const hits = brainLines.filter(function (l) { return re.test(l); });
+      if (hits.some(function (l) { return l.indexOf('(source: ') === -1; })) restatedCount += 1;
+      else if (hits.length > 0) taggedCount += 1;
+    });
+  }
   const I8c = {
     brain_md: brain,
     brain_query_count: queryCount,
     context_command_names: names === null ? null : names.length,
-    restated: names !== null && brain ? names.filter(function (n) { return text['BRAIN.md'].indexOf(n) !== -1; }).length : null,
+    restated: restatedCount,
+    tagged: taggedCount,
+    asked: brain && typeof fm['BRAIN.md'].data.asked === 'boolean' ? fm['BRAIN.md'].data.asked : null,
+    not_asked_reason: brain && typeof fm['BRAIN.md'].data.not_asked_reason === 'string' ? fm['BRAIN.md'].data.not_asked_reason : null,
   };
 
   // I9
@@ -465,10 +540,10 @@ function walkRoom(roomDir) {
   const nestSet = new Set(nestDirs);
   const referrers = countReferrers();
 
-  const nests = [measureBlock(root, '.', 'root', slug, nestSet, referrers)];
-  nestDirs.forEach(function (abs) { nests.push(measureBlock(abs, path.relative(root, abs), 'nest', slug, nestSet, referrers)); });
-
   const roomInfo = Object.assign({ slug: slug }, readRoomDb(root, slug), { research_runs: countResearchRuns(root), I0: measureCoreSections(root, nestDirs) });
+
+  const nests = [measureBlock(root, '.', 'root', slug, nestSet, referrers, roomInfo.room_id)];
+  nestDirs.forEach(function (abs) { nests.push(measureBlock(abs, path.relative(root, abs), 'nest', slug, nestSet, referrers, roomInfo.room_id)); });
 
   // the summary: the three duplications and the edit-surface marker, each with its measured count
   const only = nests.filter(function (n) { return n.kind === 'nest'; });
@@ -486,7 +561,7 @@ function walkRoom(roomDir) {
       if (face.edit_surface_marker === false) markerAbsent += 1;
     });
   });
-  const identityInDb = roomInfo.slug_db_agreement === true;
+  const identityInDb = roomInfo.identity_ready === true;
   const summary = {
     nests_walked: only.length,
     nests_with_every_face: only.filter(function (n) { return FACES.every(function (f) { return n.I6.faces[f].present; }); }).length,
@@ -524,10 +599,10 @@ function renderBlock(n) {
       + yn(n.I4.ruling_methodology_sequence) + ', writing rules ' + yn(n.I4.ruling_writing_rules) + ' | generated_at: ' + yn(n.I4.generated_at)
     : 'CONTEXT.md: missing');
   row('I5', 'md files=' + n.I5.md_files + ' generated-marked=' + n.I5.generated_marked + ' authored=' + n.I5.authored);
-  row('I6', FACES.map(function (f) {
+  row('I6', 'FeyMinto faces: ' + FACES.map(function (f) {
     const face = n.I6.faces[f];
-    return f + ': ' + (face.present ? 'present, edit-surface marker ' + yn(face.edit_surface_marker) : 'missing');
-  }).join(' | ') + ' | governing_thought_placeholder: ' + num(n.I6.faces['MINTO.md'].governing_thought_placeholder));
+    return f + ' ' + (face.present ? 'present, edit-surface marker ' + yn(face.edit_surface_marker) : 'missing');
+  }).join(', ') + ' | governing_thought_placeholder: ' + num(n.I6.faces['MINTO.md'].governing_thought_placeholder));
   row('I7', LOAD_FILES.map(function (f) { return f + '=' + (n.I7.files[f] === null ? 'missing' : n.I7.files[f]); }).join(' ')
     + ' | total bytes=' + n.I7.bytes + ' approx tokens=' + n.I7.approx_tokens + (n.I7.over_8000_tokens ? ' [over 8000 tokens]' : '')
     + ' | FEYNMAN body tokens=' + (n.I7.feynman_body_tokens === null ? 'missing' : n.I7.feynman_body_tokens + '/' + FEYNMAN_TOKEN_BUDGET)
@@ -535,9 +610,14 @@ function renderBlock(n) {
   row('I8a', n.I8a.minto_sources === null ? 'MINTO.md or ROOM.md: missing'
     : 'MINTO sources=' + n.I8a.minto_sources + ' also in ROOM.md links=' + n.I8a.in_room_md + ' in no ROOM.md link=' + n.I8a.absent_from_room_md
       + (n.I8a.in_room_md > 0 ? ' [duplicate]' : ''));
-  row('I8b', 'MINTO room: ' + (n.I8b.minto_room === null ? 'n/a' : n.I8b.minto_room) + ' | matches slug: ' + yn(n.I8b.matches_slug));
-  row('I8c', 'BRAIN.md: ' + (n.I8c.brain_md ? 'present, brain_query_count=' + num(n.I8c.brain_query_count) : 'missing')
-    + ' | CONTEXT section-2 command names=' + num(n.I8c.context_command_names) + ' restated in BRAIN.md=' + num(n.I8c.restated)
+  row('I8b', 'MINTO room: ' + (n.I8b.minto_room === null ? 'n/a' : n.I8b.minto_room) + ' | matches slug: ' + yn(n.I8b.matches_slug)
+    + ' | matches room id: ' + yn(n.I8b.matches_room_id)
+    + ' | room_slug: ' + (n.I8b.minto_room_slug === null ? 'n/a' : n.I8b.minto_room_slug) + ' matches slug: ' + yn(n.I8b.matches_room_slug)
+    + ' | face room key matches room id: ' + FACES.map(function (f) { return f.replace('.md', '') + ' ' + yn(n.I8b.faces[f].matches_room_id); }).join(', '));
+  row('I8c', 'BRAIN.md: ' + (n.I8c.brain_md ? 'present, brain_query_count=' + num(n.I8c.brain_query_count)
+      + ', Theo ' + (n.I8c.asked === null ? 'asked: n/a' : (n.I8c.asked ? 'asked' : 'not asked (' + num(n.I8c.not_asked_reason) + ')')) : 'missing')
+    + ' | CONTEXT section-2 command names=' + num(n.I8c.context_command_names) + ' restated in BRAIN.md without a source tag=' + num(n.I8c.restated)
+    + ' tagged=' + num(n.I8c.tagged)
     + (n.I8c.restated > 0 ? ' [duplicate]' : ''));
   row('I9', 'STATE.md: ' + (n.I9.state_md ? 'present, last activity ' + num(n.I9.last_activity) : 'missing')
     + ' | newest file ' + num(n.I9.newest_file_mtime) + (n.I9.stale ? ' [stale]' : ''));
@@ -556,7 +636,7 @@ function renderText(report) {
     if (i === 0) {
       const runs = r.research_runs;
       L.push('  room.db: ' + r.room_db + ' | Room node: ' + (r.room_node === null ? 'n/a' : (r.room_node ? 'yes' : 'no'))
-        + ' | identity rows: ' + num(r.identity_rows_total) + ' total, ' + num(r.identity_rows_naming_room) + ' naming the room'
+        + ' | identity rows: ' + num(r.identity_rows_total) + ' total, ' + num(r.identity_keys_present) + ' of 7 identity keys'
         + ' | research runs: ' + runs.runs + ' (plan.json ' + runs.plan_json + ', run.json ' + runs.run_json + ', operations.json ' + runs.operations_json + ')');
     }
     if (i === 0) {
@@ -577,8 +657,8 @@ function renderText(report) {
   L.push('Theo face restating CONTEXT.md sequence: ' + s.theo_face_restated_commands + ' command name(s)');
   L.push('room identity in room.db: ' + (s.identity_in_room_db ? 'yes' : 'no')
     + ' (room.db: ' + r.room_db + ', Room node: ' + (r.room_node === null ? 'n/a' : (r.room_node ? 'yes' : 'no'))
-    + ', identity rows naming the room: ' + num(r.identity_rows_naming_room) + ')'
-    + (s.identity_in_room_db ? '' : ' [no Room node or identity row: the slug is the only identity]'));
+    + ', identity keys: ' + num(r.identity_keys_present) + ' of 7, room_id: ' + (r.room_id === null || r.room_id === undefined ? 'none' : r.room_id) + ')'
+    + (s.identity_in_room_db ? '' : ' [identity not committed in room.db: the slug is the only identity]'));
   L.push('edit-surface marker absent: ' + s.edit_surface_marker_absent + ' of ' + s.face_files_present + ' face file(s)');
   L.push('duplications found: ' + s.duplications_found + ' of ' + s.duplications_possible);
   return L.join('\n') + '\n';
