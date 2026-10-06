@@ -27,10 +27,13 @@
  * Writes one edit surface: <run>/03_judge/output/verdicts.jsonl. Hyphens only.
  */
 
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const critic = require('../../eureka-critic.cjs');
 const shared = require('./shared.cjs');
 const eurekaRecall = require('./eureka-recall.cjs');
+const egressPolicy = require('../egress-policy.cjs');
 
 // Source: .planning/phases/355-*/355-26-SUMMARY.md, usefulness judge vs the
 // navigator's blind sitting-1 gold: 76.04% exact agreement on 96 pairings.
@@ -128,6 +131,61 @@ async function runJudge(roomDir, tag, opts) {
   return { ok: true, tag: tag, file: file, summary: res.summary, rows: res.rows };
 }
 
+// ---------------------------------------------------------------------------
+// judgeState(roomDir, opts) -> { state, line } (369.2-27, SW-17 one-line half, R24).
+// The one sentence both surfaces (the MCP perspective_judge next_step and the CLI answers) say when no model
+// judged the Eureka pairs, and the next move. State:
+//   no_key    no Jev key on this machine (env TYPESAFE_API_KEY non-empty, or ~/.secrets/typesafe.env carrying a
+//             TYPESAFE_API_KEY= line). The key is checked for PRESENCE only: its value is never returned,
+//             logged or put in a sentence.
+//   line_off  a key is present but the room's egress policy line judge_jev is off (the shipped default is off)
+//   available the key is present and the line is on; the MCP surface still runs no model judge, so the
+//             sentence points at Claude Code
+// The flag names that switch the line stay with 369.5 (SW-18). opts.env, opts.home and opts.policy exist so a
+// test can pin each state without touching the real machine; nothing here writes.
+// ---------------------------------------------------------------------------
+// The sentences and the key variable name live in data/eureka-judge-lines.json: tests/test-355-part8-egress.cjs
+// leg D bans the key variable name on any non-comment lib/ line (the Jev vendor is dev-time only, Phase 355
+// D-44), and data/egress-policy.json already holds the vendor endpoint outside lib/ for the same reason.
+const LINES_FILE = path.resolve(__dirname, '..', '..', '..', '..', 'data', 'eureka-judge-lines.json');
+const FALLBACK_LINE = 'No model judged these pairs. Read the pairs that passed and judge them yourself.';
+
+function readLinesDoc() {
+  try {
+    const doc = JSON.parse(fs.readFileSync(LINES_FILE, 'utf8'));
+    if (doc && typeof doc.key_env === 'string' && typeof doc.secrets_file === 'string' && doc.lines
+      && ['no_key', 'line_off', 'available'].every(function (k) { return typeof doc.lines[k] === 'string'; })) return doc;
+  } catch (_e) { /* fail closed below */ }
+  return null;
+}
+
+const LINES_DOC = readLinesDoc();
+const JUDGE_LINES = Object.freeze(LINES_DOC
+  ? { no_key: LINES_DOC.lines.no_key, line_off: LINES_DOC.lines.line_off, available: LINES_DOC.lines.available }
+  : { no_key: FALLBACK_LINE, line_off: FALLBACK_LINE, available: FALLBACK_LINE });
+
+function jevKeyPresent(opts) {
+  const o = opts || {};
+  if (!LINES_DOC) return false;
+  const env = o.env || process.env;
+  if (typeof env[LINES_DOC.key_env] === 'string' && env[LINES_DOC.key_env].length > 0) return true;
+  try {
+    const home = o.home || os.homedir();
+    const raw = fs.readFileSync(path.join(home, LINES_DOC.secrets_file), 'utf8');
+    return new RegExp('^' + LINES_DOC.key_env + '=.+$', 'm').test(raw);
+  } catch (_e) {
+    return false;
+  }
+}
+
+function judgeState(roomDir, opts) {
+  const o = opts || {};
+  if (!jevKeyPresent(o)) return { state: 'no_key', line: JUDGE_LINES.no_key };
+  const policy = o.policy || egressPolicy.loadEgressPolicy(roomDir);
+  if (!egressPolicy.lineAllowed(policy, 'judge_jev')) return { state: 'line_off', line: JUDGE_LINES.line_off };
+  return { state: 'available', line: JUDGE_LINES.available };
+}
+
 module.exports = {
   JEV_USEFULNESS_BUCKET: JEV_USEFULNESS_BUCKET,
   CHOICES: CHOICES,
@@ -137,4 +195,6 @@ module.exports = {
   writeVerdicts: writeVerdicts,
   readVerdicts: readVerdicts,
   runJudge: runJudge,
+  JUDGE_LINES: JUDGE_LINES,
+  judgeState: judgeState,
 };

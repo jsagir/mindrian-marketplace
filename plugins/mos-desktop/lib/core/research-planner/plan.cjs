@@ -30,6 +30,7 @@
  */
 
 const nodeCrypto = require('node:crypto');
+const jobLines = require('./job-lines.cjs');
 
 const PLAN_SCHEMA = 'mos.research-plan/1';
 const RUN_SCHEMA = 'mos.research-run/1';
@@ -52,6 +53,8 @@ const DEEP_TIME_BUDGET_MS = 1200000;
 const MAX_PLAN_REVISIONS = 3;
 const MAX_LIMITER_CHARS = 240;
 const PYRAMID_DEPTH_CAP = 3;
+// 369.2-23 (HARNESS-10, R17): the field scan composed at plan time; at most four queries, one per facet
+const DEEP_BASELINE_MAX = 4;
 
 const BUDGETS = Object.freeze({
   QUICK_MAX_QUERIES: QUICK_MAX_QUERIES,
@@ -66,6 +69,7 @@ const BUDGETS = Object.freeze({
   DEEP_TIME_BUDGET_MS: DEEP_TIME_BUDGET_MS,
   MAX_PLAN_REVISIONS: MAX_PLAN_REVISIONS,
   PYRAMID_DEPTH_CAP: PYRAMID_DEPTH_CAP,
+  DEEP_BASELINE_MAX: DEEP_BASELINE_MAX,
 });
 
 const MAX_QUERY_CHARS = 200;
@@ -102,6 +106,14 @@ const GRANT_LIFETIMES = frozen(['standing', 'run']);
 const CARD_SHAPES = frozen(['F.0', 'F.3', 'F.6', 'F.8', 'evidence']);
 const DROP_KINDS = frozen(['path', 'limiter', 'leaf']);
 const EDIT_OPS = frozen(['drop_leaf', 'add_leaf', 'reword_leaf', 'toggle_source', 'set_budget', 'toggle_counterevidence', 'toggle_scientific', 'drop_path', 'add_limiter']);
+// 369.2-23: the four facets of the field scan, in the order they are composed and shown
+const BASELINE_FACETS = frozen(['deployed_practice', 'primary_terminology', 'recent_state_of_the_art', 'challenge_source']);
+const BASELINE_FACET_WORDS = Object.freeze({
+  deployed_practice: 'what is deployed today',
+  primary_terminology: 'what the field calls it',
+  recent_state_of_the_art: 'what is new',
+  challenge_source: 'what argues against it',
+});
 const BUDGET_FIELDS = frozen(['breadth', 'rounds', 'queries_per_round', 'results_per_query', 'max_searches', 'time_budget_ms']);
 
 const RUN_ID_RE = /^rp-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$/;
@@ -140,6 +152,17 @@ function budgetCaps(mode) {
 // ---------------------------------------------------------------------------
 // validatePlan
 // ---------------------------------------------------------------------------
+// 369.2-21 (HARNESS-09): the four query kinds a leaf may carry, and the value rule of families.composableQuery
+// (a string of 2 to 200 characters after trimming, no control character). Kept local: this module takes only
+// node built-ins (D-01). families.QUERY_KINDS is the same list; a test pins them equal.
+const QUERY_KIND_NAMES = Object.freeze(['direct', 'practice', 'mechanism', 'adjacent']);
+const QUERY_KIND_CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+function queryKindValueOk(v) {
+  if (typeof v !== 'string' || QUERY_KIND_CONTROL_RE.test(v)) return false;
+  const t = v.trim();
+  return t.length >= 2 && t.length <= 200;
+}
+
 function validateQuery(q, leafId, idx, errors) {
   const at = leafId + ':' + idx;
   if (!isObj(q)) { errors.push('query_invalid:' + at); return; }
@@ -149,6 +172,34 @@ function validateQuery(q, leafId, idx, errors) {
   if (q.audit !== 'pass' && q.audit !== 'not_applicable') errors.push('query_audit_not_pass:' + at);
   if (!isInt(q.round) || q.round < 1) errors.push('query_round_invalid:' + at);
   if (!nonEmpty(q.template_id)) errors.push('query_template_missing:' + at);
+  if (q.kind !== undefined && QUERY_KIND_NAMES.indexOf(q.kind) === -1) errors.push('query_kind_invalid:' + at);
+}
+
+// 369.2-23: plan.baseline = {queries:[{facet, kind:'baseline', template_id, family, q, q_hash, audit, round:0,
+// slot_terms}], refused?:[{facet, reason}]}. Round 0 is the field scan; a leaf query keeps round >= 1.
+function validateBaseline(b, plan, errors) {
+  if (b === undefined) return;
+  if (!isObj(b) || !Array.isArray(b.queries)) { errors.push('baseline_invalid'); return; }
+  if (plan.mode !== 'deep') errors.push('baseline_deep_only');
+  if (b.queries.length > DEEP_BASELINE_MAX) errors.push('baseline_over_cap');
+  const seenFacet = {};
+  b.queries.forEach(function (q, i) {
+    const at = 'baseline:' + i;
+    if (!isObj(q)) { errors.push('query_invalid:' + at); return; }
+    if (!inList(BASELINE_FACETS, q.facet)) errors.push('baseline_facet_invalid:' + i);
+    else if (seenFacet[q.facet]) errors.push('baseline_facet_duplicate:' + q.facet);
+    else seenFacet[q.facet] = true;
+    if (q.kind !== 'baseline') errors.push('baseline_kind_invalid:' + i);
+    if (q.round !== 0) errors.push('baseline_round_invalid:' + i);
+    if (!nonEmpty(q.q)) errors.push('query_q_missing:' + at);
+    else if (q.q.length > MAX_QUERY_CHARS || /[\r\n]/.test(q.q)) errors.push('query_q_shape:' + at);
+    if (!nonEmpty(q.q_hash)) errors.push('query_q_hash_missing:' + at);
+    if (q.audit !== 'pass' && q.audit !== 'not_applicable') errors.push('query_audit_not_pass:' + at);
+    if (!nonEmpty(q.template_id)) errors.push('query_template_missing:' + at);
+  });
+  if (b.refused !== undefined) {
+    if (!Array.isArray(b.refused) || b.refused.some(function (r) { return !isObj(r) || !inList(BASELINE_FACETS, r.facet) || !nonEmpty(r.reason); })) errors.push('baseline_refused_invalid');
+  }
 }
 
 function validateLeaf(leaf, seen, errors) {
@@ -170,6 +221,13 @@ function validateLeaf(leaf, seen, errors) {
   }
   if (!Array.isArray(leaf.queries)) errors.push('leaf_queries_invalid:' + id);
   else leaf.queries.forEach(function (q, i) { validateQuery(q, id, i, errors); });
+  // 369.2-21: host-authored query kinds; a key outside the four kinds or a value that cannot be a web slot value
+  // is an error. The object is part of the plan and so of planHash (pitfall 6).
+  if (leaf.query_kinds !== undefined) {
+    const qk = leaf.query_kinds;
+    const bad = !isObj(qk) || Object.keys(qk).some(function (k) { return QUERY_KIND_NAMES.indexOf(k) === -1 || !queryKindValueOk(qk[k]); });
+    if (bad) errors.push('query_kinds_invalid:' + id);
+  }
 }
 
 function validatePerspective(p, errors) {
@@ -236,6 +294,7 @@ function validatePlan(plan) {
   if (!isObj(plan.structure) || !inList(STRUCTURE_SOURCES, plan.structure.source) || !inList(TREE_TYPES, plan.structure.tree_type)) errors.push('structure_invalid');
 
   validatePerspective(plan.perspective, errors);
+  validateBaseline(plan.baseline, plan, errors);
 
   if (!isObj(plan.pyramid)) errors.push('pyramid_missing');
   else {
@@ -260,6 +319,12 @@ function validatePlan(plan) {
       if (!isInt(v) || v < 1) errors.push('budget_invalid:' + f);
       else if (caps && v > caps[f]) errors.push('budget_over_cap:' + f);
     });
+    // 369.2-23: 0 turns the field scan off; absent means the default
+    if (plan.budget.baseline_max !== undefined) {
+      const bm = plan.budget.baseline_max;
+      if (!isInt(bm) || bm < 0) errors.push('budget_invalid:baseline_max');
+      else if (bm > DEEP_BASELINE_MAX) errors.push('budget_over_cap:baseline_max');
+    }
     if (typeof plan.budget.counterevidence !== 'boolean') errors.push('budget_invalid:counterevidence');
     else if (plan.mode === 'deep' && plan.budget.counterevidence !== true) errors.push('counterevidence_mandatory');
   }
@@ -310,6 +375,10 @@ function validateRunResult(run) {
     errors.push('run_queries_invalid');
   }
   if (run.leaves !== undefined && !Array.isArray(run.leaves)) errors.push('run_leaves_invalid');
+  // 369.2-14: the operation ledger snapshot and its completion are optional, so a run.json written before
+  // the ledger existed stays valid; when present they must have the shape a reader can rely on.
+  if (run.operations !== undefined && !Array.isArray(run.operations)) errors.push('run_operations_invalid');
+  if (run.completion !== undefined && (!isObj(run.completion) || typeof run.completion.complete !== 'boolean')) errors.push('run_completion_invalid');
   return { ok: errors.length === 0, errors: errors };
 }
 
@@ -481,6 +550,13 @@ function applyEdit(plan, edit, opts) {
       for (let i = 0; i < keys.length; i += 1) {
         const k = keys[i];
         const v = edit.budget[k];
+        if (k === 'baseline_max' && next.mode === 'deep') {
+          // 369.2-23: the field scan bound; 0 is allowed and turns the scan off
+          if (!isInt(v) || v < 0) return refuse('budget_invalid');
+          if (v > DEEP_BASELINE_MAX) return refuse('over_cap');
+          next.budget[k] = v;
+          continue;
+        }
         if (!inList(BUDGET_FIELDS, k)) return refuse('unknown_budget_field');
         if (!isInt(v) || v < 1) return refuse('budget_invalid');
         if (v > caps[k]) return refuse('over_cap');
@@ -579,10 +655,13 @@ function roundOne(leaf) {
   return (leaf.queries || []).filter(function (q) { return q.round === 1 || q.round === undefined; });
 }
 
+// 369.2-30 (INPUT addendum 2): a limiter reads by its words, never its id; what the field scan said about it
+// rides after the words ("the field scan found it already overcome" or "the field scan supports it")
 function limiterCell(l) {
   if (!l) return '';
   const tag = l.s_curve && l.s_curve !== 'unknown' ? ' [' + String(l.s_curve).replace(/_/g, ' ') + ']' : '';
-  return cell(l.id + ': ' + l.statement + tag);
+  const scan = jobLines.baselineWords(l.baseline);
+  return cell(l.statement + tag + (scan ? ' (' + scan + ')' : ''));
 }
 
 // perspective.ranking is persisted in two shapes: {limiter_id, length, support,
@@ -600,11 +679,11 @@ function rankingIds(perspective) {
   return r.map(rankingId).filter(function (id) { return id !== null; });
 }
 
-// Name one ranked limiter by its id and statement.
+// Name one ranked limiter by its statement (369.2-30: never by its id).
 function rankedLabel(r, limiters) {
   const id = rankingId(r);
   const l = (limiters || []).find(function (x) { return x && x.id === id; });
-  return oneLine(id) + (l && nonEmpty(l.statement) ? ': ' + oneLine(l.statement) : '');
+  return l && nonEmpty(l.statement) ? oneLine(l.statement) : 'a limit in this plan';
 }
 
 function perspectiveLines(plan) {
@@ -629,7 +708,7 @@ function perspectiveLines(plan) {
       lines.push('');
       lines.push('Paths:');
       p.paths.forEach(function (x) {
-        lines.push('- ' + x.id + ': ' + oneLine(x.label) + (x.from_10x ? ' (from the 10X resurvey)' : ''));
+        lines.push('- ' + oneLine(x.label) + (x.from_10x ? ', from the 10X resurvey' : ''));
       });
     }
     const physics = p.limiters.filter(function (l) { return l.column === 'physics'; });
@@ -647,7 +726,11 @@ function perspectiveLines(plan) {
       lines.push('');
       lines.push('Ranked by what each one unlocks downstream: ' + rankingIds(p).map(function (id) { return rankedLabel(id, p.limiters); }).join('; '));
       p.unlock_chains.forEach(function (c) {
-        lines.push('- ' + c.limiter_id + ' unlocks a chain of ' + c.length + ' step' + (c.length === 1 ? '' : 's'));
+        lines.push('- ' + jobLines.limiterWords(plan, c.limiter_id) + ' unlocks a chain of ' + c.length + ' step' + (c.length === 1 ? '' : 's'));
+      });
+      // 369.2-30: a limiter the field scan found already overcome is ranked last and the card says why
+      p.limiters.forEach(function (l) {
+        if (l && l.baseline === 'contradicted') lines.push('- ' + oneLine(l.statement) + ' goes last: ' + jobLines.baselineWords('contradicted') + '.');
       });
     }
     if (p.tensions.length > 0) {
@@ -659,6 +742,34 @@ function perspectiveLines(plan) {
     }
   }
   return lines;
+}
+
+// 369.2-22 (SW-14, R14): what a quick run cannot do, said before it runs. One line per wall the cap of three
+// searches cannot reach, then one line for how many other searches do not fit. [] for a deep plan or a plan
+// the cap fully covers.
+function quickCapLines(plan) {
+  if (!isObj(plan) || plan.mode !== 'quick') return [];
+  const lines = [];
+  (Array.isArray(plan.quick_unreached) ? plan.quick_unreached : []).forEach(function (u) {
+    if (!isObj(u) || !isStr(u.label)) return;
+    lines.push('A quick run has three searches, so it cannot reach the wall "' + oneLine(u.label) + '"; a deep run can test it.');
+  });
+  let n = 0;
+  (Array.isArray(plan.leaves) ? plan.leaves : []).forEach(function (leaf) {
+    if (isObj(leaf) && Array.isArray(leaf.queries_cut)) n += leaf.queries_cut.length;
+  });
+  if (n > 0) lines.push(n + ' of this plan\'s searches ' + (n === 1 ? 'does' : 'do') + ' not fit in a quick run and will be listed as not searched.');
+  return lines.map(function (l) { return l.replace(/[\u2014\u2013]/g, '-'); });
+}
+
+function baselineLines(plan) {
+  const qs = isObj(plan.baseline) && Array.isArray(plan.baseline.queries) ? plan.baseline.queries : [];
+  if (qs.length === 0) return [];
+  const out = ['Field scan first, sent exactly as written:'];
+  qs.forEach(function (q) {
+    out.push('- ' + (BASELINE_FACET_WORDS[q.facet] || oneLine(q.facet)) + ': ' + oneLine(q.q));
+  });
+  return out;
 }
 
 function planReviewCard(plan) {
@@ -675,23 +786,43 @@ function planReviewCard(plan) {
   lines.push('Results go to: section ' + oneLine(plan.return_target.section) + (plan.return_target.card_id ? ' (card ' + oneLine(plan.return_target.card_id) + ')' : ''));
   lines.push('');
 
+  // 369.2-23 (HARNESS-10): the field scan comes first, every string exactly as it will be sent
+  const scan = baselineLines(plan);
+  if (scan.length > 0) {
+    scan.forEach(function (l) { lines.push(l); });
+    lines.push('');
+  }
+
   lines.push('### Sub-questions and the exact searches');
   plan.leaves.forEach(function (leaf, i) {
     lines.push('');
     lines.push((i + 1) + '. ' + oneLine(leaf.question));
-    lines.push('   - lens: ' + oneLine(leaf.lens) + '; asked by: ' + oneLine(leaf.source_command) + '; searches: ' + oneLine(leaf.corpus));
+    // 369.2-30 (INPUT addendum 2): the dimension by its label, the command, the place searched; never the lens id
+    const looked = isStr(leaf.dimension) ? jobLines.dimensionLabel(plan.origin && plan.origin.template_id, leaf.dimension) : null;
+    lines.push('   - ' + (looked ? 'looked at as: ' + looked + '; ' : '') + 'asked by ' + oneLine(leaf.source_command) + '; searches ' + jobLines.corpusWords(leaf.corpus));
+    // 369.2-17: a leaf refused before fetch names its reason in the run's own words, in place of search lines
+    const refused = isObj(leaf.refusal) && isStr(leaf.refusal.reason);
+    if (refused) lines.push('   - not searched: ' + jobLines.reasonWords(leaf.refusal.reason));
     if (!leaf.researchable) {
-      lines.push('   - not run: ' + oneLine(leaf.not_researchable_reason));
+      if (!(refused && leaf.refusal.reason.indexOf('unused_slot:') === 0)) lines.push('   - not run: ' + oneLine(leaf.not_researchable_reason));
       return;
     }
+    if (refused) return;
     lines.push('   - would be disproved by: ' + oneLine(leaf.falsifier && leaf.falsifier.text));
     const qs = roundOne(leaf);
-    if (qs.length === 0) lines.push('   - round one: no search text yet');
+    // 369.2-19: a leaf the lane budget or the search cap left without a search says why, in the run's own words
+    if (qs.length === 0 && isObj(leaf.not_sent) && isStr(leaf.not_sent.reason)) lines.push('   - not sent: ' + jobLines.reasonWords(leaf.not_sent.reason));
+    else if (qs.length === 0) lines.push('   - round one: no search text yet');
     qs.forEach(function (q) {
       lines.push('   - round one search, sent exactly as written: ' + oneLine(q.q));
     });
   });
   lines.push('');
+  const capLines = quickCapLines(plan);
+  if (capLines.length > 0) {
+    capLines.forEach(function (l) { lines.push(l); });
+    lines.push('');
+  }
   lines.push('Every search below leaves exactly as written once you approve the run; nothing else from the room is sent.');
   lines.push('');
 
@@ -711,23 +842,24 @@ function planReviewCard(plan) {
   lines.push('### Checks on the plan');
   const warnings = plan.pyramid.mece.warnings || [];
   if (warnings.length === 0) lines.push('- No overlap or gap warnings.');
-  warnings.forEach(function (w) { lines.push('- ' + oneLine(w)); });
+  warnings.forEach(function (w) { lines.push('- ' + jobLines.plainWarning(w, plan)); });
   lines.push('');
 
   lines.push('### Questions not yet asked');
   const uncovered = plan.pyramid.coverage.uncovered || [];
   if (uncovered.length === 0) lines.push('- None found.');
-  uncovered.forEach(function (d) { lines.push('- ' + oneLine(d) + ': no sub-question covers this yet'); });
+  uncovered.forEach(function (d) { lines.push('- ' + jobLines.dimensionLabel(plan.origin && plan.origin.template_id, d) + ': no sub-question covers this yet'); });
   const notResearchable = plan.pyramid.coverage.not_researchable || [];
   if (notResearchable.length > 0) {
     lines.push('');
     lines.push('### Not researchable in this run');
-    notResearchable.forEach(function (n) { lines.push('- ' + oneLine(n.dimension) + ': ' + oneLine(n.reason)); });
+    notResearchable.forEach(function (n) { lines.push('- ' + jobLines.dimensionLabel(plan.origin && plan.origin.template_id, n.dimension) + ': ' + oneLine(n.reason)); });
   }
 
   const body = lines.join('\n').replace(/[\u2014\u2013]/g, '-');
   const qHashes = [];
   plan.leaves.forEach(function (leaf) { roundOne(leaf).forEach(function (q) { qHashes.push(q.q_hash); }); });
+  const baselineHashes = (isObj(plan.baseline) && Array.isArray(plan.baseline.queries) ? plan.baseline.queries : []).map(function (q) { return q.q_hash; });
 
   return {
     shape: 'F.6',
@@ -746,6 +878,7 @@ function planReviewCard(plan) {
       revision: plan.revision,
       max_revisions: plan.max_revisions,
       round_one_q_hashes: qHashes,
+      baseline_q_hashes: baselineHashes,
       section: plan.return_target.section,
     },
   };
@@ -773,4 +906,7 @@ module.exports = {
   rankingId: rankingId,
   rankingIds: rankingIds,
   planReviewCard: planReviewCard,
+  quickCapLines: quickCapLines,
+  BASELINE_FACETS: BASELINE_FACETS,
+  BASELINE_FACET_WORDS: BASELINE_FACET_WORDS,
 };

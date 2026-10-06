@@ -50,6 +50,9 @@ const auditLedger = require('./audit-ledger.cjs');
 const egressPolicy = require('./egress-policy.cjs');
 const evidenceRows = require('./evidence-rows.cjs');
 const verdictMod = require('./verdict.cjs');
+const operations = require('./operations.cjs');
+const jobLines = require('./job-lines.cjs');
+const contentTokenMod = require('./content-tokens.cjs');
 const sectionRegistry = require('../section-registry.cjs');
 const researchCache = require('../research-cache.cjs');
 const corpus = require('../research-corpus.cjs');
@@ -92,6 +95,9 @@ function atomicWriteJson(file, data) {
 
 function normTerm(t) { return String(t).trim().toLowerCase(); }
 
+// 369.2-18: the content-token rule lives in content-tokens.cjs (no requires); quick keeps its local name.
+const contentTokens = contentTokenMod.contentTokens;
+
 // ---------------------------------------------------------------------------
 // localRoomCheck: fs only, sends nothing (D-03 extraction-failure falsifier)
 // ---------------------------------------------------------------------------
@@ -100,25 +106,6 @@ function sectionNames() {
     .concat(Object.keys(sectionRegistry.EXTENDED_SECTION_META || {}))
     .concat(sectionRegistry.STRUCTURAL_DIRS || []);
   return names.filter(function (n, i) { return names.indexOf(n) === i; });
-}
-
-// A closed English function-word list: these never count toward keyword coverage.
-const ROOM_CHECK_STOP = Object.freeze(new Set([
-  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'in', 'into', 'is', 'it', 'its', 'of', 'on', 'onto',
-  'or', 'over', 'per', 'than', 'that', 'the', 'their', 'these', 'this', 'those', 'to', 'under', 'via', 'was', 'were',
-  'with', 'within', 'without',
-]));
-
-// contentTokens(normalized) -> the distinct content tokens, in order: runs of letters and numbers of length >= 3
-// (or holding a digit), minus the function words.
-function contentTokens(normalized) {
-  const out = new Set(); // a Set keeps insertion order and the dedupe cheap on a 256 KB artifact
-  String(normalized).split(/[^\p{L}\p{N}]+/u).forEach(function (tok) {
-    if (tok.length === 0 || ROOM_CHECK_STOP.has(tok)) return;
-    if (tok.length < 3 && !/\p{N}/u.test(tok)) return;
-    out.add(tok);
-  });
-  return Array.from(out);
 }
 
 // localRoomCheck(roomDir, terms) -> { flagged, artifact_count, artifacts[{section, path}], terms_checked }
@@ -210,6 +197,49 @@ function planTerms(plan) {
     });
   });
   return out;
+}
+
+// 369.2-18 (INPUT defect 3): the needles a fetched record is scored against: the governing question, the stated
+// question, every leaf question and every slot term (a string or a list of strings), each as content tokens.
+function bearingNeedles(plan) {
+  const phrases = [];
+  const py = isObj(plan && plan.pyramid) ? plan.pyramid : {};
+  [py.governing_question, py.stated_question].forEach(function (x) { if (nonEmpty(x)) phrases.push(x); });
+  list(plan && plan.leaves).forEach(function (leaf) {
+    if (!isObj(leaf)) return;
+    if (nonEmpty(leaf.question)) phrases.push(leaf.question);
+    const slots = isObj(leaf.slots) ? leaf.slots : {};
+    Object.keys(slots).forEach(function (k) {
+      const v = slots[k];
+      if (nonEmpty(v)) phrases.push(v);
+      else list(v).filter(nonEmpty).forEach(function (x) { phrases.push(x); });
+    });
+  });
+  const seen = {};
+  const out = [];
+  phrases.forEach(function (ph) {
+    const toks = contentTokens(evidenceRows.normalizeText(ph));
+    const key = toks.join(' ');
+    if (toks.length >= 2 && !seen[key]) { seen[key] = true; out.push(toks); }
+  });
+  return out;
+}
+
+// bearingRecords(plan, records, index) -> { count, ids }: a fetched record bears when its title plus abstract holds
+// a strict majority of the content tokens of any needle (the rule localRoomCheck uses for room artifacts).
+function bearingRecords(plan, records, index) {
+  const needles = bearingNeedles(plan);
+  const ids = [];
+  list(records).forEach(function (rec) {
+    if (!isObj(rec) || rec.id === undefined || rec.id === null) return;
+    const id = String(rec.id);
+    if (ids.indexOf(id) !== -1) return;
+    const entry = index && typeof index.get === 'function' ? index.get(id) : null;
+    const text = entry ? entry.text_title + ' ' + entry.text_abstract : evidenceRows.normalizeText(String(rec.title || ''));
+    const have = new Set(contentTokens(text));
+    if (needles.some(function (n) { return contentTokenMod.coversByMajority(have, n); })) ids.push(id);
+  });
+  return { count: ids.length, ids: ids };
 }
 
 // The searches this quick run may fetch: researchable OpenAlex leaves, round
@@ -321,7 +351,17 @@ function reaskCard(roomDir, plan, grant, reason, now) {
   proposal.room_id = grants.roomIdFor(roomDir);
   const cardOpts = { newTerms: [], now: now, queries: queriesOf(plan), job: grants.jobOf(plan) };
   if (theoPairs.length > 0 && Array.isArray(proposal.providers) && proposal.providers.indexOf(grants.THEO_PROVIDER) !== -1) cardOpts.theoPairs = theoPairs;
-  return { proposal: proposal, new_terms: [], card: grants.grantCard(proposal, cardOpts) };
+  const card = grants.grantCard(proposal, cardOpts);
+  // 369.2-22 (SW-14, R14): the card says before anything is sent which walls a quick run cannot reach and how
+  // many searches do not fit; the lines sit under the list of exact searches
+  const capLines = planMod.quickCapLines(plan);
+  if (capLines.length > 0 && isObj(card) && typeof card.body_md === 'string') {
+    const marker = '\n\n- Caps for this run';
+    const at = card.body_md.indexOf(marker);
+    const block = capLines.join('\n');
+    card.body_md = at !== -1 ? card.body_md.slice(0, at) + '\n\n' + block + card.body_md.slice(at) : card.body_md + '\n\n' + block;
+  }
+  return { proposal: proposal, new_terms: [], card: card };
 }
 
 function slotTermsOf(entry) {
@@ -381,6 +421,127 @@ function classify(res) {
     out.outcome = (env && env.status === 'empty_valid') || out.items.length === 0 ? 'empty_valid' : 'ok';
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// the operation ledger (369.2-14, HARNESS-02)
+// ---------------------------------------------------------------------------
+// Rows exist BEFORE dispatch; a transition sits next to each fetch; the run ends with a sweep, and
+// run.completion is computed by operations.completion(), never inferred from a command return.
+function labelOf(leaf) {
+  return isObj(leaf) && typeof leaf.question === 'string' ? oneLine(leaf.question).slice(0, 120) : null;
+}
+
+// a leaf.refusal {reason, slot} -> a reason the ledger vocabulary accepts
+function refusalReason(refusal) {
+  const r = isObj(refusal) && nonEmpty(refusal.reason) ? refusal.reason : 'bad_slot';
+  if (r === 'term_not_composed') return r;
+  const slot = isObj(refusal) && nonEmpty(refusal.slot) ? refusal.slot : null;
+  if (r === 'bad_slot') return 'bad_slot:' + (slot || 'unspecified');
+  return 'bad_slot:' + r;
+}
+
+// a classified provider answer -> the terminal state it proves. A failed or blocked call is never empty;
+// an empty answer needs a counted zero.
+function ledgerOutcome(info, itemCount) {
+  if (info.outcome === 'failed' || info.outcome === 'blocked') {
+    return { to: 'not_executed', fields: { attempted: true, reason: 'provider_failed:' + (info.failure_class || 'unknown_error') } };
+  }
+  if (itemCount > 0) return { to: 'executed_with_results', fields: { count: itemCount } };
+  if (info.count === 0) return { to: 'executed_empty', fields: { proof: { count: 0 } } };
+  return { to: 'not_executed', fields: { attempted: true, reason: 'provider_failed:' + (num(info.count) ? 'items_missing' : 'count_missing') } };
+}
+
+// settle(ledger, op, to, fields): a transition the ledger refuses never leaves the op open; it closes as a
+// failed call so the run cannot read as complete on a proof the ledger would not accept.
+function settle(ledger, op, to, fields) {
+  const r = operations.transition(ledger, op.operation_id, to, fields);
+  if (r.ok) return r;
+  return operations.transition(ledger, op.operation_id, 'not_executed', { attempted: true, reason: 'provider_failed:ledger_' + String(r.reason || 'refused') });
+}
+
+function sweepReasonOf(stop) {
+  if (stop === 'time') return 'time';
+  if (stop === 'budget') return 'budget_usd';
+  return 'run_aborted';
+}
+
+// seedQuickLedger: one op per fetch query, per theo leaf, per refused slot, per researchable web leaf
+// with no composed query. Returns the lookups the fetch loop and the theo lane settle against.
+function seedQuickLedger(ledger, plan, entries, theoLeaves) {
+  const byHash = {};
+  const theoByLeaf = {};
+  const counter = {};
+  entries.forEach(function (entry) {
+    const q = entry.query;
+    const dim = entry.leaf_ids[0];
+    // 369.2-21: a practice, mechanism or adjacent query keeps its kind; a falsifier template stays a falsifier
+    const tagged = typeof q.kind === 'string' && families.QUERY_KINDS.indexOf(q.kind) !== -1 ? q.kind : 'direct';
+    const kind = operations.isFalsifier({ template_id: q.template_id, role: q.role }) ? 'falsifier' : tagged;
+    const ck = [dim, kind, q.template_id].join('|');
+    const ordinal = counter[ck] || 0;
+    counter[ck] = ordinal + 1;
+    const op = operations.mint(ledger, {
+      plan_dimension: dim, dimension_label: labelOf(entry.leaf), mandatory: true, kind: kind, template_id: q.template_id,
+      round: 1, ordinal: ordinal, query_id: q.q_hash, q: q.q, provider: PROVIDER, role: q.role,
+    });
+    operations.transition(ledger, op.operation_id, 'composed', {});
+    byHash[q.q_hash] = op;
+  });
+  // 369.2-21: a query kind the quick cap cut is minted and closed at once, so it never disappears silently
+  list(plan.leaves).forEach(function (leaf) {
+    list(isObj(leaf) ? leaf.queries_cut : []).forEach(function (c) {
+      if (!isObj(c) || families.QUERY_KINDS.indexOf(c.kind) === -1 || !nonEmpty(c.template_id)) return;
+      const kind = operations.isFalsifier({ template_id: c.template_id, role: null }) ? 'falsifier' : c.kind;
+      const ck = [leaf.id, kind, c.template_id].join('|');
+      const ordinal = counter[ck] || 0;
+      counter[ck] = ordinal + 1;
+      const op = operations.mint(ledger, {
+        plan_dimension: leaf.id, dimension_label: labelOf(leaf), mandatory: true, kind: kind, template_id: c.template_id,
+        round: 1, ordinal: ordinal, provider: PROVIDER,
+      });
+      operations.transition(ledger, op.operation_id, 'not_executed', { reason: 'quick_cap' });
+    });
+  });
+  const theoTemplate = isObj(plan.origin) && nonEmpty(plan.origin.template_id) ? plan.origin.template_id : 'connections';
+  theoLeaves.forEach(function (leaf) {
+    const sl = grants.theoLeafSlots(leaf);
+    const pairQ = grants.theoPairQ(sl.term, sl.term2);
+    const op = operations.mint(ledger, {
+      plan_dimension: leaf.id, dimension_label: labelOf(leaf), mandatory: true, kind: 'theo', template_id: theoTemplate,
+      round: 1, ordinal: 0, query_id: families.qHash(pairQ), q: pairQ, provider: grants.THEO_PROVIDER,
+    });
+    operations.transition(ledger, op.operation_id, 'composed', {});
+    theoByLeaf[leaf.id] = op;
+  });
+  list(plan.leaves).forEach(function (leaf) {
+    if (!isObj(leaf)) return;
+    if (isObj(leaf.refusal)) {
+      const op = operations.mint(ledger, { plan_dimension: leaf.id, dimension_label: labelOf(leaf), mandatory: true, kind: 'direct', template_id: 'refusal', round: 1, ordinal: 0, provider: PROVIDER });
+      operations.transition(ledger, op.operation_id, 'refused_before_fetch', { reason: refusalReason(leaf.refusal) });
+      return;
+    }
+    // 369.2-22: a leaf whose searches the cap cut already has a quick_cap op for each; it is not also a no_query_composed leaf
+    if (leaf.researchable === true && leaf.corpus === 'openalex' && list(leaf.queries_cut).length === 0 && !entries.some(function (e) { return e.leaf_ids.indexOf(leaf.id) !== -1; })) {
+      const op = operations.mint(ledger, { plan_dimension: leaf.id, dimension_label: labelOf(leaf), mandatory: true, kind: 'direct', template_id: 'none', round: 1, ordinal: 0, provider: PROVIDER });
+      operations.transition(ledger, op.operation_id, 'not_executed', { reason: 'no_query_composed' });
+    }
+  });
+  return { byHash: byHash, theoByLeaf: theoByLeaf };
+}
+
+// settleTheo: each lane check maps onto its op; a leaf the lane never reached stays open for the sweep.
+function settleTheo(ledger, theoByLeaf, theoRun) {
+  list(theoRun && theoRun.checks).forEach(function (c) {
+    const op = theoByLeaf[c.leaf_id];
+    if (!op) return;
+    const ref = { q_hash: op.query_id, ts: null };
+    if (c.outcome === 'ok') settle(ledger, op, 'executed_with_results', { count: 1, audit_ref: ref });
+    else if (c.outcome === 'empty_valid') settle(ledger, op, 'executed_empty', { proof: { count: 0 }, audit_ref: ref });
+    else if (c.outcome === 'failed') settle(ledger, op, 'not_executed', { attempted: true, reason: 'provider_failed:' + (nonEmpty(c.reason) ? c.reason : 'unknown_error'), audit_ref: ref });
+    else if (c.reason === 'egress_line_off') settle(ledger, op, 'not_executed', { reason: 'theo_line_off' });
+    else settle(ledger, op, 'refused_before_fetch', { reason: 'bad_slot:' + (nonEmpty(c.reason) ? c.reason : 'not_canon_name') });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -614,6 +775,20 @@ async function runQuick(roomDir, plan, opts) {
     }
   }
 
+  // 2b. HARNESS-02: every promised operation has a row BEFORE anything is dispatched
+  const ledger = operations.createLedger(plan.run_id, planMod.planHash(plan));
+  const seeded = seedQuickLedger(ledger, plan, entries, theoLeaves);
+  try { operations.writeLedger(roomDir, ledger); } catch (e) {
+    return refused('state_write_failed', { detail: String((e && e.message) || e) });
+  }
+  // an aborted run still closes its ledger: nothing promised is left open
+  function abortLedger() {
+    try {
+      operations.sweep(ledger, 'run_aborted');
+      operations.writeLedger(roomDir, ledger);
+    } catch (_e) { /* the refusal below is the answer; the ledger is best effort here */ }
+  }
+
   // 3. fetch cache-first, audit every executed search
   const inner = typeof o.fetchEnvelopeFn === 'function' ? o.fetchEnvelopeFn : corpus.fetchCorpusEnvelope;
   const envelopeFn = function (args) {
@@ -664,8 +839,9 @@ async function runQuick(roomDir, plan, opts) {
 
     const itemList = info.items;
     const hashes = itemList.map(function (it) { return evidenceRows.contentHash(it); });
+    const auditTs = iso(Date.now());
     const audit = auditLedger.appendAudit(roomDir, {
-      ts: iso(Date.now()),
+      ts: auditTs,
       run_id: plan.run_id,
       grant_id: String(grant.grant_id),
       grant_version: grant.version,
@@ -691,6 +867,11 @@ async function runQuick(roomDir, plan, opts) {
     }, { policy: policy });
     if (!audit.ok) { auditFailure = audit.reason; break; }
 
+    const op = seeded.byHash[q.q_hash];
+    if (op) {
+      const m = ledgerOutcome(info, itemList.length);
+      settle(ledger, op, m.to, Object.assign({ audit_ref: { q_hash: q.q_hash, ts: auditTs }, cache_hit: info.cache_hit === true }, m.fields));
+    }
     runQueries.push({
       leaf_id: entry.leaf_ids[0],
       leaf_ids: entry.leaf_ids.slice(),
@@ -721,7 +902,7 @@ async function runQuick(roomDir, plan, opts) {
     if (stopReason === 'budget' || stopReason === 'time') break;
   }
 
-  if (auditFailure) return refused('audit_write_failed', { detail: auditFailure });
+  if (auditFailure) { abortLedger(); return refused('audit_write_failed', { detail: auditFailure }); }
 
   // 3b. the Theo lateral-path lane (366-15): same grant, same run, after the OpenAlex searches.
   // A lane failure is recorded, never thrown; a time or budget stop above skips it.
@@ -732,8 +913,9 @@ async function runQuick(roomDir, plan, opts) {
     } catch (_e) {
       theoRun = { calls: 0, skipped: 0, reask_reason: null, audit_failure: null, stop_reason: 'lane_failed', verdictByLeaf: {}, checks: [], lane_file: null };
     }
-    if (theoRun.audit_failure) return refused('audit_write_failed', { detail: theoRun.audit_failure });
+    if (theoRun.audit_failure) { settleTheo(ledger, seeded.theoByLeaf, theoRun); abortLedger(); return refused('audit_write_failed', { detail: theoRun.audit_failure }); }
     if (theoRun.stop_reason === 'reask' || theoRun.stop_reason === 'time') stopReason = theoRun.stop_reason;
+    settleTheo(ledger, seeded.theoByLeaf, theoRun);
   }
 
   // 4. local room check (fs only)
@@ -771,14 +953,26 @@ async function runQuick(roomDir, plan, opts) {
   const dropped = Object.assign({}, validated.dropped);
   if (providerFailed) dropped.rows_provider_failed = 1;
 
+  // 369.2-18 (INPUT defect 3): how many fetched records match the question, scored with the same strict-majority
+  // content-token rule the room check uses; the thin line reports it.
+  const bearing = bearingRecords(plan, allItems, index);
+
   // 6. verdict, roll-up, opportunities
   const planned = entries.map(function (e) {
     return { leaf_id: e.leaf_ids[0], template_id: e.query.template_id, role: e.query.role || null };
   });
   const isWhitespace = plan.origin.template_id === 'whitespace';
+  // 369.2-16: a dimension the ledger shows refused before any fetch, or with no search phrase composed, is a
+  // planned search that never ran, so it keeps the verdict unresolved instead of reading as a settled thin result.
+  // Search ops of the composed entries are already in `planned`; lateral Theo checks have their own verdict.
+  const entryHashes = {};
+  entries.forEach(function (e) { entryHashes[e.query.q_hash] = true; });
+  const missedPlanned = list(ledger.operations).filter(function (op) {
+    return (op.state === 'refused_before_fetch' || op.state === 'not_executed') && op.kind !== 'theo' && !entryHashes[op.query_id];
+  }).map(function (op) { return { leaf_id: op.plan_dimension, template_id: op.template_id, role: op.role || null }; });
   let vr = verdictMod.computeQuickVerdict({
     queries: runQueries,
-    planned: planned,
+    planned: planned.concat(missedPlanned),
     rows: rows,
     leaves: plan.leaves,
     template: plan.pyramid.template_id,
@@ -814,7 +1008,7 @@ async function runQuick(roomDir, plan, opts) {
     rolled.pyramid.governing_status = governing;
   }
   const opportunities = pyramidMod.opportunityCandidates(rolled.pyramid, rolled.leaves, rows, { verdict: vr.verdict, perspective: plan.perspective });
-  const answer = theoLine !== null ? theoLine : verdictMod.answerLine(vr, { rows: rows });
+  const answer = theoLine !== null ? theoLine : verdictMod.answerLine(vr, { rows: rows, bearing: bearing.count });
   const offer = theoOnly ? null : (vr.verdict === 'thin' || vr.verdict === 'contested')
     ? (list(plan.perspective && plan.perspective.limiters).length > 0
       ? { text: DEEP_OFFER_TEXT, kind: 'deep_seed', plan_hash: planMod.planHash(plan) }
@@ -841,6 +1035,7 @@ async function runQuick(roomDir, plan, opts) {
     verdict: vr.verdict,
     verdict_detail: { plurality_ran: vr.plurality_ran, primary_count: vr.primary_count, cover_count: vr.cover_count, floor: vr.floor, reasons: vr.reasons },
     answer_line: answer,
+    bearing_records: bearing,
     pyramid: rolled.pyramid,
     perspective: plan.perspective,
     governing_status: governing,
@@ -862,8 +1057,19 @@ async function runQuick(roomDir, plan, opts) {
     run.theo_checks = theoRun ? theoRun.checks.map(function (c) { return Object.assign({}, c); }) : [];
     run.theo_lane = { calls: theoRun ? theoRun.calls : 0, skipped: theoRun ? theoRun.skipped : 0, lane_file: theoRun ? theoRun.lane_file : null, reask_reason: theoRun ? theoRun.reask_reason : null };
   }
+  // 369.2-14: close the ledger (every op still open becomes not_executed with the stop reason), then read
+  // "complete" from it. A quick run has no counterevidence pass, so it is not needed here.
+  operations.sweep(ledger, sweepReasonOf(stopReason));
+  run.operations = clone(ledger.operations);
+  run.completion = operations.completion(ledger, { counterevidence_needed: false });
+  // 369.2-16 (C01-C03): the answer also names each question not searched and why, and what an empty result proves
+  run.answer_line = [
+    run.answer_line,
+    jobLines.incompleteLines(run.completion, { max: 3 }).join(' '),
+    jobLines.emptyResultLine(run.operations),
+  ].filter(function (x) { return typeof x === 'string' && x.length > 0; }).join(' ').replace(/[\u2014\u2013]/g, '-');
   const valid = planMod.validateRunResult(run);
-  if (!valid.ok) return refused('run_result_invalid', { errors: valid.errors });
+  if (!valid.ok) { abortLedger(); return refused('run_result_invalid', { errors: valid.errors }); }
 
   const card = evidenceCard(run, plan);
 
@@ -873,6 +1079,7 @@ async function runQuick(roomDir, plan, opts) {
     atomicWriteJson(path.join(dir, 'plan.json'), plan);
     atomicWriteJson(path.join(dir, 'records.json'), { schema: 'mos.research-records/1', run_id: plan.run_id, records: records });
     atomicWriteJson(path.join(dir, 'rows.json'), { schema: 'mos.research-rows/1', run_id: plan.run_id, rows: rows, dropped: dropped });
+    operations.writeLedger(roomDir, ledger);
     atomicWriteJson(path.join(dir, 'run.json'), run);
     atomicWriteJson(path.join(dir, 'card.json'), card);
   } catch (e) {
@@ -904,16 +1111,18 @@ function evidenceCard(run, plan) {
   lines.push('Answer: ' + oneLine(r.answer_line));
   lines.push('Governing thought: ' + oneLine(r.governing_status || 'unresolved'));
   if (r.stop_reason && r.stop_reason !== 'pass_complete') {
-    lines.push('The run stopped early (' + oneLine(r.stop_reason) + '); searches not run are not counted as findings.');
+    // 369.2-30: the reason in words, never the stop code
+    lines.push('The run stopped early because ' + jobLines.stopWords(r.stop_reason, r.operations) + '; searches not run are not counted as findings.');
   }
   lines.push('');
 
   lines.push('### What the searches found');
+  // 369.2-30 (INPUT addendum 2): a search reads as the words that were sent and what came back, never a template id
   list(r.queries).forEach(function (q) {
-    const count = num(q.count) ? String(q.count) : 'not reported';
-    const how = q.outcome === 'cache_hit' ? 'from the local cache' : q.outcome;
-    const fail = q.failure_class ? ', ' + q.failure_class : '';
-    lines.push('- ' + evidenceRowsLabel(q) + ': OpenAlex exact-phrase count ' + count + ' (' + how + fail + '; searched ' + oneLine(q.q) + ')');
+    const sent = oneLine(q.q);
+    const shown = sent.indexOf('"') === -1 ? '"' + sent + '"' : sent;
+    const found = num(q.count) ? q.count + (q.count === 1 ? ' work' : ' works') + ' in OpenAlex' : 'no count reported by OpenAlex';
+    lines.push('- ' + shown + ': ' + found + ' (' + jobLines.searchHowWords(q.outcome, q.failure_class) + ')');
   });
   if (list(r.queries).length === 0) lines.push(list(r.theo_checks).length > 0 ? '- No OpenAlex search was part of this run.' : '- No search ran.');
   lines.push('');
@@ -922,8 +1131,11 @@ function evidenceCard(run, plan) {
   if (lateral.length > 0) {
     lines.push('### Lateral-path checks with Theo');
     lateral.forEach(function (c) {
-      if (c.outcome === 'skipped' && c.reason === 'egress_line_off') { lines.push('- ' + oneLine(c.leaf_id) + ': skipped, the Theo egress line is off, so nothing was sent'); return; }
-      if (c.outcome === 'skipped') { lines.push('- ' + oneLine(c.leaf_id) + ': skipped, a term was not a canon framework name, so nothing was sent'); return; }
+      if (c.outcome === 'skipped') {
+        const why = c.reason === 'egress_line_off' ? 'the Theo line is off for this room' : 'one of the names is not a canon framework name';
+        lines.push('- The framework pair behind "' + jobLines.leafWords(p, c.leaf_id) + '": not checked, ' + why + ', so nothing was sent');
+        return;
+      }
       const pair = oneLine(c.canon_a) + ' and ' + oneLine(c.canon_b);
       if (c.outcome === 'ok') lines.push('- ' + pair + ': a lateral path was found (' + oneLine(c.verification) + (num(c.hops) ? ', ' + c.hops + ' hop' + (c.hops === 1 ? '' : 's') : '') + ')');
       else if (c.outcome === 'empty_valid') lines.push('- ' + pair + ': no lateral path was found (' + oneLine(String(c.reason || 'no path').replace(/_/g, ' ')) + ')');
@@ -938,8 +1150,8 @@ function evidenceCard(run, plan) {
   if (rows.length === 0) lines.push('- No validated row bears on the question.');
   rows.forEach(function (row) {
     const cite = evidenceRows.renderRowCitation(row, { withQuote: true });
-    const short = typeof row.content_hash === 'string' ? row.content_hash.slice(0, 15) : '';
-    lines.push('- ' + cite + ' ' + oneLine(row.label) + ' for ' + oneLine(row.leaf_id) + ': ' + oneLine(row.source_title) + ' (' + oneLine(row.source_url) + ', record hash ' + short + ', retrieved ' + oneLine(String(row.retrieved_at).slice(0, 10)) + ')');
+    // 369.2-30: the row says what it does for which question; the record hash stays in the filed record
+    lines.push('- ' + cite + ' ' + jobLines.labelWords(row.label) + ' "' + jobLines.leafWords(p, row.leaf_id) + '": ' + oneLine(row.source_title) + ' (' + oneLine(row.source_url) + ', retrieved ' + oneLine(String(row.retrieved_at).slice(0, 10)) + ')');
   });
   const droppedTotal = Object.keys(isObj(r.dropped) ? r.dropped : {}).reduce(function (n, k) { return n + (num(r.dropped[k]) ? r.dropped[k] : 0); }, 0);
   if (droppedTotal > 0) {
@@ -961,8 +1173,15 @@ function evidenceCard(run, plan) {
   if (checks.length > 0) {
     lines.push('### Checked in this room only');
     checks.forEach(function (c) {
-      lines.push('- ' + oneLine(c.kind) + ' (' + oneLine(c.leaf_id) + '): ' + c.artifact_count + ' room artifact' + (c.artifact_count === 1 ? '' : 's') + ' already mention the zone' + (c.flagged ? ' in other words or the same words; the gap may be an extraction failure' : '') + '. Nothing was sent for this check.');
+      lines.push('- Checked in this room for "' + jobLines.leafWords(p, c.leaf_id) + '": ' + c.artifact_count + ' room artifact' + (c.artifact_count === 1 ? '' : 's') + ' already mention it' + (c.flagged ? ', possibly in other words' : '') + '. Nothing was sent for this check.');
     });
+    lines.push('');
+  }
+
+  const notSearched = jobLines.incompleteLines(r.completion, { max: 50 });
+  if (notSearched.length > 0) {
+    lines.push('### Not searched');
+    notSearched.forEach(function (l) { lines.push('- ' + l); });
     lines.push('');
   }
 
@@ -997,11 +1216,6 @@ function evidenceCard(run, plan) {
   };
 }
 
-function evidenceRowsLabel(q) {
-  const role = typeof q.role === 'string' ? q.role.replace(/_/g, ' ') : '';
-  return oneLine(q.template_id) + (role ? ' (' + role + ')' : '');
-}
-
 // ---------------------------------------------------------------------------
 // escalateToDeep
 // ---------------------------------------------------------------------------
@@ -1034,6 +1248,7 @@ function escalateToDeep(plan, run) {
   deep.leaves = list(deep.leaves).map(function (leaf) {
     const l = Object.assign({}, leaf);
     l.queries = [];
+    delete l.queries_cut;
     l.status = l.researchable === true ? 'open' : 'not_run';
     delete l.support_count;
     delete l.contradict_count;

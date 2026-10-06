@@ -41,6 +41,18 @@
  *    term_not_composed (no echo). composableTerm() is that strict gate.
  *    stripMarkdown() only cleans a candidate and never makes a sentence composable.
  *
+ * Shaped web phrase (369.2-21, brief reconciliation): a web slot value that is sentence-shaped (it ends in a
+ * question or exclamation mark, has a sentence boundary, or is longer than six words) is never sent as one quoted
+ * phrase. shapeWebPhrase() keeps its first eight content tokens, in order, with the question words dropped, and
+ * the template sends them unquoted; nothing is filtered out by meaning, so every city, person and product token
+ * inside those eight survives, and the card shows the shaped string exactly as sent. A value that leaves fewer than
+ * two content tokens is refused bad_slot. The limiter slot (CODE-05) is never shaped: a limiter that is a sentence
+ * stays a refusal of plan 17, not a shaped phrase. A theo destination never shapes (Part 8, strict term rule).
+ *
+ * Query kinds (369.2-21, HARNESS-09, ACT-12): a researchable leaf may carry query_kinds {direct, practice,
+ * mechanism, adjacent}, host-authored slot values (the model proposes the value, code composes the string).
+ * composeForKinds() composes the lens once per kind through the same frozen templates and tags each query.
+ *
  * Pure CJS: no fs, no network, no clock. Deterministic.
  *
  * No em-dashes anywhere in this file (CLAUDE.md HARD RULE).
@@ -49,6 +61,7 @@
 const crypto = require('node:crypto');
 const { auditQueryString } = require('../rs-egress-prompts.cjs');
 const { MAX_QUERY_CHARS } = require('../dominant-design/lane-queries.cjs');
+const { contentTokens } = require('./content-tokens.cjs');
 
 const SURFACE = 'research-planner';
 
@@ -70,6 +83,21 @@ const BAD_CHAR_RE = /["\r\n\t()\\]/;
 const OPERATOR_TOKENS = { and: true, or: true, not: true };
 
 function q1(t) { return '"' + t + '"'; }
+// phrase(s, key, i): a slot value as the template sends it. An unshaped value is quoted; a shaped web phrase
+// (369.2-21) is sent bare. s.$shaped is a non-enumerable map set by composeFamily. group() wraps a shaped phrase
+// in parentheses where it meets OR, so the bare words keep their meaning.
+function shapedMark(s, key, i) {
+  const m = s && s.$shaped;
+  return !!m && m[i === undefined ? key : key + ':' + i] === true;
+}
+function phrase(s, key, i) {
+  const v = i === undefined ? s[key] : s[key][i];
+  return shapedMark(s, key, i) ? v : q1(v);
+}
+function group(s, key, i) {
+  const v = i === undefined ? s[key] : s[key][i];
+  return shapedMark(s, key, i) ? '(' + v + ')' : q1(v);
+}
 function tpl(id, role, needs, render) {
   return Object.freeze({ id: id, role: role, needs: Object.freeze(needs), render: render });
 }
@@ -92,15 +120,15 @@ const FAMILY_SLOTS = Object.freeze({
 const WHITESPACE_GAP = Object.freeze({
   id: 'whitespace-gap/v1',
   templates: Object.freeze([
-    tpl('ws.exact', 'primary', ['term'], function (s) { return q1(s.term); }),
+    tpl('ws.exact', 'primary', ['term'], function (s) { return phrase(s, 'term'); }),
     tpl('ws.synonym_cover', 'falsifier_covered_elsewhere', ['term', 'synonyms'], function (s) {
-      return q1(s.term) + ' OR ' + s.synonyms.map(q1).join(' OR ');
+      return group(s, 'term') + ' OR ' + s.synonyms.map(function (_x, i) { return group(s, 'synonyms', i); }).join(' OR ');
     }),
     tpl('ws.prior_attempts', 'falsifier_tried_before', ['term'], function (s) {
-      return q1(s.term) + ' AND (review OR survey OR "systematic review")';
+      return phrase(s, 'term') + ' AND (review OR survey OR "systematic review")';
     }),
     tpl('ws.absence_reason', 'context', ['term'], function (s) {
-      return q1(s.term) + ' AND (limitation OR barrier OR infeasible)';
+      return phrase(s, 'term') + ' AND (limitation OR barrier OR infeasible)';
     }),
   ]),
 });
@@ -109,18 +137,18 @@ const WHITESPACE_GAP = Object.freeze({
 const CONCEPT_EVIDENCE = Object.freeze({
   id: 'concept-evidence/v1',
   templates: Object.freeze([
-    tpl('ce.exact', 'primary', ['term'], function (s) { return q1(s.term); }),
+    tpl('ce.exact', 'primary', ['term'], function (s) { return phrase(s, 'term'); }),
     tpl('ce.counter', 'falsifier', ['term'], function (s) {
-      return q1(s.term) + ' AND (limitation OR failure OR "no effect")';
+      return phrase(s, 'term') + ' AND (limitation OR failure OR "no effect")';
     }),
     tpl('ce.prior_success', 'prior', ['term'], function (s) {
-      return q1(s.term) + ' AND (success OR adoption OR "case study")';
+      return phrase(s, 'term') + ' AND (success OR adoption OR "case study")';
     }),
     tpl('ce.alternative', 'alternative', ['term'], function (s) {
-      return q1(s.term) + ' AND (alternative OR substitute)';
+      return phrase(s, 'term') + ' AND (alternative OR substitute)';
     }),
     tpl('ce.pair', 'pair', ['term', 'term2'], function (s) {
-      return q1(s.term) + ' AND ' + q1(s.term2);
+      return phrase(s, 'term') + ' AND ' + phrase(s, 'term2');
     }),
   ]),
 });
@@ -129,9 +157,9 @@ const CONCEPT_EVIDENCE = Object.freeze({
 const CAUSAL_LINK = Object.freeze({
   id: 'causal-link/v1',
   templates: Object.freeze([
-    tpl('cl.link', 'primary', ['cause', 'effect'], function (s) { return q1(s.cause) + ' AND ' + q1(s.effect); }),
+    tpl('cl.link', 'primary', ['cause', 'effect'], function (s) { return phrase(s, 'cause') + ' AND ' + phrase(s, 'effect'); }),
     tpl('cl.break', 'falsifier', ['cause', 'effect'], function (s) {
-      return q1(s.cause) + ' AND ' + q1(s.effect) + ' AND (confound OR "no association" OR "not associated")';
+      return phrase(s, 'cause') + ' AND ' + phrase(s, 'effect') + ' AND (confound OR "no association" OR "not associated")';
     }),
   ]),
 });
@@ -141,16 +169,16 @@ const CONSTRAINT_INTERROGATION = Object.freeze({
   id: 'constraint-interrogation/v1',
   templates: Object.freeze([
     tpl('ci.derivation', 'derivation', ['limiter'], function (s) {
-      return q1(s.limiter) + ' AND ("fundamental limit" OR "theoretical limit" OR bound)';
+      return phrase(s, 'limiter') + ' AND ("fundamental limit" OR "theoretical limit" OR bound)';
     }),
     tpl('ci.retest', 'retest', ['limiter'], function (s) {
-      return q1(s.limiter) + ' AND (overcome OR circumvent OR "new approach")';
+      return phrase(s, 'limiter') + ' AND (overcome OR circumvent OR "new approach")';
     }),
     tpl('ci.scurve', 'scurve', ['limiter'], function (s) {
-      return q1(s.limiter) + ' AND (saturation OR plateau OR "diminishing returns")';
+      return phrase(s, 'limiter') + ' AND (saturation OR plateau OR "diminishing returns")';
     }),
     tpl('ci.prior_attack', 'prior', ['limiter'], function (s) {
-      return q1(s.limiter) + ' AND (review OR survey)';
+      return phrase(s, 'limiter') + ' AND (review OR survey)';
     }),
   ]),
 });
@@ -160,16 +188,16 @@ const DIFFUSION = Object.freeze({
   id: 'diffusion/v1',
   templates: Object.freeze([
     tpl('df.adoption', 'first_adopters', ['technology'], function (s) {
-      return q1(s.technology) + ' AND (adoption OR diffusion)';
+      return phrase(s, 'technology') + ' AND (adoption OR diffusion)';
     }),
     tpl('df.capacity', 'absorptive_capacity', ['technology'], function (s) {
-      return q1(s.technology) + ' AND ("absorptive capacity" OR "technology transfer")';
+      return phrase(s, 'technology') + ' AND ("absorptive capacity" OR "technology transfer")';
     }),
     tpl('df.dualuse', 'civil_defense_crossing', ['technology'], function (s) {
-      return q1(s.technology) + ' AND ("dual-use" OR "dual use" OR defense)';
+      return phrase(s, 'technology') + ' AND ("dual-use" OR "dual use" OR defense)';
     }),
     tpl('df.timing', 'timing', ['technology'], function (s) {
-      return q1(s.technology) + ' AND ("S-curve" OR "adoption rate" OR "technology readiness")';
+      return phrase(s, 'technology') + ' AND ("S-curve" OR "adoption rate" OR "technology readiness")';
     }),
   ]),
 });
@@ -290,6 +318,21 @@ function composableTerm(v) {
   return proseShaped(t) ? null : t;
 }
 
+// SENTENCE_MIN_CONTENT_WORDS (quick 261006-d4, plan 17 follow-up): a limiter or derivation term of this many
+// content words or more is a sentence even with no sentence punctuation ("Entanglement requires pre-positioned
+// physical barriers"). A sentence limiter is never searched.
+const SENTENCE_MIN_CONTENT_WORDS = 5;
+
+// composableDerivationTerm(v) -> the term when composableTerm accepts it and it has fewer than
+// SENTENCE_MIN_CONTENT_WORDS content words, else null (the caller records bad_slot:limiter or bad_slot:goal).
+// A content word is a whitespace word that keeps at least one content token (stop words drop out).
+function composableDerivationTerm(v) {
+  const t = composableTerm(v);
+  if (t === null) return null;
+  const words = t.toLowerCase().split(/\s+/).filter(function (w) { return contentTokens(w).length > 0; });
+  return words.length >= SENTENCE_MIN_CONTENT_WORDS ? null : t;
+}
+
 // composableQuery(v) -> the cleaned phrase when it can be a slot value on a WEB
 // search line, else null (SEED-115). A room phrase or question is allowed:
 // sentence boundaries, question marks and parentheses pass; markdown markers are
@@ -302,6 +345,35 @@ function composableQuery(v) {
   const t = stripMarkdown(v).replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
   if (t.length < SLOT_RULES.term_min_chars || t.length > SLOT_RULES.query_max_chars) return null;
   return t;
+}
+
+// QUERY_KINDS (369.2-21, HARNESS-09): the four ways a question is searched. direct is the problem's own words;
+// practice names an established practice that answers it, mechanism the physical or logical mechanism, adjacent
+// a neighbor field that solved a similar problem.
+const QUERY_KINDS = Object.freeze(['direct', 'practice', 'mechanism', 'adjacent']);
+
+// Words that open a question and carry no search content. They are dropped when a sentence is shaped.
+const QUESTION_WORDS = Object.freeze(new Set([
+  'how', 'what', 'why', 'when', 'where', 'which', 'who', 'whom', 'whose', 'does', 'do', 'did', 'can', 'could',
+  'should', 'would', 'will', 'may', 'might', 'must', 'is', 'are', 'was', 'were', 'has', 'have', 'had',
+]));
+const SHAPE_MAX_WORDS = 6;
+const SHAPE_MAX_TOKENS = 8;
+
+// shapeWebPhrase(value) -> {value, shaped} or null (369.2-21). A short value that is not sentence-shaped comes
+// back cleaned and unshaped (the template quotes it, exactly as before). A sentence-shaped value (a question or
+// exclamation mark at the end, a sentence boundary, or more than six words) comes back as its first eight content
+// tokens, question words dropped, order kept, joined by one space; the template sends it unquoted. Fewer than two
+// content tokens, or a value composableQuery refuses, is null (the caller refuses bad_slot).
+function shapeWebPhrase(value) {
+  const t = composableQuery(value);
+  if (t === null) return null;
+  const words = t.split(/\s+/).length;
+  const sentence = proseShaped(t) || /[?!]$/.test(t) || words > SHAPE_MAX_WORDS;
+  if (!sentence) return { value: t, shaped: false };
+  const toks = contentTokens(t.toLowerCase()).filter(function (w) { return !QUESTION_WORDS.has(w); }).slice(0, SHAPE_MAX_TOKENS);
+  if (toks.length < 2) return null;
+  return { value: toks.join(' '), shaped: true };
 }
 
 // hasProseSlot(slots) -> true when any string slot value, or any element of a
@@ -409,6 +481,28 @@ function composeFamily(familyId, slots, opts) {
   if (strict && hasProseSlot(slots)) return refusal('term_not_composed', familyId, null);
   if (norm === null) return refusal('bad_slot', familyId, null);
 
+  // 369.2-21: a web slot value that is a sentence is shaped, never quoted whole. The limiter slot is never shaped
+  // (CODE-05, plan 17); a theo destination never reaches here with prose (strict rule above).
+  if (!strict) {
+    const shapedMap = {};
+    for (let i = 0; i < norm.order.length; i += 1) {
+      const name = norm.order[i];
+      if (name === 'limiter' || norm.slots[name] === undefined) continue;
+      if (Array.isArray(norm.slots[name])) {
+        for (let j = 0; j < norm.slots[name].length; j += 1) {
+          const r = shapeWebPhrase(norm.slots[name][j]);
+          if (r === null) return refusal('bad_slot', familyId, null, { slot: name });
+          if (r.shaped) { norm.slots[name][j] = r.value; shapedMap[name + ':' + j] = true; }
+        }
+      } else {
+        const r = shapeWebPhrase(norm.slots[name]);
+        if (r === null) return refusal('bad_slot', familyId, null, { slot: name });
+        if (r.shaped) { norm.slots[name] = r.value; shapedMap[name] = true; }
+      }
+    }
+    Object.defineProperty(norm.slots, '$shaped', { value: shapedMap, enumerable: false });
+  }
+
   if (selected === null) {
     selected = family.templates.filter(function (t) {
       return t.needs.every(function (n) { return norm.slots[n] !== undefined; });
@@ -456,6 +550,20 @@ function composeFamily(familyId, slots, opts) {
   return { ok: true, family: familyId, queries: queries };
 }
 
+// consumedSlots(lensId) -> the slot names the lens can render: the union of `needs` over its round-one and
+// round-two templates (369.2-17). An unknown lens consumes nothing.
+function consumedSlots(lensId) {
+  if (typeof lensId !== 'string' || !Object.prototype.hasOwnProperty.call(LENS_FAMILY, lensId)) return [];
+  const map = LENS_FAMILY[lensId];
+  const family = FAMILIES[map.family];
+  const out = [];
+  map.templates.concat(map.round2 || []).forEach(function (id) {
+    const t = family.templates.filter(function (x) { return x.id === id; })[0];
+    if (t) t.needs.forEach(function (n) { if (out.indexOf(n) === -1) out.push(n); });
+  });
+  return out;
+}
+
 // composeForLeaf(leaf, opts) -- leaf = { lens, slots, corpus? }; opts = { round, auditFn }.
 // A leaf whose corpus is 'theo' composes under the strict Part 8 term rule; every
 // other leaf is a web-line leaf (SEED-115).
@@ -477,6 +585,12 @@ function composeForLeaf(leaf, opts) {
   if (strict && hasProseSlot(leaf.slots)) return refusal('term_not_composed', map.family, null);
   const norm = normalizeSlots(map.family, leaf.slots, strict);
   if (norm === null) return refusal('bad_slot', map.family, null);
+  // 369.2-17 (CODE-06, R11): a slot the lens never consumes was supplied by the navigator and would be
+  // silently dropped, so the leaf is refused by name before fetch. The name is a slot NAME, never its value.
+  const consumed = consumedSlots(lensId);
+  const supplied = Object.keys(leaf.slots).filter(function (k) { return leaf.slots[k] !== undefined; });
+  const unused = supplied.filter(function (k) { return consumed.indexOf(k) === -1; })[0];
+  if (unused !== undefined) return refusal('unused_slot', map.family, null, { slot: unused, code: 'unused_slot:' + unused });
   const family = FAMILIES[map.family];
   const usable = ids.filter(function (id) {
     const t = family.templates.filter(function (x) { return x.id === id; })[0];
@@ -486,6 +600,75 @@ function composeForLeaf(leaf, opts) {
 
   const r = composeFamily(map.family, leaf.slots, { templateIds: usable, auditFn: options.auditFn, round: round, destination: strict ? 'theo' : 'web' });
   if (r.ok) r.lens = lensId;
+  return r;
+}
+
+// composeForKinds(leaf, opts) -- leaf = { lens, slots, corpus?, query_kinds? }; opts = { round, auditFn } (369.2-21).
+// Returns the leaf's own composition tagged kind 'direct' plus, for each kind value present in leaf.query_kinds,
+// a composition of the same lens with the family's first required slot replaced by that value. A lens whose
+// templates need a second slot (ce.pair), and the causal-link and constraint-interrogation lenses, compose
+// concept-evidence ce.exact with term = the value. A value is a host-authored slot value: it passes the same
+// shaping and the same frozen templates as any web slot, so no free-form query text enters (OK-03). A theo leaf
+// and a round after the first compose no kinds. Queries are interleaved by template index (direct first, then
+// practice, mechanism, adjacent) so a cap that cuts the tail cuts the later templates of each kind first, and a
+// hash an earlier query already holds is not repeated. A refusal names the slot as query_kinds:<kind>.
+function kindComposition(map, value, round, auditFn) {
+  const fam = FAMILIES[map.family];
+  const tplOf = function (id) { return fam.templates.filter(function (x) { return x.id === id; })[0]; };
+  const pairLens = map.templates.indexOf('ce.pair') !== -1;
+  let familyId = map.family;
+  let slotName = null;
+  let ids = null;
+  if (!pairLens && map.family === 'whitespace-gap/v1') {
+    slotName = 'term';
+    ids = map.templates.filter(function (id) { return tplOf(id).needs.length === 1; });
+  } else if (!pairLens && map.family === 'diffusion/v1') {
+    slotName = 'technology';
+    ids = map.templates;
+  } else if (!pairLens && map.family === 'concept-evidence/v1') {
+    slotName = 'term';
+    ids = map.templates;
+  } else {
+    familyId = 'concept-evidence/v1';
+    slotName = 'term';
+    ids = ['ce.exact'];
+  }
+  const slots = {};
+  slots[slotName] = value;
+  return composeFamily(familyId, slots, { templateIds: ids.slice(), auditFn: auditFn, round: round, destination: 'web' });
+}
+
+function composeForKinds(leaf, opts) {
+  const options = opts || {};
+  const round = Number.isInteger(options.round) && options.round > 0 ? options.round : 1;
+  const base = composeForLeaf(leaf, options);
+  if (!base.ok) return base;
+  const tag = function (q, kind) { return Object.assign({}, q, { kind: kind }); };
+  const lists = [base.queries.map(function (q) { return tag(q, 'direct'); })];
+  const kinds = leaf && leaf.corpus !== 'theo' && round === 1 && leaf.query_kinds && typeof leaf.query_kinds === 'object' && !Array.isArray(leaf.query_kinds) ? leaf.query_kinds : {};
+  const lensId = leaf && typeof leaf.lens === 'string' ? leaf.lens : '';
+  if (Object.prototype.hasOwnProperty.call(LENS_FAMILY, lensId)) {
+    for (let i = 0; i < QUERY_KINDS.length; i += 1) {
+      const kind = QUERY_KINDS[i];
+      if (kind === 'direct' || typeof kinds[kind] !== 'string') continue;
+      const c = kindComposition(LENS_FAMILY[lensId], kinds[kind], round, options.auditFn);
+      if (!c.ok) return refusal(c.reason, c.family, c.template_id, { slot: 'query_kinds:' + kind });
+      lists.push(c.queries.map(function (q) { return tag(q, kind); }));
+    }
+  }
+  const seen = {};
+  const out = [];
+  const longest = lists.reduce(function (n, l) { return Math.max(n, l.length); }, 0);
+  for (let i = 0; i < longest; i += 1) {
+    for (let k = 0; k < lists.length; k += 1) {
+      const q = lists[k][i];
+      if (!q || seen[q.q_hash]) continue;
+      seen[q.q_hash] = true;
+      out.push(q);
+    }
+  }
+  const r = { ok: true, family: base.family, queries: out };
+  if (base.lens !== undefined) r.lens = base.lens;
   return r;
 }
 
@@ -515,11 +698,17 @@ module.exports = {
   FAMILIES,
   SLOT_RULES,
   LENS_FAMILY,
+  QUERY_KINDS,
   composeFamily,
   composeForLeaf,
+  composeForKinds,
+  shapeWebPhrase,
+  consumedSlots,
   proseShaped,
   stripMarkdown,
   composableTerm,
+  composableDerivationTerm,
+  SENTENCE_MIN_CONTENT_WORDS,
   composableQuery,
   qHash,
   slotTerms,

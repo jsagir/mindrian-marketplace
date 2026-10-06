@@ -52,11 +52,13 @@ const crypto = require('node:crypto');
 const Q = require('./question-templates.cjs');
 const structure = require('./structure.cjs');
 const perspectiveMod = require('./perspective.cjs');
+const operations = require('./operations.cjs');
 const pyramidMod = require('./pyramid.cjs');
 const families = require('./families.cjs');
 const planMod = require('./plan.cjs');
 const grants = require('./grants.cjs');
 const quickMod = require('./quick.cjs');
+const jobLines = require('./job-lines.cjs');
 const deepMod = require('./deep.cjs');
 const filingMod = require('./filing.cjs');
 const evidenceRows = require('./evidence-rows.cjs');
@@ -150,7 +152,7 @@ function budgetFor(mode) {
     };
   }
   return {
-    plan: { breadth: BUDGETS.DEEP_LANES_REQUESTED, rounds: BUDGETS.DEEP_ROUNDS, queries_per_round: BUDGETS.DEEP_R1_QUERIES_PER_LANE, results_per_query: BUDGETS.DEEP_RESULTS_PER_QUERY, max_searches: BUDGETS.DEEP_MAX_SEARCHES, time_budget_ms: BUDGETS.DEEP_TIME_BUDGET_MS, counterevidence: true },
+    plan: { breadth: BUDGETS.DEEP_LANES_REQUESTED, rounds: BUDGETS.DEEP_ROUNDS, queries_per_round: BUDGETS.DEEP_R1_QUERIES_PER_LANE, results_per_query: BUDGETS.DEEP_RESULTS_PER_QUERY, max_searches: BUDGETS.DEEP_MAX_SEARCHES, time_budget_ms: BUDGETS.DEEP_TIME_BUDGET_MS, counterevidence: true, baseline_max: BUDGETS.DEEP_BASELINE_MAX },
     stop: ['cap', 'saturation', 'budget', 'time'],
   };
 }
@@ -160,15 +162,141 @@ function hasSlots(leaf) {
 }
 
 // A refusal keeps the leaf in the room. The reason never carries the string.
-function markLocalOnly(leaf, refusal) {
+// 369.2-14 (HARNESS-02): the refusal is persisted on the leaf as {reason, slot} so a plan-time refusal
+// leaves a trace the run turns into a refused_before_fetch op. The slot is a slot NAME, never its value.
+// Pitfall 6: this changes planHash for a plan that carries a refusal.
+function markLocalOnly(leaf, refusal, detail) {
+  const slot = detail && typeof detail.slot === 'string' && detail.slot.length > 0 ? detail.slot : null;
+  let reason = typeof refusal === 'string' && refusal.length > 0 ? refusal : 'bad_slot';
+  // 369.2-17 (CODE-06): an unused slot is recorded with its name, 'unused_slot:<slot>'
+  if (reason === 'unused_slot' && slot !== null) reason = 'unused_slot:' + slot;
+  leaf.refusal = { reason: reason, slot: slot };
   leaf.researchable = false;
-  leaf.not_researchable_reason = refusal === 'egress_violation'
-    ? 'A search term did not pass the egress audit, so this question is answered from the room only.'
-    : 'A search term could not be used as written, so this question is answered from the room only.';
+  if (refusal === 'unused_slot') {
+    leaf.not_researchable_reason = 'The extra term given for this question is not used by its search shape, so nothing was searched for it. Move it into the main term, or choose a lens that takes two terms.';
+  } else if (refusal === 'egress_violation') {
+    leaf.not_researchable_reason = 'A search term did not pass the egress audit, so this question is answered from the room only.';
+  } else {
+    leaf.not_researchable_reason = 'A search term could not be used as written, so this question is answered from the room only.';
+  }
   leaf.corpus = 'room';
   leaf.status = 'not_run';
   leaf.slots = {};
   leaf.queries = [];
+}
+
+// The name of the first slot whose value cannot be a composable term (a name only, never the value), or null.
+function firstBadSlot(slots) {
+  const names = Object.keys(isObj(slots) ? slots : {});
+  for (let i = 0; i < names.length; i += 1) {
+    const v = slots[names[i]];
+    if (typeof v === 'string' && families.composableTerm(v) === null) return names[i];
+    if (Array.isArray(v) && v.some(function (x) { return typeof x === 'string' && families.composableTerm(x) === null; })) return names[i];
+  }
+  return null;
+}
+
+// 369.2-22 (SW-14, R14): the order of leaves for the quick cap. Leaves tied to a named limiter come first,
+// in the order rankByUnlock ranks the limiters; every other leaf follows in plan order. A leaf is tied to a
+// limiter by its own limiter_id or by the limiter's leaf_id (the same tie pyramid.cjs reads).
+function leavesOfLimiter(plan, lim) {
+  return plan.leaves.filter(function (leaf) {
+    return isObj(leaf) && (leaf.limiter_id === lim.id || lim.leaf_id === leaf.id);
+  });
+}
+
+function rankedLimiters(plan) {
+  const pv = isObj(plan.perspective) ? plan.perspective : null;
+  if (pv === null || !Array.isArray(pv.limiters)) return [];
+  const byId = {};
+  pv.limiters.forEach(function (l) { if (isObj(l)) byId[l.id] = l; });
+  return perspectiveMod.rankByUnlock(pv, {}).map(function (r) { return byId[r.limiter_id]; }).filter(Boolean);
+}
+
+function quickLeafOrder(plan) {
+  const out = [];
+  rankedLimiters(plan).forEach(function (lim) {
+    leavesOfLimiter(plan, lim).forEach(function (leaf) { if (out.indexOf(leaf) === -1) out.push(leaf); });
+  });
+  plan.leaves.forEach(function (leaf) { if (out.indexOf(leaf) === -1) out.push(leaf); });
+  return out;
+}
+
+// inside one leaf: practice, direct, mechanism, adjacent; every falsifier template after the rest (stable)
+const KIND_RANK = { practice: 0, direct: 1, mechanism: 2, adjacent: 3 };
+function orderQueries(qs) {
+  return qs.map(function (q, i) {
+    const kr = Object.prototype.hasOwnProperty.call(KIND_RANK, q.kind) ? KIND_RANK[q.kind] : KIND_RANK.direct;
+    const fal = operations.isFalsifier({ template_id: q.template_id, role: q.role }) ? 10 : 0;
+    return { q: q, i: i, rank: fal + kr };
+  }).sort(function (a, b) { return a.rank !== b.rank ? a.rank - b.rank : a.i - b.i; }).map(function (x) { return x.q; });
+}
+
+// the limiters whose leaves had searches composed and got none of them into the cap (a name and a label only)
+function quickUnreached(plan, composed) {
+  const out = [];
+  rankedLimiters(plan).forEach(function (lim) {
+    const tied = leavesOfLimiter(plan, lim).filter(function (leaf) { return Array.isArray(composed[leaf.id]) && composed[leaf.id].length > 0; });
+    if (tied.length === 0) return;
+    if (tied.some(function (leaf) { return Array.isArray(leaf.queries) && leaf.queries.length > 0; })) return;
+    out.push({ limiter_id: lim.id, label: typeof lim.statement === 'string' ? lim.statement.replace(/\s+/g, ' ').trim() : lim.id });
+  });
+  return out;
+}
+
+// 369.2-23 (HARNESS-10, R17): the bounded field scan. A deep plan with at least one limiter gets at most
+// baseline_max queries, one per facet, composed through the frozen concept-evidence and whitespace-gap
+// templates (no new family): the governing question shaped like any web slot, and for the deployed-practice
+// facet the practice kind of the top-ranked limiter's leaf when the host gave one. A refused facet is absent
+// and named in baseline.refused. Round 0 is metadata: q_hash depends on the string only. Returns null when
+// the scan is off or the plan has no limiter.
+const BASELINE_TEMPLATES = Object.freeze({
+  deployed_practice: { family: 'concept-evidence/v1', template: 'ce.prior_success' },
+  primary_terminology: { family: 'concept-evidence/v1', template: 'ce.exact' },
+  recent_state_of_the_art: { family: 'whitespace-gap/v1', template: 'ws.prior_attempts' },
+  challenge_source: { family: 'concept-evidence/v1', template: 'ce.counter' },
+});
+
+function baselineMax(plan) {
+  const b = isObj(plan.budget) ? plan.budget.baseline_max : undefined;
+  return Number.isInteger(b) && b >= 0 ? b : BUDGETS.DEEP_BASELINE_MAX;
+}
+
+function topLimiterPractice(plan) {
+  const ranked = rankedLimiters(plan);
+  const top = ranked.length > 0 ? ranked[0] : null;
+  if (top === null) return null;
+  const leaves = leavesOfLimiter(plan, top);
+  for (let i = 0; i < leaves.length; i += 1) {
+    const qk = leaves[i].query_kinds;
+    if (isObj(qk) && nonEmpty(qk.practice)) return qk.practice;
+  }
+  return null;
+}
+
+function composeBaseline(plan) {
+  const limiters = isObj(plan.perspective) && Array.isArray(plan.perspective.limiters) ? plan.perspective.limiters : [];
+  const max = Math.min(baselineMax(plan), BUDGETS.DEEP_BASELINE_MAX);
+  if (limiters.length === 0 || max === 0) return null;
+  const py = isObj(plan.pyramid) ? plan.pyramid : {};
+  const question = nonEmpty(py.governing_question) ? py.governing_question : py.stated_question;
+  const practice = topLimiterPractice(plan);
+  const queries = [];
+  const refused = [];
+  const seen = {};
+  planMod.BASELINE_FACETS.forEach(function (facet) {
+    const spec = BASELINE_TEMPLATES[facet];
+    const term = facet === 'deployed_practice' && practice !== null ? practice : question;
+    const c = families.composeFamily(spec.family, { term: term }, { templateIds: [spec.template], round: 1, destination: 'web' });
+    if (!c.ok) { refused.push({ facet: facet, reason: c.reason }); return; }
+    const q = c.queries[0];
+    if (seen[q.q_hash]) return;
+    seen[q.q_hash] = true;
+    queries.push({ facet: facet, kind: 'baseline', template_id: q.template_id, family: q.family, q: q.q, q_hash: q.q_hash, audit: q.audit, round: 0, slot_terms: q.slot_terms });
+  });
+  const out = { queries: queries.slice(0, max) };
+  if (refused.length > 0) out.refused = refused;
+  return out.queries.length > 0 || refused.length > 0 ? out : null;
 }
 
 // attachQueries(plan) -> {local_only:[{leaf_id, reason}], trimmed:n}. Composes
@@ -178,38 +306,92 @@ function attachQueries(plan) {
   const localOnly = [];
   const composed = {};
   let trimmed = 0;
+  delete plan.quick_unreached;
+  delete plan.baseline;
   plan.leaves.forEach(function (leaf) {
     leaf.queries = [];
-    if (!isObj(leaf) || leaf.researchable !== true || leaf.corpus !== 'openalex') return;
+    if (!isObj(leaf)) return;
+    delete leaf.not_sent;
+    delete leaf.queries_cut;
+    // a limiter refusal on a leaf that is still researchable is rebuilt below from the slots as they are now
+    if (leaf.researchable === true && isObj(leaf.refusal) && leaf.refusal.reason === 'bad_slot:limiter') delete leaf.refusal;
+    if (leaf.researchable !== true || leaf.corpus !== 'openalex') return;
     if (!hasSlots(leaf)) return;
-    const c = families.composeForLeaf({ lens: leaf.lens, slots: leaf.slots, corpus: leaf.corpus }, { round: 1 });
+    // 369.2-21: the leaf's own words plus its host-authored query kinds, each query tagged with its kind
+    const c = families.composeForKinds({ lens: leaf.lens, slots: leaf.slots, corpus: leaf.corpus, query_kinds: leaf.query_kinds }, { round: 1 });
     if (c.ok) { composed[leaf.id] = c.queries; return; }
     if (c.reason === 'unknown_lens') return;
     localOnly.push({ leaf_id: leaf.id, reason: c.reason });
-    markLocalOnly(leaf, c.reason);
+    let slotName = null;
+    let reason = c.reason;
+    if (c.reason === 'bad_slot') {
+      // 369.2-21: the composer names the slot it could not shape (a name only, never the value)
+      slotName = typeof c.slot === 'string' && c.slot.length > 0 ? c.slot : firstBadSlot(leaf.slots);
+      // 369.2-19 (CODE-04): a family that takes no such slot name (a ci.* lens given an extra term) refuses it
+      // as a plain bad_slot; with no bad value to blame, the leaf is refused by the name the lens cannot use
+      if (slotName === null) {
+        const consumed = families.consumedSlots(leaf.lens);
+        const extra = Object.keys(leaf.slots).filter(function (k) { return leaf.slots[k] !== undefined && consumed.indexOf(k) === -1; })[0];
+        if (extra !== undefined) { reason = 'unused_slot'; slotName = extra; }
+      }
+    } else if (c.reason === 'unused_slot' && typeof c.slot === 'string') slotName = c.slot;
+    markLocalOnly(leaf, reason, { slot: slotName });
   });
 
   if (plan.mode === 'quick') {
     const seen = {};
     let count = 0;
-    plan.leaves.forEach(function (leaf) {
+    // 369.2-22 (SW-14, R14): the cap goes to the leaves tied to a named limiter first, in rankByUnlock order,
+    // then to the rest in plan order; inside a leaf the practice query goes before direct, falsifiers last
+    const order = quickLeafOrder(plan);
+    order.forEach(function (leaf) {
       const qs = composed[leaf.id];
       if (!qs) return;
       const kept = [];
-      qs.forEach(function (q) {
+      const cut = [];
+      orderQueries(qs).forEach(function (q) {
         if (seen[q.q_hash]) { kept.push(q); return; }
         if (count < BUDGETS.QUICK_MAX_QUERIES) { seen[q.q_hash] = true; count += 1; kept.push(q); return; }
         trimmed += 1;
+        cut.push({ kind: q.kind || 'direct', template_id: q.template_id, reason: 'quick_cap' });
       });
       leaf.queries = kept;
+      // every trimmed query is kept on the leaf, so the run closes each as a not_executed quick_cap op
+      // (nothing promised disappears silently)
+      if (cut.length > 0) leaf.queries_cut = cut;
     });
+    // the walls the cap could not reach, named on the card before anything runs
+    const unreached = quickUnreached(plan, composed);
+    if (unreached.length > 0) plan.quick_unreached = unreached;
   } else {
-    deepMod.roundOneQueries(plan).forEach(function (lane) {
-      const leaf = plan.leaves.filter(function (l) { return l.id === lane.leaf_ids[0]; })[0];
-      if (leaf) leaf.queries = leaf.queries.concat(lane.queries.map(function (q) {
-        return { template_id: q.template_id, family: q.family, role: q.role, q: q.q, q_hash: q.q_hash, audit: q.audit, round: q.round, slot_terms: q.slot_terms };
-      }));
+    const r1 = deepMod.roundOneQueries(plan);
+    // 369.2-19 (CODE-03, CODE-04): each query is attached to the leaf that composed it (leaf_ids[0]); a limiter
+    // query keeps the first leaf of its lane, as before
+    r1.forEach(function (lane) {
+      lane.queries.forEach(function (q) {
+        const leaf = plan.leaves.filter(function (l) { return l.id === q.leaf_ids[0]; })[0];
+        if (leaf) {
+          const entry = { template_id: q.template_id, family: q.family, role: q.role, q: q.q, q_hash: q.q_hash, audit: q.audit, round: q.round, slot_terms: q.slot_terms };
+          if (q.kind !== undefined) entry.kind = q.kind;
+          leaf.queries.push(entry);
+        }
+      });
     });
+    // a leaf the lane budget or the search cap left without a search says so on the card
+    r1.cut.forEach(function (c) {
+      const leaf = plan.leaves.filter(function (l) { return l.id === c.leaf_id; })[0];
+      if (leaf && leaf.researchable === true && leaf.queries.length === 0) leaf.not_sent = { reason: c.reason };
+    });
+    // 369.2-17 (CODE-05): a limiter lane with no bound slot stays in the plan (the navigator fixes the wall),
+    // its leaves carry the refusal, and no search leaves for it
+    r1.refusals.forEach(function (x) {
+      plan.leaves.forEach(function (leaf) {
+        if (x.leaf_ids.indexOf(leaf.id) !== -1 && leaf.researchable === true) leaf.refusal = { reason: x.reason, slot: 'limiter' };
+      });
+    });
+    // 369.2-23 (HARNESS-10, R17): the field scan, composed before any limiter is ranked from search results
+    const scan = composeBaseline(plan);
+    if (scan !== null) plan.baseline = scan;
   }
   return { local_only: localOnly, trimmed: trimmed };
 }
@@ -451,8 +633,10 @@ function uncoveredLines(plan) {
   if (py.d00 && py.d00.passes === false) {
     out.push('- Every sub-question restates yours. Add at least one question you had not asked: this run exists to find those.');
   }
-  list(py.coverage && py.coverage.uncovered).forEach(function (d) { out.push('- ' + oneLine(d) + ': no sub-question covers this yet'); });
-  list(py.mece && py.mece.warnings).forEach(function (w) { out.push('- ' + oneLine(w)); });
+  // 369.2-30 (INPUT addendum 2): the dimension by its label, the warnings without tree paths or leaf ids
+  const tid = plan.origin && plan.origin.template_id;
+  list(py.coverage && py.coverage.uncovered).forEach(function (d) { out.push('- ' + jobLines.dimensionLabel(tid, d) + ': no sub-question covers this yet'); });
+  list(py.mece && py.mece.warnings).forEach(function (w) { out.push('- ' + jobLines.plainWarning(w, plan)); });
   return out;
 }
 
@@ -760,7 +944,7 @@ function nextMove(roomDir, run, plan) {
 // ---------------------------------------------------------------------------
 function recomposeLeaf(leaf) {
   if (!isObj(leaf) || leaf.researchable !== true || leaf.corpus !== 'openalex' || !hasSlots(leaf)) return { ok: true, queries: [] };
-  const c = families.composeForLeaf({ lens: leaf.lens, slots: leaf.slots, corpus: leaf.corpus }, { round: 1 });
+  const c = families.composeForKinds({ lens: leaf.lens, slots: leaf.slots, corpus: leaf.corpus, query_kinds: leaf.query_kinds }, { round: 1 });
   if (c.ok) return { ok: true, queries: c.queries };
   if (c.reason === 'unknown_lens') return { ok: true, queries: [] };
   return { ok: false, reason: c.reason, degrade: 'local-only' };

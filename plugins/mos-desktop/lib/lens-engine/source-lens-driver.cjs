@@ -52,6 +52,9 @@
 const lensEngine = require('../core/lens-engine.cjs');
 const researchCorpus = require('../core/research-corpus.cjs');
 const researchCache = require('../core/research-cache.cjs');
+// Phase 369.2 Plan 25: every lens leg is one operation in a small in-memory ledger (the same states and
+// reasons the research planner uses), so a refusal, an empty result and a failure are told apart by proof.
+const operations = require('../core/research-planner/operations.cjs');
 // Phase 221-02 (absorbed 221-01 Task 3): the typed stage-envelope contract.
 // fetchSourceCached consumes fetchCorpusEnvelope so a dead provider is a
 // TYPED per-provider event, never a silently erased failure (D-02 additive:
@@ -77,7 +80,10 @@ const resultSemantics = require('../core/recovery/result-semantics.cjs');
 const LENS_TO_SOURCE = Object.freeze({
   scholarly: 'openalex',
   industry: 'tavily',
-  patent: 'pubmed',
+  // CODE-02 (369.2 Plan 25): a patent lens searches PatentsView PatentSearch (source 'patents', gated on
+  // PATENTSVIEW_API_KEY) or is refused before dispatch. It used to ask PubMed, a biomedical index wearing a
+  // patent label.
+  patent: 'patents',
   brain: 'brain-cypher',
   'competitive-intelligence': 'tavily',
   grants: 'tavily',
@@ -91,6 +97,9 @@ const SOURCE_TO_TIER = Object.freeze({
   openalex: 'Academic',
   arxiv: 'Academic',
   pubmed: 'Academic',
+  // A patent is the primary record of an invention (an operational artifact, not a peer-reviewed claim and
+  // not a practitioner opinion), so the patents source sits at the Operational tier.
+  patents: 'Operational',
   'brain-cypher': 'Operational',
   tavily: 'Practitioner',
 });
@@ -260,7 +269,7 @@ function legacyToEnvelopeFn(legacyFn) {
 // (or unknown source) degrades to items:[] WITH a typed status: the
 // RESILIENCE is unchanged, the OBSERVABILITY is new. Never throws. roomDir
 // empty -> no cache layer (the corpus is still the single fetch path).
-async function fetchSourceCached(source, query, roomDir, fetchEnvelopeFn) {
+async function fetchSourceCached(source, query, roomDir, fetchEnvelopeFn, extraArgs) {
   if (!source || typeof query !== 'string' || query.length === 0) {
     // Nothing was attempted: no stage ran, so no stage envelope exists.
     return { items: [], status: 'skipped', reason: 'no_source_mapped', freshness: 'unknown', envelope: null };
@@ -307,7 +316,7 @@ async function fetchSourceCached(source, query, roomDir, fetchEnvelopeFn) {
   }
   let env;
   try {
-    env = await fetchEnvelopeFn({ source, query, limit: PER_SOURCE_LIMIT });
+    env = await fetchEnvelopeFn(Object.assign({ source, query, limit: PER_SOURCE_LIMIT }, isPlainObject(extraArgs) ? extraArgs : {}));
   } catch (e) {
     // Per-source fetch failure degrades that lens to zero items (Canon DoS
     // mitigation, resilience unchanged) -- but the outage stays VISIBLE as a
@@ -428,6 +437,117 @@ function rankFindings(findings, stage) {
   return pool;
 }
 
+// lensSummary(result) -> { searched_lenses, unavailable_lenses }. A lens is searched only when its operation
+// executed (with results or empty); a refused lens is unavailable, named with the provider and the gate it
+// needs, and is never counted as searched.
+function lensSummary(result) {
+  const list = (isPlainObject(result) && Array.isArray(result.providers)) ? result.providers : [];
+  return {
+    searched_lenses: list
+      .filter(function (p) { return isPlainObject(p) && isPlainObject(p.operation) && (p.operation.state === 'executed_with_results' || p.operation.state === 'executed_empty'); })
+      .map(function (p) { return p.lens; }),
+    unavailable_lenses: list
+      .filter(function (p) { return isPlainObject(p) && p.status === 'refused'; })
+      .map(function (p) { return { lens: p.lens, provider: p.provider, reason: p.reason, needs: p.needs || null }; }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 369.2 Plan 26 (HARNESS-03, SW-11, SEED-120 CFG-01; R15) -- provider preflight.
+//
+// preflightLenses(lensSet, opts) -> { available: [lens], unavailable: [{lens, provider, reason, needs}] }
+// reads the gate each lens's mapped source needs BEFORE any dispatch: the env gates in
+// data/research-sources.json (a key that is not set is reason 'no_key'), and for the Brain lane the egress
+// policy's theo line plus the local availability check (reason 'line_off', 'offline' or 'no_brain_url').
+// It reads presence only, never a key value, and makes no network call. A lens with no mapped source is
+// available here (its own leg answers no_source_mapped). A patent lens whose caller granted the Tavily
+// fallback stays available when a Tavily key is set.
+// opts: { roomDir, offline, allowFallback }.
+// ---------------------------------------------------------------------------
+const LANE_WORDS = Object.freeze({
+  industry: 'industry',
+  'competitive-intelligence': 'competitive intelligence',
+  grants: 'grants',
+  patent: 'patents',
+  scholarly: 'scholarly',
+  brain: 'brain',
+});
+
+function preflightLenses(lensSet, opts) {
+  const o = isPlainObject(opts) ? opts : {};
+  const list = Array.isArray(lensSet) ? lensSet : [];
+  const available = [];
+  const unavailable = [];
+  let policy = null;
+  for (const e of list) {
+    const lens = typeof e === 'string' ? e : (isPlainObject(e) ? e.lens : null);
+    if (typeof lens !== 'string') continue;
+    const source = LENS_TO_SOURCE[lens] || null;
+    if (!source) { available.push(lens); continue; }
+    const gate = researchCorpus.sourceGateStatus(source);
+    if (!gate.met) {
+      const fbAsked = lens === 'patent' && isPlainObject(o.allowFallback) && o.allowFallback.patent === 'tavily';
+      if (fbAsked && researchCorpus.sourceGateStatus('tavily').met) { available.push(lens); continue; }
+      unavailable.push({
+        lens: lens,
+        provider: source,
+        reason: gate.known === false ? 'unknown_source' : 'no_key',
+        needs: gate.unmet.join(','),
+      });
+      continue;
+    }
+    if (source === 'brain-cypher') {
+      let reason = null;
+      if (o.offline === true) {
+        reason = 'offline';
+      } else {
+        try {
+          if (policy === null) policy = require('../core/research-planner/egress-policy.cjs').loadEgressPolicy(o.roomDir || '', { offline: false });
+          const line = policy.lines && policy.lines.theo;
+          if (line && line.allowed !== true) reason = 'line_off';
+        } catch (_e) { reason = null; }
+        if (reason === null) {
+          try { if (!require('../core/brain-client.cjs').isAvailable()) reason = 'no_brain_url'; } catch (_e) { reason = 'no_brain_url'; }
+        }
+      }
+      if (reason) {
+        unavailable.push({ lens: lens, provider: 'theo', reason: reason, needs: 'brain:isAvailable' });
+        continue;
+      }
+    }
+    available.push(lens);
+  }
+  return { available: available, unavailable: unavailable };
+}
+
+function wordsList(words) {
+  if (words.length <= 1) return words.join('');
+  return words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
+}
+
+// unavailableAnswerLine(unavailable) -> one or more plain sentences naming what was not searched and why,
+// or '' when every lens is available. No dash characters (house rule).
+function unavailableAnswerLine(unavailable) {
+  const list = Array.isArray(unavailable) ? unavailable : [];
+  const wordsOf = function (u) { return LANE_WORDS[u.lens] || u.lens; };
+  const out = [];
+  const tavily = list.filter(function (u) { return u.provider === 'tavily'; }).map(wordsOf);
+  if (tavily.length > 0) {
+    out.push('Industry search needs a Tavily key, and none is set, so ' + wordsList(tavily) + (tavily.length === 1 ? ' was' : ' were') + ' not searched.');
+  }
+  if (list.some(function (u) { return u.provider === 'patents'; })) {
+    out.push('Patent search needs a PatentsView key, and none is set, so patents were not searched.');
+  }
+  const brainWhy = { line_off: 'the Theo line is off', offline: 'this run is offline', no_brain_url: 'no Brain connection is set' };
+  list.filter(function (u) { return u.provider === 'theo'; }).forEach(function (u) {
+    out.push('Brain search is not available (' + (brainWhy[u.reason] || u.reason) + '), so brain was not searched.');
+  });
+  list.filter(function (u) { return ['tavily', 'patents', 'theo'].indexOf(u.provider) === -1; }).forEach(function (u) {
+    out.push(wordsOf(u) + ' was not searched: ' + String(u.reason).replace(/_/g, ' ') + '.');
+  });
+  return out.join(' ');
+}
+
 /**
  * runSourceLens(opts) -- the Stage 3-4 source-lens rotation.
  *
@@ -458,6 +578,7 @@ async function runSourceLens(opts) {
   // fetchCorpusEnvelope path. The shipped legacy _fetchCorpus seam keeps
   // working byte-identically via legacyToEnvelopeFn (no caller or test stub
   // breaks); a new _fetchCorpusEnvelope seam injects envelopes directly.
+  const usesRealCorpus = typeof opts._fetchCorpusEnvelope !== 'function' && typeof opts._fetchCorpus !== 'function';
   const fetchEnvelopeFn = (typeof opts._fetchCorpusEnvelope === 'function')
     ? opts._fetchCorpusEnvelope
     : ((typeof opts._fetchCorpus === 'function')
@@ -477,6 +598,19 @@ async function runSourceLens(opts) {
   }
   const lensNames = orderedLensSet.map((e) => e.lens);
 
+  // Phase 369.2 Plan 26 (HARNESS-03): the provider preflight runs BEFORE any dispatch. A lens whose mapped
+  // source gate is unmet leaves the rotation, is minted a refused_before_fetch operation below, and is named
+  // in the result; the run never reports a wider coverage than it can search. A caller that injects its own
+  // fetch seam supplies the provider itself, so the process env says nothing about it and nothing is narrowed
+  // (the same rule the per-lens gate below uses).
+  const pre = usesRealCorpus
+    ? preflightLenses(orderedLensSet, { roomDir: roomDir, offline: opts.offline === true, allowFallback: opts.allowFallback })
+    : { available: lensNames.slice(), unavailable: [] };
+  const unavailByLens = Object.create(null);
+  for (const u of pre.unavailable) unavailByLens[u.lens] = u;
+  const liveLensSet = orderedLensSet.filter((e) => !unavailByLens[e.lens]);
+  const rotationNames = liveLensSet.map((e) => e.lens);
+
   // The section claim-graph tokens relevance is measured against.
   const claimTokens = claimGraphTokens(preflight, topic);
   const priorKeys = priorResearchKeys(preflight);
@@ -485,22 +619,107 @@ async function runSourceLens(opts) {
   // runs (ordered-serial by the supplied weight via the weighted-by-context mode).
   const fetchedByLens = Object.create(null);
 
+  // Phase 369.2 Plan 25: one operation per lens leg, minted up front so a leg the rotation never reaches is
+  // closed as not executed (run_aborted) at the end instead of vanishing.
+  const opLedger = operations.createLedger('lens-' + Date.now().toString(36), null);
+  const opByLens = Object.create(null);
+  for (const l of lensNames) {
+    opByLens[l] = operations.mint(opLedger, {
+      plan_dimension: l,
+      dimension_label: l,
+      kind: 'direct',
+      template_id: 'lens.' + l,
+      provider: LENS_TO_SOURCE[l] || null,
+    });
+  }
+  // The preflight refusals: one terminal operation and one typed bag per unavailable lens, before dispatch.
+  for (const u of pre.unavailable) {
+    const reason = 'provider_unavailable:' + (u.lens === 'patent' ? 'patent' : (LENS_TO_SOURCE[u.lens] || u.provider));
+    operations.transition(opLedger, opByLens[u.lens].operation_id, 'refused_before_fetch', { reason: reason });
+    fetchedByLens[u.lens] = {
+      source: LENS_TO_SOURCE[u.lens] || null,
+      items: [],
+      status: 'refused',
+      reason: reason,
+      freshness: 'unknown',
+      operation: opByLens[u.lens] || null,
+      fallback: null,
+      needs: u.needs || null,
+      envelope: null,
+    };
+  }
+
   // perLensFn: maps a lens to its 130.5 source and fetches cache-first via the
   // shared corpus. Returns a typed-finding-shaped summary object the engine
   // writes as a lens_finding node + hands to the synthesizer. The raw item list
   // is attached on item_count + stashed in fetchedByLens for post-rotation rank.
   async function perLensFn(lens, _ctx) {
     const source = LENS_TO_SOURCE[lens] || null;
-    const fetched = source
-      ? await fetchSourceCached(source, topic, roomDir, fetchEnvelopeFn)
-      : { items: [], status: 'skipped', reason: 'no_source_mapped', freshness: 'unknown', envelope: null };
+    const op = opByLens[lens];
+    let fetched;
+    let bagSource = source;
+    let fallback = null;
+    let needs = null;
+    if (!source) {
+      fetched = { items: [], status: 'skipped', reason: 'no_source_mapped', freshness: 'unknown', envelope: null };
+    } else {
+      // The env-gate pre-check guards the REAL corpus path. A caller that injects its own fetch seam
+      // (_fetchCorpus / _fetchCorpusEnvelope: tests, and the 219/221 recovery fixtures) supplies the
+      // provider itself, so the process env says nothing about whether that seam can answer.
+      const gate = usesRealCorpus ? researchCorpus.sourceGateStatus(source) : { met: true, unmet: [] };
+      if (!gate.met) {
+        // The mapped provider's gate is unmet: no dispatch at all (CODE-02). The one way past it is the
+        // opt-in Tavily fallback for the patent lens, granted by the caller (the command asks the navigator).
+        needs = gate.unmet.join(',');
+        const fbAsked = lens === 'patent' && isPlainObject(opts.allowFallback) && opts.allowFallback.patent === 'tavily';
+        if (fbAsked && researchCorpus.sourceGateStatus('tavily').met) {
+          // No cache layer on the fallback (roomDir ''): a domain-restricted search must never share a cache
+          // entry with an unrestricted Tavily search of the same words.
+          fetched = await fetchSourceCached('tavily', topic, '', fetchEnvelopeFn, { include_domains: ['patents.google.com'] });
+          bagSource = 'tavily';
+          fallback = { original_provider: 'patents', fallback_provider: 'tavily', reason: 'no_patent_key', authorized_by: 'navigator' };
+          // The fallback's envelope stays out of the recovery dispatcher: its retry would re-ask Tavily
+          // without the domain restriction, which is not what the navigator authorized.
+          fetched = Object.assign({}, fetched, { envelope: null });
+        } else {
+          fetched = {
+            items: [],
+            status: 'refused',
+            reason: 'provider_unavailable:' + (lens === 'patent' ? 'patent' : source),
+            freshness: 'unknown',
+            envelope: null,
+          };
+        }
+      } else {
+        fetched = await fetchSourceCached(source, topic, roomDir, fetchEnvelopeFn);
+      }
+    }
+    // The lens operation: one terminal state per leg, with the proof it needs.
+    if (op) {
+      if (fetched.status === 'refused') {
+        operations.transition(opLedger, op.operation_id, 'refused_before_fetch', { reason: fetched.reason });
+      } else if (fetched.status === 'ok') {
+        operations.transition(opLedger, op.operation_id, 'executed_with_results', { count: fetched.items.length, provider: bagSource, q: topic, cache_hit: fetched.reason === 'cache_hit' });
+      } else if (fetched.status === 'empty') {
+        operations.transition(opLedger, op.operation_id, 'executed_empty', { count: 0, provider: bagSource, q: topic, cache_hit: fetched.reason === 'cache_hit' });
+      } else if (fetched.status === 'error') {
+        const cls = (fetched.envelope && typeof fetched.envelope.failure_class === 'string' && fetched.envelope.failure_class) ? fetched.envelope.failure_class : 'unknown_error';
+        operations.transition(opLedger, op.operation_id, 'not_executed', { reason: 'provider_failed:' + cls, provider: bagSource });
+      } else {
+        operations.transition(opLedger, op.operation_id, 'not_executed', { reason: 'unknown_lens' });
+      }
+      if (fallback) operations.recordFallback(opLedger, op.operation_id, fallback);
+    }
     const items = fetched.items;
     fetchedByLens[lens] = {
-      source,
+      source: bagSource,
       items,
       status: fetched.status,
       reason: fetched.reason,
       freshness: fetched.freshness,
+      operation: op || null,
+      fallback: fallback,
+      needs: needs,
       // Phase 221-02: the full typed stage envelope rides the bag additively
       // (one bag, two views: the 219 summary fields above stay for their
       // consumers; the envelope feeds the recovery dispatcher).
@@ -511,9 +730,11 @@ async function runSourceLens(opts) {
       : '';
     return {
       topic,
-      summary: source
-        ? (source + ': ' + items.length + ' item(s)' + (lead ? ' -- lead: ' + lead : ''))
-        : (lens + ': no 130.5 source mapped'),
+      summary: fetched.status === 'refused'
+        ? (lens + ': ' + fetched.reason + ' (nothing was searched)')
+        : (source
+          ? (bagSource + ': ' + items.length + ' item(s)' + (lead ? ' -- lead: ' + lead : ''))
+          : (lens + ': no 130.5 source mapped')),
       item_count: items.length,
     };
   }
@@ -522,19 +743,24 @@ async function runSourceLens(opts) {
   // the weighted-by-context mode. room.db is reached ONLY through the engine ->
   // navigation.cjs; the driver opens no db handle of its own.
   let rotation;
-  try {
-    rotation = await lensEngine.rotate({
-      lensType: 'source',
-      lensSet: lensNames,
-      rotationMode: 'weighted-by-context',
-      input: { roomDir, topic, db, sessionId },
-      perLensFn,
-      synthesize: 'source-comparison',
-      surfaceSelector: 'F.1',
-      persistence: 'memory_event',
-    });
-  } catch (_e) {
-    rotation = { ok: false, reason: 'rotation_threw' };
+  if (rotationNames.length === 0) {
+    // Every lens was refused before dispatch: there is nothing to rotate over.
+    rotation = { ok: true, skipped: 'no_available_lens' };
+  } else {
+    try {
+      rotation = await lensEngine.rotate({
+        lensType: 'source',
+        lensSet: rotationNames,
+        rotationMode: 'weighted-by-context',
+        input: { roomDir, topic, db, sessionId },
+        perLensFn,
+        synthesize: 'source-comparison',
+        surfaceSelector: 'F.1',
+        persistence: 'memory_event',
+      });
+    } catch (_e) {
+      rotation = { ok: false, reason: 'rotation_threw' };
+    }
   }
   // A rotation-level failure is non-fatal for the findings path: we still rank
   // whatever the perLensFn fetched. (The engine emits its own lifecycle events.)
@@ -572,6 +798,9 @@ async function runSourceLens(opts) {
         reason: bag.reason,
         counts: { items: Array.isArray(bag.items) ? bag.items.length : 0 },
         freshness: bag.freshness,
+        operation: bag.operation || null,
+        fallback: bag.fallback || null,
+        needs: bag.needs || null,
       });
       if (bag.envelope) stageEnvelopes.push(bag.envelope);
     } else {
@@ -582,9 +811,14 @@ async function runSourceLens(opts) {
         reason: 'rotation_never_reached_lens',
         counts: { items: 0 },
         freshness: 'unknown',
+        operation: opByLens[lens] || null,
+        fallback: null,
+        needs: null,
       });
     }
   }
+  // A leg the rotation never reached is closed as not executed, never left planned.
+  operations.sweep(opLedger, 'run_aborted');
   // A rotation-level fault stays non-fatal (the ranked-continue-after-partial
   // resilience) but is now OBSERVABLE as its own orchestration-stage envelope.
   if (!(rotation && rotation.ok) && rotation && rotation.reason === 'rotation_threw') {
@@ -712,6 +946,22 @@ async function runSourceLens(opts) {
     // recovery dispatcher's input). 219 consumers keep every field they read.
     stage_envelopes: stageEnvelopes,
   };
+  // Phase 369.2 Plan 25 (CODE-02): when a lens was refused for want of a provider, the result names which
+  // lenses really searched and which were unavailable (with the gate they need). The two keys ride ONLY on a
+  // run that refused a lens, so a healthy run keeps its pre-221 shape (the 221 M4 pin); lensSummary(result)
+  // derives the same two lists for any result.
+  const lensSum = lensSummary(result);
+  if (lensSum.unavailable_lenses.length > 0) {
+    result.searched_lenses = lensSum.searched_lenses;
+    result.unavailable_lenses = lensSum.unavailable_lenses;
+  }
+  // Phase 369.2 Plan 26: the preflight and the one sentence naming what could not be searched ride only on a
+  // run that had an unavailable lens (the healthy-run shape stays byte-identical); lens_set is the narrowed set.
+  if (pre.unavailable.length > 0) {
+    result.lens_set = liveLensSet;
+    result.preflight = { available: pre.available, unavailable: pre.unavailable };
+    result.answer_line = unavailableAnswerLine(pre.unavailable);
+  }
   // Phase 221-02 additive: the raw dispatch result rides alongside. Absent on
   // action 'none' (the byte-behavior guarantee).
   if (recovery) {
@@ -749,6 +999,10 @@ module.exports = {
   // provenance is 'research-cache' on a hit, 'live' on a live fetch; meta is
   // {count, cost_usd, remaining_usd, limit_usd, x_query} or null.
   fetchSourceCached,
+  lensSummary,
+  // Phase 369.2 Plan 26 (HARNESS-03): the provider preflight and its plain-English sentence.
+  preflightLenses,
+  unavailableAnswerLine,
   // D-19 (Phase 219-05): the provider-status envelope seam. The explore chain
   // (explore-chain.cjs / research-filing.cjs queryRoomCorpus) composes onto
   // THIS vocabulary + composition rule -- one research_mode source of truth.
