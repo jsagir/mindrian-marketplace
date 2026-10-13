@@ -13,7 +13,7 @@ const matter = require('gray-matter');
 const { scanRoom, renderPage, buildPageIndex, SECTION_COLORS, isPrivateRoomPath } = require('./page-renderer.cjs');
 const { wrapInLayout, renderInfobox, renderSidebar, renderBacklinks, renderSeeAlso, renderGraphLinks } = require('./wiki-layout.cjs');
 const { getPageLinks, getBacklinks, getSeeAlso, getGraphData, EDGE_DISPLAY } = require('./graph-links.cjs');
-const { buildSearchIndex, search, rebuildIndex } = require('./wiki-search.cjs');
+const roomSearch = require('../core/room-search.cjs');
 const { buildPageContext, handleChatMessage } = require('./wiki-chat.cjs');
 const { startWatcher, addSSEClient } = require('./wiki-watcher.cjs');
 const { getRoomHomeData, renderRoomHomeBody } = require('./room-home.cjs');
@@ -39,14 +39,19 @@ function startWikiServer(roomDir, port) {
   let roomData = scanRoom(absRoom);
   let pageIndex = buildPageIndex(roomData.pages);
 
-  // Build search index from initial scan
-  buildSearchIndex(roomData.pages);
+  if (roomData.scanWarnings && roomData.scanWarnings.length > 0) {
+    const first = roomData.scanWarnings.slice(0, 3).map((w) => w.path).join(', ');
+    console.warn(`[wiki] ${roomData.scanWarnings.length} file(s) scanned with a warning (first: ${first})`);
+  }
 
   // ── Helper: rebuild room index ──
+  // Rescans the room and rebuilds the wikilink index. There is no search
+  // index: /api/search walks the room per query through lib/core/room-search.cjs
+  // (quick 261012-u58), the same engine as the room_search MCP tool, limited
+  // to the pages this scan found.
   function rebuild() {
     roomData = scanRoom(absRoom);
     pageIndex = buildPageIndex(roomData.pages);
-    rebuildIndex(roomData.pages);
   }
 
   // JSON body parsing for chat endpoint
@@ -128,11 +133,13 @@ function startWikiServer(roomDir, port) {
   });
 
   // ── Route: API - Search ──
+  // One lexical door (quick 261012-u58): the room_search engine over the
+  // scanned pages. The body is { tier, results, scanned, walkable, truncated }
+  // plus reason_code and reason when results is empty. It never echoes the
+  // query (test-visible-room-leak checks the body for private sentinels).
   app.get('/api/search', (req, res) => {
-    const q = req.query.q || '';
-    const limit = parseInt(req.query.limit || '20', 10);
-    const results = search(q, limit);
-    res.json(results);
+    const out = searchWikiPages(absRoom, roomData.pages, { q: req.query.q, section: req.query.section, limit: req.query.limit });
+    res.status(out.status).json(out.body);
   });
 
   // ── Route: API - Larry's Briefing (D-06, SPEC Req 4) ──
@@ -184,8 +191,10 @@ function startWikiServer(roomDir, port) {
 
   // ── Route: Server-rendered search page (no-JS fallback) ──
   app.get('/wiki/search', (req, res) => {
-    const q = req.query.q || '';
-    const results = q ? search(q, 50) : [];
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const out = q.trim() ? searchWikiPages(absRoom, roomData.pages, { q, section: req.query.section, limit: 50 }) : null;
+    const results = out && out.status === 200 ? out.body.results : [];
+    const emptyText = out && out.status === 200 && out.body.reason ? out.body.reason : (out && out.status !== 200 ? 'That search could not run.' : 'No results found.');
 
     const resultItems = results.map(r =>
       `<div class="section-card">
@@ -201,7 +210,7 @@ function startWikiServer(roomDir, port) {
         <input type="search" name="q" value="${escHtml(q)}" placeholder="Search room..." style="width:100%;padding:8px 12px;background:var(--surface);color:var(--text);border:1px solid var(--border);font-family:Inter,sans-serif;font-size:15px">
       </form>
       ${q ? `<p style="color:var(--text-muted);margin-bottom:16px">${results.length} result${results.length !== 1 ? 's' : ''} for "${escHtml(q)}"</p>` : ''}
-      ${resultItems || (q ? '<p style="color:var(--text-muted)">No results found.</p>' : '')}
+      ${resultItems || (q ? '<p style="color:var(--text-muted)">' + escHtml(emptyText) + '</p>' : '')}
     `;
 
     const sidebar = renderSidebar(roomData.sections, null);
@@ -440,8 +449,8 @@ function startWikiServer(roomDir, port) {
   });
 
   // ── Route: API - Backlinks (JSON) ──
-  app.get('/api/backlinks/:section/:page', async (req, res) => {
-    const artifactId = `${req.params.section}/${req.params.page}`;
+  app.get('/api/backlinks/:section/*rest', async (req, res) => {
+    const artifactId = pageIdFromParams(req.params);
     const backlinks = await getBacklinks(absRoom, artifactId);
     res.json(backlinks);
   });
@@ -449,8 +458,8 @@ function startWikiServer(roomDir, port) {
   // ── Route: API - Raw article markdown (editor load) ──
   // Returns the frontmatter-STRIPPED body only (the editor edits the body, never
   // the frontmatter). pageId selects a Map key; nothing here touches the FS.
-  app.get('/api/raw/:section/:page', (req, res) => {
-    const pageId = `${req.params.section}/${req.params.page}`;
+  app.get('/api/raw/:section/*rest', (req, res) => {
+    const pageId = pageIdFromParams(req.params);
     const page = roomData.pages.get(pageId);
     if (!page) return res.status(404).json({ error: `Page "${pageId}" not found` });
     res.json({ id: pageId, title: page.title, markdown: page.content });
@@ -463,8 +472,8 @@ function startWikiServer(roomDir, port) {
   // index ONLY. Request params never enter a filesystem path -- they select a Map
   // key, and a missing key is a 404. Frontmatter is preserved by re-reading the
   // source and restringifying the new body under the existing data block.
-  app.post('/api/save/:section/:page', (req, res) => {
-    const pageId = `${req.params.section}/${req.params.page}`;
+  app.post('/api/save/:section/*rest', (req, res) => {
+    const pageId = pageIdFromParams(req.params);
     const page = roomData.pages.get(pageId);
     if (!page) return res.status(404).json({ error: `Page "${pageId}" not found` });
 
@@ -530,9 +539,9 @@ function startWikiServer(roomDir, port) {
   });
 
   // ── Route: Artifact Page ──
-  app.get('/wiki/:section/:page', async (req, res) => {
+  app.get('/wiki/:section/*rest', async (req, res) => {
     rebuild();
-    const pageId = `${req.params.section}/${req.params.page}`;
+    const pageId = pageIdFromParams(req.params);
     const page = roomData.pages.get(pageId);
 
     if (!page) {
@@ -723,6 +732,95 @@ function startWikiServer(roomDir, port) {
 }
 
 /**
+ * Join the :section param and the *rest wildcard of a page route into a page
+ * id. A nested id (research/name/name) has 3 or more segments. The id only
+ * selects a key of the scanned pages Map; it never reaches a file path.
+ * @param {{section: string, rest: string|string[]}} params
+ * @returns {string}
+ */
+function pageIdFromParams(params) {
+  const rest = Array.isArray(params.rest) ? params.rest.join('/') : String(params.rest);
+  return `${params.section}/${rest}`;
+}
+
+/**
+ * Page id of a room-relative file path: forward slashes, no .md (the id
+ * scanRoom gives the page). A root file keeps its basename.
+ */
+function toPageId(rel) {
+  return rel.split(path.sep).join('/').replace(/\.md$/, '');
+}
+
+// Excerpt window around the first match (the old index used 150 characters).
+const EXCERPT_WINDOW = 160;
+const EXCERPT_LEAD = 60;
+
+function termRegExp(terms, wholeWords) {
+  const list = (terms || []).filter((t) => typeof t === 'string' && t.length > 0)
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (list.length === 0) return null;
+  const body = '(?:' + list.join('|') + ')';
+  return new RegExp(wholeWords ? '(?<![\\p{L}\\p{N}])' + body + '(?![\\p{L}\\p{N}])' : body, 'giu');
+}
+
+function excerptFor(row, page, terms, wholeWords) {
+  let text = String(row.snippet);
+  if (text.length >= 200) {
+    try {
+      const full = fs.readFileSync(page.path, 'utf8').split(/\r?\n/)[row.line - 1];
+      if (typeof full === 'string') text = full.trim();
+    } catch (_e) { /* keep the snippet */ }
+  }
+  text = text.replace(/[\u0000\u0001]/g, '');
+  const re = termRegExp(terms, wholeWords);
+  let start = 0;
+  if (re) {
+    const m = re.exec(text);
+    re.lastIndex = 0;
+    if (m) start = Math.max(0, m.index - EXCERPT_LEAD);
+  }
+  const end = Math.min(text.length, start + EXCERPT_WINDOW);
+  const windowText = text.slice(start, end);
+  const marked = re ? windowText.replace(re, '\u0000$&\u0001') : windowText;
+  const html = escHtml(marked).replace(/\u0000/g, '<mark>').replace(/\u0001/g, '</mark>');
+  return (start > 0 ? '...' : '') + html + (end < text.length ? '...' : '');
+}
+
+function searchWikiPages(absRoom, pages, params) {
+  const q = typeof params.q === 'string' ? params.q.trim() : '';
+  if (q.length > 500) return { status: 400, body: { error: 'query_too_long' } };
+  let section = params.section;
+  if (section === undefined || section === '') section = null;
+  if (section !== null && (typeof section !== 'string' || !roomSearch.SECTION_RE.test(section))) {
+    return { status: 400, body: { error: 'invalid_section' } };
+  }
+  const n = parseInt(params.limit, 10);
+  const limit = Number.isInteger(n) && n >= 1 ? Math.min(n, 50) : 20;
+  if (!q) return { status: 200, body: { tier: 'none', results: [], scanned: 0, walkable: 0, truncated: false } };
+  let found;
+  try {
+    found = roomSearch.searchRoomDetailed(absRoom, q, section, { includeFile: (rel) => pages.has(toPageId(rel)), maxPerFile: 1 });
+  } catch (_e) {
+    return { status: 400, body: { error: 'invalid_section' } };
+  }
+  const terms = found.tier === 'phrase' ? [q] : found.words;
+  const results = [];
+  const seen = new Set();
+  for (const row of found.results) {
+    if (results.length >= limit) break;
+    const id = toPageId(row.file);
+    const page = pages.get(id);
+    if (!page || seen.has(id)) continue;
+    seen.add(id);
+    results.push({ id, title: page.title, section: page.section, line: row.line, excerpt: excerptFor(row, page, terms, found.tier !== 'phrase') });
+  }
+  const body = { tier: found.tier, results, scanned: found.scanned, walkable: found.walkable, truncated: found.truncated };
+  if (found.results.length === 0) { body.reason_code = found.reason_code; body.reason = found.reason; }
+  return { status: 200, body };
+}
+
+/**
  * Render a De Stijl 404 page.
  */
 function render404(res, roomData, message) {
@@ -778,4 +876,4 @@ if (require.main === module) {
   startWikiServer(roomDir, port);
 }
 
-module.exports = { startWikiServer };
+module.exports = { startWikiServer, _internal: { searchWikiPages, excerptFor, toPageId } };
