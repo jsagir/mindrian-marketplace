@@ -57,8 +57,11 @@ const { resolveSessionRoomDir, resolveMcpWriteRoom, resolveMcpSessionRoom } = re
 const goalGate = require('../../core/strategy/goal-gate.cjs');
 const answerRoute = require('../answer-route.cjs');
 
+const gateApp = require('../gate-app.cjs');
+const startupOperations = require('../startup-operations.cjs');
+
 function textResponse(payload, isError) {
-  const result = { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+  const result = { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
   if (isError) result.isError = true;
   return result;
 }
@@ -476,6 +479,11 @@ function _onGateMinted(gateId, entry) {
   // 369.25 plan 13: the room-recovery card is minted for a room that cannot yet hold a record (room.db missing or
   // damaged), so recording it there would create the very file the card offers to recover. It leaves no record.
   if (entry.recovery === true) return;
+  // Quick 261019-ksf (2026-10-19, 371 review CR-01): a room-creation card belongs to the room that does not
+  // exist yet, so it leaves no record in the session's bound room (Canon Part 9 locality). Without this skip a
+  // navigator bound to room A who creates room B got B's name and purpose written into A's room.db. The take
+  // then closes nothing, because raisedRoomDir is never set.
+  if (entry.roomCreation === true) return;
   const roomDir = _roomForMintedGate(entry);
   if (!roomDir) return;
   const recorded = gateRaised.recordRaised(roomDir, gateId, entry);
@@ -1208,6 +1216,7 @@ function _gateIdAnsweredInRoom(sessionId, ctx, gateId) {
 }
 
 function register(server, ctx) {
+  gateApp.registerGateApp(server);
   server.registerTool(
     'gate_list',
     {
@@ -1270,6 +1279,7 @@ function register(server, ctx) {
     'gate_render',
     {
       title: 'Gate Render',
+      _meta: gateApp.TOOL_META,
       description: 'Render the Mindrian gate superset card (options + per-option descriptions + ranks + previews + single/multi-select) via the capability-detected 3-rung renderer ladder: MCP elicitation, Claude Code AskUserQuestion thin adapter, or headless structured text. Returns a gate_id minted into this server process\'s in-memory ledger, which gate_answer must reference to ratify; when this session is bound to a room, the card\'s contract (header, options, ranks, previews, recommended id, subject ids, never a session identity) is recorded in that room so other MindrianOS surfaces can show the gate, but the id itself lives in this server process\'s ledger and does not survive a restart. To decide a gate raised in another session of this room (find it with gate_list), give mirror_of with that gate\'s id and repeat its option ids in order: the card is drawn from the room\'s own record, never from the caller, and this session gets its own gate_id for it. Do not also give gate_id (mirror_with_gate_id); different option ids are mirror_mismatch; an unknown or closed gate, or another room\'s, is unknown_gate; an expired one gate_expired; an answered one mirror_source_answered with its verdict. Answering the mirror with gate_answer records the source as answered in the same transaction. A mirror is never an inline elicitation and leaves no record of its own. Give approving (option ids that mean yes) and gate_answer refuses an approve that names none of them; an id that is not an option is bad_approving. A caller-chosen gate_id that is open is gate_id_in_use and one already answered in the room is gate_id_answered; one session may hold 200 open gates, past that too_many_open_gates.',
       inputSchema: z.object({
         gate_id: z.string().min(1).optional(),
@@ -1407,6 +1417,8 @@ function register(server, ctx) {
         gate_id: result.card.gate_id,
         renderer: result.renderer,
         rendered: result.rendered,
+        card: result.card,
+        approving: mintExtra.approving || null,
       };
       if (mirrorExtra) response.mirror_of = mirror_of;
       // Elicitation completes its round trip INLINE (server.server.elicitInput
@@ -1426,6 +1438,7 @@ function register(server, ctx) {
     'gate_answer',
     {
       title: 'Gate Answer',
+      _meta: gateApp.TOOL_META,
       description: 'Ratify a gate decision. Accepts { gate_id, chosen, verdict }; only ratifies a gate_id THIS server process minted for this session through the shared ledger, including a chain_run halt or a gate_render mirror_of card. chosen must be an option id or label of the minted card, else chosen_not_in_card_options before any write. An approve routes the write through lib/core/navigation.cjs (Part 9) and writes a typed decision node with SOURCED_FROM edges to the card\'s subject/evidence ids (plus USES_FRAMEWORK for a chain halt with a framework), promoted via navigation.confirmNode. For a chain_run halt at a material step, gate_answer is ALSO the verb that resumes the chain: an approve runs the halted step in this SAME call, result under chain_result (with the next gate_id if it halts again). The whole answer is saved in ONE transaction and the gate is released only after it commits: if saving fails the answer is refused with persistence_failed, nothing is saved, and the gate can be answered again. Answering a mirror also records its source gate as answered in that same transaction. A gate already answered returns ok with replayed true plus the recorded verdict, chosen and decision_node_id, even after a restart or after its 30 minutes ran out; if another session answered it first (through a mirror) it also says answered_elsewhere true, writes nothing, and a halted step resumes exactly once with the recorded answer. Refused with the gate left open: room_switched (bound to another room than the card\'s), stale_subject (an approve whose subject or evidence changed since the card was drawn; ask for a fresh card), session_mismatch, chosen_not_approving and verdict_chosen_mismatch. If the room cannot be read to look for a saved answer the reply is replay_lookup_failed (nothing written, try again). Refused with nothing to answer: gate_expired (30 minutes passed, no saved answer) and unknown_gate. A chain_run call threaded with the same answer afterward is refused with unknown_or_expired_gate and nothing re-runs.',
       inputSchema: z.object({
         gate_id: z.string().min(1),
@@ -1530,6 +1543,14 @@ function register(server, ctx) {
       // AskUserQuestion rung's own _resolveChosenIds -> normalizeGateAnswer
       // call shape in gate-render.cjs.
       const answer = Object.assign({}, gateRender.normalizeGateAnswer(gate_id, validChosen, verdict), { answered_via: answeredVia });
+
+      // A first room has no bound room to ratify into. Validation above still owns
+      // session, expiry, chosen ids and verdict. Birth persists its approval inside
+      // the newborn room transaction, then the SAME ledger entry is released.
+      if (live.roomCreation === true && live.kind === 'material_step') {
+        const result = startupOperations.answerRoomCreation(live, answer, sessionId);
+        return textResponse(result, result.ok === false);
+      }
 
       // 369.25 plan 13: the room-recovery card is answered before any room write (see _answerRecoveryGate).
       if (live.recovery === true && live.kind === 'material_step') {

@@ -7,20 +7,20 @@
     {
       "role": "posture",
       "path": "data/command-registry.json",
-      "digest": "449ca3ae48ce54b175966a7ce283b332b808b7c8b27008b36edf64e385fecc86",
-      "source_count": 113
+      "digest": "cd01e5ce507dd85f2af3af6c0295db919ed83c6e2c62ef360110bfb81ab45690",
+      "source_count": 112
     },
     {
       "role": "wiring",
       "path": "data/connector-registry.json",
-      "digest": "de99ae2e94b8e67db7e6a1f9d31dc68250cab6eacc2bd1464dae739e18cf0591",
-      "source_count": 219
+      "digest": "5a4a28b2a70ac839ef2c2f6662afd9abef006055039d72c745c51fab242f8f94",
+      "source_count": 221
     },
     {
       "role": "ranked_next_reach",
       "path": "data/brain-orchestration-projection.json",
-      "digest": "472ffc4b82e5e75cec145a4c3ee6581dd92776dc6a55e077d5ef938dee1b7863",
-      "source_count": 390
+      "digest": "4349c105725f313b2406b419406d6d02cf8907222fe90ee795a8a4a5ed9f3d28",
+      "source_count": 388
     }
   ],
   "runtime_surfaces": [
@@ -47,7 +47,7 @@
   ],
   "policies": {
     "path": "data/harness-policies",
-    "digest": "79922684efdf5011b1b4a4eb7300abe64dc342f082599f2fb300ec37928dd9f5",
+    "digest": "a1261ad06072bc66e4be288a646782f4af78fa8e2f3feba25eae2f713edfd105",
     "count": 15
   },
   "larry_surfaces": [
@@ -64,7 +64,7 @@
     {
       "role": "desktop_cowork_wire",
       "path": "lib/mcp/runtime-instructions.cjs",
-      "digest": "d24f1bddf6954e29dc5f1d9983677b0415562e2ca71be270d5fa6673a8aa9403"
+      "digest": "e625182db40dc5d94754501180b47d152330c70436440e1d54872b1c9663d62e"
     }
   ],
   "fixture_ref": {

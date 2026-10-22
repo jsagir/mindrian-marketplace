@@ -123,6 +123,10 @@ module.exports = {
 
   // Room Home (Plan 109-09 LIVE - 13th and LAST live export; navigation.cjs surface COMPLETE).
   getRoomHomeView: roomHome.getRoomHomeView,
+  // Startup bookkeeping is local memory, with no new store or database opener.
+  startRoomWorkday: (...args) => require('./navigation/room-workday.cjs').startRoomWorkday(...args),
+  // The one next-move gate id formula, shared by the briefing and the card minter (quick 261019-ksf, WR-02).
+  workdayGateId: (...args) => require('./navigation/room-workday.cjs').workdayGateId(...args),
 
   // Truth-state chokepoint (Plan 109-04 LIVE).
   promoteNodeStatus: transitions.promoteNodeStatus,

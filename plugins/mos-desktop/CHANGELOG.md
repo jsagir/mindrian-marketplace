@@ -1,3 +1,17 @@
+## [2.0.0-beta.73] - 2026-10-22
+
+### Changed
+- The placeholder moved from beta.70 to beta.72 without a cut, so beta.71 was never released: Theo's command-layer seam for beta.70 was spent (applied against the bytes at 79f5a64c8, then the connector registry moved with `room_create` and `room_startup` at ec3d56380) and a same-version re-sync needs a Theo phase; the navigator ruled the bump (2026-10-19). The entries below ship in beta.73.
+
+### Removed
+- **`/mos:pws-brain` is retired.** It was a test harness that compared two Brain backends, and both were replaced on 2026-07-22, so it measured nothing current. Theo is the Brain. Typing `/mos:pws-brain` now gets the same reply as any command that does not exist (quick 261019-btm).
+
+### Added
+- 
+
+### Fixed
+- **Larry on Claude Desktop and Cowork now follows the real route to the Brain.** The Brain connector skill told Larry to call the tools of `pws-brain-mcp`, a Brain server that is retired. It now says that Larry reaches Theo through the plugin's `mindrian-brain` server, which forwards each call to `https://theo-mcp.onrender.com`, and it keeps the rule for adding a framework that the graph does not hold yet to the enrichment queue. A new release test fails the cut when a file that Larry reads names `pws-brain-mcp`, Memgraph or `mindrian-brain.onrender.com` as the Brain (quick 261019-btm).
+
 ## [2.0.0-beta.69] - 2026-10-14
 
 ### Added

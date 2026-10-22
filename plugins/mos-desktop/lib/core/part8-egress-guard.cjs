@@ -620,9 +620,10 @@ function _proveKnownToolShape(payload, toolName) {
 // before classify() is ever invoked, and _isKnownFrameworkHandle is a
 // function DECLARATION, which hoists -- so the arms above may call it despite
 // its later textual position.
+// 2026-10-19 (quick 261019-gct): Theo Phase 42/45 widened the pattern with phase42:: and export13- ids and a 160-char cap; PROCESS_STEP_ID_RE re-synced.
 // ---------------------------------------------------------------------------
 const FRAMEWORK_NAME_RE = /^[A-Za-z0-9 '(),.\/-]{1,128}$/;
-const PROCESS_STEP_ID_RE = /^[a-z0-9]{1,64}::[a-z0-9]{1,64}(?:-[a-z0-9]{1,64}){0,8}::(?:s\d{2}(?:::p\d{2})?|p\d{2}|t\d{2})$/;
+const PROCESS_STEP_ID_RE = /^(?=.{1,160}$)(?:[a-z0-9]{1,64}::[a-z0-9]{1,64}(?:-[a-z0-9]{1,64}){0,8}::(?:s\d{2}(?:::p\d{2})?|p\d{2}|t\d{2})|phase42::(?:framework|command)::[a-z0-9]{1,64}(?:-[a-z0-9]{1,64}){0,15}::[a-z0-9]{1,64}(?:-[a-z0-9]{1,64}){0,15}|export13-[0-9a-f]{16})$/;
 
 function _isKnownFrameworkHandle(v) {
   if (!_isSafeShortLabel(v)) return false;
@@ -907,10 +908,26 @@ try {
 
 // A TitleCase word within two tokens of one of these is a methodology name
 // (Minto Pyramid, Lean Canvas, Kano Model), not a venture name.
+// The words interview, check and whys are NOT in this set: see
+// TITLECASE_TOOL_HEAD_NOUNS below.
 const METHODOLOGY_HEAD_NOUNS = Object.freeze(new Set([
   'framework', 'frameworks', 'method', 'methods', 'model', 'models',
   'principle', 'principles', 'pyramid', 'matrix', 'analysis', 'canvas',
   'theory', 'theories',
+]));
+
+// 2026-10-18 the navigator added these nouns (option B, debug session
+// part8-egress-guard-name-class-blocks-unknown-tool-names) so a tool Theo does
+// not know yet (Problem Interview, Opportunity Fitness Check, Five Whys) is not
+// read as a person name. Quick 261019-91i narrowed them (SEED-130). A noun
+// counts only when it is TitleCase and directly follows an adjacent TitleCase
+// word. It exempts only that TitleCase sequence up to and including the noun.
+// It never counts in lowercase, before a name, after a function-word bridge, or
+// in the 2-token window. Residual: a person name directly before a TitleCase
+// noun has the shape of a tool name and still passes ("Marrowby Pell
+// Interview"). SEED-130 direction 3 closes that residual.
+const TITLECASE_TOOL_HEAD_NOUNS = Object.freeze(new Set([
+  'interview', 'check', 'whys',
 ]));
 
 // Generic single-word technique handles the plugin's own methodology questions
@@ -1018,6 +1035,17 @@ function _hasUnknownProperName(str, isCypher) {
     if (lo - 1 >= 0 && adjacent(words[lo - 1], words[lo]) && METHODOLOGY_HEAD_NOUNS.has(words[lo - 1].lc)) runIsMethodology = true;
     if (hi + 1 < words.length && adjacent(words[hi], words[hi + 1]) && METHODOLOGY_HEAD_NOUNS.has(words[hi + 1].lc)) runIsMethodology = true;
     if (runIsMethodology) continue;
+    // SEED-130 (quick 261019-91i): a new tool noun exempts only the TitleCase
+    // words directly before it, plus itself, and only when it is TitleCase.
+    let toolHead = false;
+    for (let n = j; n < words.length; n++) {
+      if (n > j && (!adjacent(words[n - 1], words[n]) || !isTitle(words[n]))) break;
+      if (TITLECASE_TOOL_HEAD_NOUNS.has(words[n].lc) && isTitle(words[n])) {
+        toolHead = n > j || (j - 1 >= 0 && adjacent(words[j - 1], words[j]) && isTitle(words[j - 1]));
+        break;
+      }
+    }
+    if (toolHead) continue;
     return true;
   }
   return false;

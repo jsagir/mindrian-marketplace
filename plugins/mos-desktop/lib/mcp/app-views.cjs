@@ -28,6 +28,8 @@ const { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } = require('@m
 // Phase 354-05 realpath helper and the shared rooms-home resolver.
 const { isRealpathContained } = require('../core/room-path-containment.cjs');
 const { listRoomRoots } = require('../core/icm-forest.cjs');
+const { resolveEffectiveSessionId } = require('../core/session-binding.cjs');
+const { resolveMcpSessionRoom, describeRoomBinding } = require('./session-room.cjs');
 const { identityHeader, IDENTITY_CSS } = require('./theo-faces.cjs');
 
 // -- HTML template loader --
@@ -40,8 +42,10 @@ function loadTemplate(filename) {
     const html = fs.readFileSync(filePath, 'utf-8');
     const faceScript = fs.readFileSync(path.join(__dirname, 'theo-faces.cjs'), 'utf-8');
     const identityScript = fs.readFileSync(path.join(__dirname, 'app-identity.js'), 'utf-8');
-    return html.replace('</head>', '<style>' + IDENTITY_CSS + '</style></head>')
-      .replace('<body>', '<body>' + identityHeader() + '<script>' + faceScript + '</script><script>' + identityScript + '</script>');
+    const canonicalCss = filename === 'decision.html' ? fs.readFileSync(
+      path.join(__dirname, '../../skills/ui-system/design-system/mos-design-system.css'), 'utf-8') : '';
+    return html.replace('</head>', '<style>' + canonicalCss + '\n' + IDENTITY_CSS + (filename === 'rooms.html' ? require('./room-assets.cjs').startupStyles() : '') + '</style></head>')
+      .replace(/<body\b[^>]*>/, body => body + identityHeader() + '<script>' + faceScript + '</script><script>' + identityScript + '</script>');
   } catch (err) {
     return `<html><body><p>Template not found: ${filename}</p></body></html>`;
   }
@@ -302,21 +306,36 @@ function refusalResult(reason) {
  * @param {import('@modelcontextprotocol/server').McpServer} server
  * @param {string} roomDir
  */
+// Read the same room the current MCP connection bound. Explicit contained-path
+// views are still allowed, but never represented as changing that binding.
+function resolveAppRequest(args, extra, fallbackRoomDir) {
+  const sessionId = resolveEffectiveSessionId(undefined, extra);
+  const resolution = resolveMcpSessionRoom({ sessionId, ctx: { fallbackRoomDir } });
+  const explicit = typeof args?.room_path === 'string' && args.room_path.trim().length > 0;
+  const resolved = resolveAppRoomDir(explicit ? args.room_path : undefined, resolution.dir);
+  if (resolved.refused) return resolved;
+  return { dir: resolved.dir, binding: explicit
+    ? { bound: false, source: 'explicit_view', slug: path.basename(resolved.dir), note: 'This explicit view does not change the session room binding.' }
+    : describeRoomBinding(resolution) };
+}
+
 function registerAppViews(server, roomDir) {
   // -- 1. Dashboard --
   const dashboardUri = 'ui://mindrian-os/room-dashboard';
 
   registerAppTool(server, 'room-dashboard', {
     title: 'Data Room Dashboard',
-    description: 'De Stijl Mondrian grid dashboard showing room sections, entry counts, stage, and health overview. Read-only. Rendered inline in Desktop/Cowork.',
+    description: 'Open the MindrianOS workspace UI to inspect the Data Room and request grounded command proposals or generic Theo methodology guidance. Read-only; UI requests continue in the host conversation. Compatible MCP Apps hosts render it inline.',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     inputSchema: z.object({
       room_path: z.string().optional().describe('Path to room directory (uses server default if omitted)')
     }),
     _meta: { ui: { resourceUri: dashboardUri } }
-  }, async (args) => {
-    const resolvedRoom = resolveAppRoomDir(args && args.room_path, roomDir);
+  }, async (args, extra) => {
+    const resolvedRoom = resolveAppRequest(args, extra, roomDir);
     if (resolvedRoom.refused) return refusalResult(resolvedRoom.refused);
     const data = scanRoomData(resolvedRoom.dir);
+    data.room_binding = resolvedRoom.binding;
     return {
       content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data
     };
@@ -340,10 +359,11 @@ function registerAppViews(server, roomDir) {
       section: z.string().optional().describe('Jump to a specific section')
     }),
     _meta: { ui: { resourceUri: wikiUri } }
-  }, async (args) => {
-    const resolvedRoom = resolveAppRoomDir(args && args.room_path, roomDir);
+  }, async (args, extra) => {
+    const resolvedRoom = resolveAppRequest(args, extra, roomDir);
     if (resolvedRoom.refused) return refusalResult(resolvedRoom.refused);
     const data = scanRoomData(resolvedRoom.dir);
+    data.room_binding = resolvedRoom.binding;
     if (args.section) {
       data._activeSection = args.section;
     }
@@ -370,10 +390,11 @@ function registerAppViews(server, roomDir) {
       layout: z.enum(['cose', 'circle', 'grid', 'breadthfirst']).optional().describe('Graph layout algorithm')
     }),
     _meta: { ui: { resourceUri: graphUri } }
-  }, async (args) => {
-    const resolvedRoom = resolveAppRoomDir(args && args.room_path, roomDir);
+  }, async (args, extra) => {
+    const resolvedRoom = resolveAppRequest(args, extra, roomDir);
     if (resolvedRoom.refused) return refusalResult(resolvedRoom.refused);
     const data = scanRoomData(resolvedRoom.dir);
+    data.room_binding = resolvedRoom.binding;
     if (args.layout) {
       data._layout = args.layout;
     }
@@ -392,4 +413,4 @@ function registerAppViews(server, roomDir) {
   process.stderr.write(`[mindrian-os] MCP Apps registered: room-dashboard, room-wiki, room-graph\n`);
 }
 
-module.exports = { registerAppViews, scanRoomData };
+module.exports = { registerAppViews, scanRoomData, loadTemplate };
