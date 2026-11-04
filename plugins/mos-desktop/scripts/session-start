@@ -45,7 +45,7 @@ fi
 # ---------------------------------------------------------------------------
 # Node version preflight (added 2026-04-15 for v1.10.9, plan 85-01).
 #
-# MindrianOS v1.10.9+ requires Node >= 22.5.0 for node:sqlite. If the
+# MindrianOS v1.10.9+ requires Node >= 22.18.0 (the floor of package.json engines; the room scripts of Phase 381 refuse below it). If the
 # installed Node is older, print a friendly upgrade message and exit 0.
 # This is a SOFT fail: session-start is non-critical and must NEVER hard-
 # fail the Claude Code launch. The plugin continues with reduced
@@ -59,11 +59,11 @@ if [ -z "${SESSION_START_NODE_PREFLIGHT_SKIP:-}" ]; then
     NODE_OK=$(node -e "
       var v = (process.env.FORCE_NODE_VERSION || process.versions.node).split('.').map(Number);
       var major = v[0] || 0, minor = v[1] || 0;
-      process.stdout.write((major > 22 || (major === 22 && minor >= 5)) ? 'ok' : 'old');
+      process.stdout.write((major > 22 || (major === 22 && minor >= 18)) ? 'ok' : 'old');
     " 2>/dev/null || echo "ok")
     if [ "$NODE_OK" = "old" ]; then
       DETECTED="${FORCE_NODE_VERSION:-$NODE_VERSION_RAW}"
-      echo "MindrianOS v1.10.9+ requires Node >= 22.5.0. You are running Node ${DETECTED}. Please upgrade Node (nvm install 22, fnm install 22, or your package manager) and restart Claude Code. Plugin will continue with reduced functionality until Node is upgraded." >&2
+      echo "MindrianOS v1.10.9+ requires Node >= 22.18.0. You are running Node ${DETECTED}. Please upgrade Node (nvm install 22, fnm install 22, or your package manager) and restart Claude Code. Plugin will continue with reduced functionality until Node is upgraded." >&2
       exit 0
     fi
   fi
@@ -369,7 +369,7 @@ stable_prefix="[MindrianOS v${PLUGIN_VERSION}] You are Larry.
 ## Identity (STABLE)
 MindrianOS is a commercial Claude Code + Cowork plugin delivering PWS methodology as installable skills, commands, agents, and hooks. Users get Larry (AI teaching personality) plus a structured Data Room that passively captures insights and proactively surfaces gaps, contradictions, and convergence signals.
 
-Every active Larry conversational reply begins with exactly one existing De Stijl move glyph followed by the literal label Larry | MindrianOS. On the first active Larry reply in each conversation, say exactly: \"I’m Larry, MindrianOS’s PWS thinking partner, powered by Claude.\" Integrate it into the existing greeting and existing question once; replace a selected persona's redundant \"I'm Larry.\" clause, never add a greeting or question. Later replies retain the short label without repeating the introduction, including after compaction or reconnecting within the same conversation. Larry is the MindrianOS persona; Claude remains the model.
+Every active Larry conversational reply begins with exactly one existing De Stijl move glyph followed by the literal label Larry | MindrianOS. On the first active Larry reply in each conversation, say exactly: \"I’m Larry, MindrianOS’s PwS thinking partner, powered by Claude.\" Integrate it into the existing greeting and existing question once; replace a selected persona's redundant \"I'm Larry.\" clause, never add a greeting or question. Later replies retain the short label without repeating the introduction, including after compaction or reconnecting within the same conversation. Larry is the MindrianOS persona; Claude remains the model.
 This rule applies only to active Larry conversation, not native host replies, saved room artifacts, raw JSON, code blocks or protocol envelopes. A label never proves activation or replaces actual tool execution. Older command no-emoji instructions yield only to the single leading voice glyph."
 
 # =============================================================================
@@ -410,7 +410,7 @@ if [ -d "$ROOM_DIR" ]; then
 
   # Read context bridge file for budget-aware tiering
   CTX_PCT_RAW=""
-  BRIDGE_FILE="/tmp/mindrian-context-state"
+  BRIDGE_FILE="${TMPDIR:-/tmp}/mindrian-context-state"
   if [ -f "$BRIDGE_FILE" ]; then
     BRIDGE_AGE=$(( $(date +%s) - $(portable_stat_mtime "$BRIDGE_FILE") ))
     if [ "$BRIDGE_AGE" -lt 300 ]; then
@@ -438,8 +438,8 @@ if [ -d "$ROOM_DIR" ]; then
     minimal|balanced|rich) CONTEXT_TIER="${MINDRIAN_CONTEXT_TIER}" ;;
   esac
 
-  # Room exists -- compute state and build context
-  state_output=$("${SCRIPT_DIR}/compute-state" "$ROOM_DIR" 2>/dev/null || echo "Could not compute room state. Your room exists but state analysis failed. Try /mos:status to diagnose.")
+  # Room exists -- reuse STATE.md when nothing changed, else compute state (quick 261029-lx3, see scripts/session-start-state)
+  state_output=$(bash "${SCRIPT_DIR}/session-start-state" state "$ROOM_DIR" "$SCRIPT_DIR" 2>/dev/null || echo "Could not compute room state. Your room exists but state analysis failed. Try /mos:status to diagnose.")
 
   # Read USER.md if exists
   user_context=""
@@ -518,7 +518,7 @@ if [ -d "$ROOM_DIR" ]; then
     fi
   elif [ "$CONTEXT_TIER" = "rich" ]; then
     # ~5K tokens: full context with proactive analysis, learnings, and detailed nudges
-    proactive_output=$("${SCRIPT_DIR}/analyze-room" "$ROOM_DIR" 2>/dev/null || echo "")
+    proactive_output=$(bash "${SCRIPT_DIR}/session-start-state" analyze "$ROOM_DIR" "$SCRIPT_DIR" 2>/dev/null || echo "")
     ctx_mark room-state
     context="${context}\n\n--- DYNAMIC SESSION CONTEXT ---\n\n[Context Tier: rich | Archetype: ${USER_ARCHETYPE} | MCP Profile: ${MCP_PROFILE}]\n\n[Room State]\n${state_output}"
     if [ -n "$RETURNING_USER_HINT" ]; then
@@ -539,7 +539,7 @@ if [ -d "$ROOM_DIR" ]; then
     fi
   else
     # balanced (~2K tokens): state + user + brief proactive
-    proactive_output=$("${SCRIPT_DIR}/analyze-room" "$ROOM_DIR" 2>/dev/null || echo "")
+    proactive_output=$(bash "${SCRIPT_DIR}/session-start-state" analyze "$ROOM_DIR" "$SCRIPT_DIR" 2>/dev/null || echo "")
     ctx_mark room-state
     context="${context}\n\n--- DYNAMIC SESSION CONTEXT ---\n\n[Context Tier: balanced | Archetype: ${USER_ARCHETYPE} | MCP Profile: ${MCP_PROFILE}]\n\n[Room State]\n${state_output}"
     if [ -n "$RETURNING_USER_HINT" ]; then
@@ -1329,7 +1329,7 @@ walk_sealed_rooms() {
   # Run the walk + parse in a background subshell, write result to tempfile,
   # enforce a 500ms hard cap via a wait loop. Partial results are acceptable.
   local tmp
-  tmp=$(mktemp 2>/dev/null || echo "/tmp/mos-sealed-$$")
+  tmp=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/mos-sealed-$$")
   : > "$tmp"
 
   # Gate the GUARDRAIL parser on python3 availability. On Windows without
@@ -1826,7 +1826,7 @@ fi
 
 # Check for updates (async, non-blocking, max 3 second timeout)
 # Only check once per day - cache result
-UPDATE_CACHE="/tmp/mindrian-update-check"
+UPDATE_CACHE="${TMPDIR:-/tmp}/mindrian-update-check"
 TODAY=$(date -u +"%Y-%m-%d")
 SHOULD_CHECK=true
 
@@ -1888,7 +1888,7 @@ fi
 # Quick 261013-k1u (SEED-128 T23): one compact rule per long doctrine section moved to
 # references/personality/session-start-doctrine.md. The Pointers block names that file.
 SESSION_DOCTRINE_RULES="\n\n## SESSION DOCTRINE (binding; full text: see Pointers)\n\n1. UI: every /mos: command output follows the 4-zone anatomy of skills/ui-system/SKILL.md (header panel, content body, intelligence strip, and an action footer that is never omitted). Use only these glyphs: ■ ▼ ▶ ▷ ├─ └─ ✓ • ⚠ ⚡ ⬜ →. No decorative emoji beyond the one leading De Stijl voice glyph.\n2. Dashboards: a dashboard, a room export or a standalone HTML view comes only from scripts/generate-standalone or scripts/serve-dashboard. Never write HTML by hand.\n3. initialPrompt wins: the reply to initialPrompt is the greeting. The room state in this context is awareness, not a list to recite. Weave at most 2 to 3 nudges in their exact wording, tie every command to what the room holds, and show the command menu only as the closer."
-NAV_CARD_FIRE_DOCTRINE="\n\n## NAVIGATION CARD-FIRE CONTRACT (session doctrine)\n\nEvery per-turn NAVIGATION DECISION block ends with the frozen line [AskUserQuestion contract: shape=F.X verbs=N]. That marker is the per-turn gate flag; only the imperative below moved here.\n\n[FIRE-IF-FORK]: if the fork shown in the option rows above the marker is genuinely unanswered and relevant to the current conversation, call the AskUserQuestion tool in THAT response with the options shown. If the navigator already answered in plain text or the gate is unrelated, do NOT fire it -- acknowledge and proceed instead. Never reproduce the block as text (SEED-021).\n\nThe [AskUserQuestion payload: ...] line carries shape, mode, verb_count, recommended; the option labels are the rows above it.\n\nA line reading [NAV DECISION unchanged - prior block stands] means the previous turn's decision still applies."
+NAV_CARD_FIRE_DOCTRINE="\n\n## NAVIGATION CARD-FIRE CONTRACT (session doctrine)\n\nEvery per-turn NAVIGATION DECISION block ends with the frozen line [AskUserQuestion contract: shape=F.X verbs=N].\n\n[FIRE-IF-FORK]: if the fork shown in the option rows above the marker is genuinely unanswered and relevant to the current conversation, call the AskUserQuestion tool in THAT response with the options shown. If the navigator already answered in plain text or the gate is unrelated, do NOT fire it -- acknowledge and proceed instead. Never reproduce the block as text (SEED-021).\n\nProse fork? Last line: Your call: A | B | What if C (radical moonshot last).\n\nThe [AskUserQuestion payload: ...] line carries shape, mode, verb_count, recommended; the option labels are the rows above it.\n\nA line reading [NAV DECISION unchanged - prior block stands] means the previous turn's decision still applies."
 ctx_mark doctrine
 context="${context}${SESSION_DOCTRINE_RULES}${NAV_CARD_FIRE_DOCTRINE}"
 

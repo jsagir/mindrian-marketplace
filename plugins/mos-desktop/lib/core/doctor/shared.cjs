@@ -42,7 +42,7 @@ const PLUGIN_HOME = process.env.MINDRIAN_PLUGIN_HOME || path.join(HOME, '.claude
 // INSTALL_DIR is the legacy-clone path; class I treats topology=='legacy' as a
 // migration candidate, not a missing-install. New code MUST use
 // resolveActivePluginRoot() instead of this constant. INSTALL_DIR remains the
-// source of truth for the existing class A check (checkInstallVersion).
+// source of truth for checkInstallVersion, class I and class J (class A was retired in Phase 341 plan 09).
 const INSTALL_DIR = path.join(PLUGIN_HOME, 'mindrian-os');
 const INSTALL_PLUGIN_JSON = path.join(INSTALL_DIR, '.claude-plugin/plugin.json');
 const MARKETPLACE_CACHE_DIR = path.join(PLUGIN_HOME, 'cache/mindrian-marketplace/mos');
@@ -106,7 +106,10 @@ function cmpVersion(a, b) {
   return 0;
 }
 
-// -- Diagnostic checks (pure class-A constituent readers) ------------
+// -- Diagnostic checks ------------------------------------------------
+// checkMarketplaceCache (the class A cache-latest reader) was deleted in Phase 341
+// plan 09 with class A. checkInstallVersion stays: the accumulative engine reads the
+// running version through it.
 
 function checkInstallVersion() {
   // Topology-aware REGARDLESS of legacy-dir presence (RCA:
@@ -170,37 +173,6 @@ function checkInstallVersion() {
   } catch (err) {
     return { status: 'error', detail: `failed to parse plugin.json: ${err.message}` };
   }
-}
-
-function checkMarketplaceCache() {
-  if (!fs.existsSync(MARKETPLACE_CACHE_DIR)) {
-    return { status: 'missing', detail: `marketplace cache dir does not exist: ${MARKETPLACE_CACHE_DIR}` };
-  }
-  let entries;
-  try {
-    entries = fs.readdirSync(MARKETPLACE_CACHE_DIR, { withFileTypes: true });
-  } catch (err) {
-    return { status: 'error', detail: `failed to read marketplace cache: ${err.message}` };
-  }
-  const versions = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const parsed = parseVersion(entry.name);
-    if (parsed) {
-      versions.push({ raw: entry.name, parsed });
-    }
-  }
-  if (versions.length === 0) {
-    return { status: 'empty', detail: 'no version directories found in marketplace cache' };
-  }
-  // Sort ascending, take last as latest
-  versions.sort((a, b) => cmpVersion(a.parsed, b.parsed));
-  return {
-    status: 'ok',
-    versions: versions.map(v => v.raw),
-    latest: versions[versions.length - 1].raw,
-    latestParsed: versions[versions.length - 1].parsed,
-  };
 }
 
 function checkDevSourceConsistency() {
@@ -499,8 +471,34 @@ function isLegacyDevClone(legacyDir) {
   return false;
 }
 
+function hasOwnGitRoot(dir) {
+  // TRUE only when `dir` is itself the top of a git work tree: it holds a .git
+  // entry (directory, or file for a linked worktree), or `git rev-parse
+  // --show-toplevel` run there resolves to `dir` itself. A plain directory
+  // inside some other repository (for example ~/.claude/plugins/mindrian-os
+  // inside a HOME that is a git repo) returns FALSE, so git state read from
+  // that directory would belong to the outer repo, not to `dir`.
+  if (typeof dir !== 'string' || dir.length === 0) return false;
+  try { if (fs.existsSync(path.join(dir, '.git'))) return true; } catch (_) { /* fall through */ }
+  try {
+    const cp = require('child_process');
+    const r = cp.spawnSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (r && r.status === 0 && r.stdout && r.stdout.trim()) {
+      return fs.realpathSync(r.stdout.trim()) === fs.realpathSync(dir);
+    }
+  } catch (_) { /* ignore */ }
+  return false;
+}
+
 function legacyDirtyOrUnpushed(legacyDir) {
   // Returns { dirty, reason } -- dirty=true means --fix must REFUSE migration.
+  // Quick 261029-lcg: the git checks below only describe legacyDir when
+  // legacyDir owns a git root. With no .git of its own, git walks up to an
+  // outer repository (often HOME) and would report that repository's dirty and
+  // unpushed state. That is not a legacy clone, so nothing is at risk here.
+  if (!hasOwnGitRoot(legacyDir)) return { dirty: false, reason: null };
   const cp = require('child_process');
   // 1. uncommitted changes via `git status --porcelain`.
   try {
@@ -553,7 +551,6 @@ module.exports = {
   readInstalledPluginsVersion,
   // pure class-A constituent readers
   checkInstallVersion,
-  checkMarketplaceCache,
   checkDevSourceConsistency,
   // class I / J shared readers (Phase 217 Plan 06)
   readHomeFile,
@@ -566,5 +563,6 @@ module.exports = {
   collectVersionOfRecord,
   computeVersionDivergences,
   isLegacyDevClone,
+  hasOwnGitRoot,
   legacyDirtyOrUnpushed,
 };
