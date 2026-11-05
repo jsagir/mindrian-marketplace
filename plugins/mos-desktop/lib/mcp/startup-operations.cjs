@@ -8,6 +8,8 @@ const { listRoomRoots } = require('../core/icm-forest.cjs');
 const { isRealpathContained, realRoomRoot: resolveExistingRealpath } = require('../core/room-path-containment.cjs');
 const gateRender = require('./gate-render.cjs');
 const gateLedger = require('./gate-ledger.cjs');
+const { resolveRoomRuntime } = require('../core/platform.cjs');
+const { PLAIN_ROOM_NOT_CREATED } = require('../core/room-open.cjs');
 
 function slugFor(name) {
   return name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64).replace(/-$/g, '')
@@ -44,6 +46,10 @@ async function prepareRoomCreation(server, ctx, sessionId, input) {
   const slug = input.slug || slugFor(input.name);
   const target = destination(slug);
   if (!target.ok) return target;
+  // Phase 383 (QA383-04, SEED-117): ask the machine before the card. A create that cannot run
+  // here gets one plain message, no gate, and no write.
+  const runtime = resolveRoomRuntime();
+  if (!runtime.ok) return { ok: false, reason: 'environment_not_ready', plain: runtime.plain, tried: runtime.tried };
   const preview = { name: input.name, purpose: input.purpose, slug, folder: target.target };
   const gate = await mintCard(server, ctx, sessionId, {
     kind: 'material_step', header: 'Create ' + input.name + '?', selectMode: 'single',
@@ -57,6 +63,9 @@ async function prepareRoomCreation(server, ctx, sessionId, input) {
       if (answer.verdict !== 'approve') return { ok: true, created: false, verdict: answer.verdict };
       const checked = destination(slug, target.realHome);
       if (!checked.ok) return checked;
+      // The machine can change between the card and the answer: check again, from scratch.
+      const again = resolveRoomRuntime({ refresh: true });
+      if (!again.ok) return { ok: false, reason: 'environment_not_ready', plain: again.plain, tried: again.tried };
       const result = navigation.birthRoom({ slug, roomDir: checked.target, sessionId,
         ventureText: input.purpose, jtbd: input.purpose, vname: input.name, approvedBy: 'navigator',
         creationGateId: answer.gate_id, creationAnsweredVia: answer.answered_via,
@@ -70,8 +79,8 @@ async function prepareRoomCreation(server, ctx, sessionId, input) {
 function answerRoomCreation(live, answer, sessionId) {
   let outcome;
   try { outcome = live.resumeFn(answer); }
-  catch (_) { return { ok: false, reason: 'room_creation_failed', gate_id: answer.gate_id }; }
-  if (!outcome?.ok) return { ok: false, gate_id: answer.gate_id, room_creation: outcome, reason: outcome?.reason || 'room_creation_failed' };
+  catch (_) { return { ok: false, reason: 'room_creation_failed', plain: PLAIN_ROOM_NOT_CREATED, gate_id: answer.gate_id }; }
+  if (!outcome?.ok) return { ok: false, gate_id: answer.gate_id, room_creation: outcome, plain: outcome?.plain || PLAIN_ROOM_NOT_CREATED, reason: outcome?.reason || 'room_creation_failed' };
   gateLedger.releaseGate(answer.gate_id, sessionId);
   return { ok: true, gate_id: answer.gate_id, chosen: answer.chosen, verdict: answer.verdict,
     ratified: answer.verdict === 'approve', answered_via: answer.answered_via, room_creation: outcome };

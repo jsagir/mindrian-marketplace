@@ -71,6 +71,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
+// Phase 383 (D-03): the one helper that runs scripts/room-registry, and the check that the machine can.
+const { resolveRoomRuntime, spawnRoomRegistry, formatTried } = require('../platform.cjs');
 
 const crypto = require('node:crypto');
 
@@ -618,7 +620,7 @@ function _rollbackFailedBirth(roomDir, slug, roomsHome, dbHandle, parentSlug, pa
 // that is the exception line (the first line is just "Traceback ...").
 function _registryCauseLine(stderrText) {
   const lines = String(stderrText || '').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-  const informative = lines.filter((l) => !/^room-registry: exited \d+; python3 is /.test(l));
+  const informative = lines.filter((l) => !/^room-registry: exited \d+; python3? is /.test(l));
   const pick = informative.length ? informative[informative.length - 1] : (lines[lines.length - 1] || 'unknown');
   return pick.slice(0, 160);
 }
@@ -1000,6 +1002,14 @@ function birthRoom(opts) {
   }
   if (typeof slug !== 'string' || slug.length === 0) {
     return { ok: false, reason: 'invalid_slug' };
+  }
+
+  // Phase 383 (QA383-04, D-03, SEED-117): ask whether this machine can finish the job BEFORE the
+  // first write. A birth that cannot register the room must not leave a half-made room behind.
+  const runtime = resolveRoomRuntime();
+  if (!runtime.ok) {
+    process.stderr.write('[room-birth] environment not ready for ' + slug + ': ' + formatTried(runtime.tried) + '\n');
+    return { ok: false, reason: 'environment_not_ready', plain: runtime.plain, tried: runtime.tried, roomDir: roomDir, slug: slug };
   }
 
   const sessionId = typeof options.sessionId === 'string' ? options.sessionId : 'nosession';
@@ -1430,22 +1440,35 @@ function birthRoom(opts) {
   let sessionBound = 'not_applicable';
   let bindingReason = null;
   try {
-    const registryScript = path.join(REPO_ROOT, 'scripts', 'room-registry');
     // Determine ROOMS_HOME from the environment (the same source room-registry uses).
     const roomsHome = process.env.MINDRIAN_ROOMS_HOME || path.join(require('node:os').homedir(), 'MindrianRooms');
 
     // The registry receives literal argv and validates its own inputs.
     // No first-time-user display name is interpolated into a shell.
-    execFileSync('bash', [registryScript, roomsHome, 'create', slug, roomDir, vname, vstage],
-      { stdio: 'pipe', cwd: REPO_ROOT, windowsHide: true });
+    // Phase 383 (D-03): spawnRoomRegistry resolves a real bash and Python; a failure becomes an Error
+    // that carries stderr and status, so the catch block below runs unchanged.
+    const created = spawnRoomRegistry([roomsHome, 'create', slug, roomDir, vname, vstage],
+      { roomsHome: roomsHome, cwd: REPO_ROOT, timeout: 60000 });
+    if (!created.ok) {
+      const err = new Error(created.stderr || created.reason || 'registry create failed');
+      err.stderr = created.stderr;
+      err.status = created.status;
+      throw err;
+    }
 
     // Phase 169-07 additive amendment: thread opts.parent into the registry as a
     // `parent` field via the existing `update <slug> parent <parent-slug>` verb
     // (Part 7 reuse -- no new registry verb invented). Only runs when parent is
     // provided; the omitted case leaves the registry create byte-unchanged.
     if (parent) {
-      execFileSync('bash', [registryScript, roomsHome, 'update', slug, 'parent', parent],
-        { stdio: 'pipe', cwd: REPO_ROOT, windowsHide: true });
+      const linked = spawnRoomRegistry([roomsHome, 'update', slug, 'parent', parent],
+        { roomsHome: roomsHome, cwd: REPO_ROOT, timeout: 60000 });
+      if (!linked.ok) {
+        const err = new Error(linked.stderr || linked.reason || 'registry update parent failed');
+        err.stderr = linked.stderr;
+        err.status = linked.status;
+        throw err;
+      }
     }
 
     // ------------------------------------------------------------------------
@@ -1500,7 +1523,7 @@ function birthRoom(opts) {
     const guardStderr = (_e && _e.stderr) ? String(_e.stderr) : '';
     if (_e && (_e.status === 3 || /REGISTRY_GUARD_REFUSED/.test(guardStderr))) {
       process.stderr.write('[room-birth] registry write REFUSED for ' + slug + ': ' + guardStderr.trim() + '\n');
-      return { ok: false, reason: 'registry_guard_refused', detail: guardStderr.trim(), roomDir: roomDir, slug: slug };
+      return { ok: false, reason: 'registry_guard_refused', plain: require('../room-open.cjs').PLAIN_CREATE_FAILED, detail: guardStderr.trim(), roomDir: roomDir, slug: slug };
     }
     // Quick 261005-l9o (ACT-04, SEED-117): a failed registry flip is NOT tolerated.
     // It used to be ("the user can re-run /mos:register"), which made birthRoom
@@ -1516,9 +1539,15 @@ function birthRoom(opts) {
     } catch (_eTail) { tail = regStderr.slice(-400); }
     const rolledBack = _rollbackFailedBirth(roomDir, slug, roomsHomeForBirth, db, parent, parentRoomDir, dirPreexisted);
     process.stderr.write('[room-birth] registry create FAILED for ' + slug + ' (' + rolledBack + '): ' + _registryCauseLine(regStderr) + '\n');
+    let plain = '';
+    try {
+      const roPlain = require('../room-open.cjs');
+      plain = rolledBack === 'registry_only' ? roPlain.PLAIN_CREATE_FAILED_KEPT_FOLDER : roPlain.PLAIN_CREATE_FAILED;
+    } catch (_ePlain) { plain = ''; }
     return {
       ok: false,
       reason: 'registry_create_failed:' + _registryCauseLine(regStderr),
+      plain: plain,
       stderr: tail,
       python: python,
       status: (_e && typeof _e.status === 'number') ? _e.status : null,
@@ -1534,7 +1563,7 @@ function birthRoom(opts) {
     const ready = _verifyRoomReady(roomDir, slug, roomsHomeForBirth, db);
     if (!ready.ok) {
       const rolledBack = _rollbackFailedBirth(roomDir, slug, roomsHomeForBirth, db, parent, parentRoomDir, dirPreexisted);
-      return { ok: false, reason: ready.reason, detail: ready.detail, rolled_back: rolledBack, roomDir: roomDir, slug: slug };
+      return { ok: false, reason: ready.reason, plain: require('../room-open.cjs').PLAIN_ROOM_NOT_CREATED, detail: ready.detail, rolled_back: rolledBack, roomDir: roomDir, slug: slug };
     }
   }
 
@@ -1549,7 +1578,7 @@ function birthRoom(opts) {
     if (differs) {
       const rolledBack = _rollbackFailedBirth(roomDir, slug, roomsHomeForBirth, db, parent, parentRoomDir, dirPreexisted);
       process.stderr.write('[room-birth] identity readback FAILED for ' + slug + ' (' + rolledBack + '): ' + differs + '\n');
-      return { ok: false, reason: 'identity_readback_failed', detail: differs, rolled_back: rolledBack, roomDir: roomDir, slug: slug };
+      return { ok: false, reason: 'identity_readback_failed', plain: require('../room-open.cjs').PLAIN_ROOM_NOT_CREATED, detail: differs, rolled_back: rolledBack, roomDir: roomDir, slug: slug };
     }
   }
   // The projections, regenerated from the committed identity (never the other way round).

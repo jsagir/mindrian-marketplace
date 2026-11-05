@@ -24,8 +24,12 @@
 
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 
 let _cachedPlatform = null;
+let _cachedRuntime = null;
+let _cachedFailure = null;
 
 /**
  * Detect the current execution environment.
@@ -181,12 +185,378 @@ function resolveHookScript(scriptName, pluginRoot) {
   return path.join(root, 'scripts', scriptName);
 }
 
+// ---------------------------------------------------------------------------
+// Room runtime resolver (Phase 383, D-03, QA383-01).
+//
+// scripts/room-registry needs a real bash and a real Python 3.9 or newer. On
+// Windows the name `bash` can be the WSL launcher (System32 or WindowsApps) and
+// the name `python3` can be the Microsoft Store stub. Both exist on PATH, both
+// answer, and neither works. This resolver probes each candidate by running it,
+// rejects those two, and records every candidate it tried. It is lazy and
+// cached: detectPlatform() runs on the banner path at every session start and
+// never calls it.
+// ---------------------------------------------------------------------------
+
+const PLAIN_NO_BASH_WIN32 = 'Room creation cannot start on this computer yet.\n  Why: it needs Git Bash, and no working Git Bash was found.\n  Fix: install Git for Windows from git-scm.com, then ask for the room again.';
+const PLAIN_NO_BASH_POSIX = 'Room creation cannot start on this computer yet.\n  Why: it needs bash, and no working bash was found.\n  Fix: install bash, then ask for the room again.';
+const PLAIN_NO_PYTHON = 'Room creation cannot start on this computer yet.\n  Why: it needs Python 3.9 or newer, and no working Python was found.\n  Fix: install Python 3 from python.org, then ask for the room again.';
+
+const PY_FLOOR_MAJOR = 3;
+const PY_FLOOR_MINOR = 9;
+
+/** Replace every backslash with a forward slash (Git Bash reads either, a bash -c string eats backslashes). */
+function toBashPath(p) {
+  return String(p).replace(/\\/g, '/');
+}
+
+function _winKey(p) {
+  return toBashPath(p).toLowerCase();
+}
+
+// Review WR-02: each probe blocks the event loop (spawnSync), so the per-candidate timeout is short and a
+// failed resolution is remembered for a short window instead of being paid again on every retry.
+const PROBE_TIMEOUT_MS = 2000;
+const NEGATIVE_CACHE_MS = 30000;
+
+function _spawnOpts() {
+  return { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, windowsHide: true };
+}
+
+/** The inputs a default-call probe reads, so a cached failure is dropped when the machine setup changes. */
+function _envFingerprint(env) {
+  return ['PATH', 'Path', 'MINDRIAN_BASH', 'MINDRIAN_PYTHON', 'CLAUDE_CODE_GIT_BASH_PATH']
+    .map(function (k) { return String(env[k] || ''); }).join('\u0001');
+}
+
+/** One line that names every candidate the resolver tried. */
+function formatTried(tried) {
+  const list = Array.isArray(tried) ? tried : [];
+  const part = function (kind) {
+    const items = list
+      .filter(function (t) { return t.kind === kind; })
+      .map(function (t) { return toBashPath(t.cmd) + ' ' + t.result; });
+    return kind + ': ' + (items.length ? items.join(', ') : 'none');
+  };
+  return part('bash') + '; ' + part('python');
+}
+
+function _probeBash(cand, plat, spawn, tried) {
+  const r = spawn(cand, ['-c', 'echo $OSTYPE'], _spawnOpts());
+  if (r && r.error) {
+    const code = r.error.code;
+    tried.push({ kind: 'bash', cmd: cand, result: code === 'ENOENT' ? 'not_found' : 'probe_failed', detail: String(r.error.message || code || '') });
+    return null;
+  }
+  if (!r || r.status !== 0) {
+    tried.push({ kind: 'bash', cmd: cand, result: 'probe_failed', detail: 'exit ' + (r ? r.status : 'none') });
+    return null;
+  }
+  const ostype = String(r.stdout || '').split(/\r?\n/)[0].trim();
+  if (plat === 'win32' && !/^(msys|cygwin)/i.test(ostype)) {
+    tried.push({ kind: 'bash', cmd: cand, result: 'rejected_wsl', detail: 'ostype ' + ostype });
+    return null;
+  }
+  tried.push({ kind: 'bash', cmd: cand, result: 'ok', detail: ostype });
+  return { path: plat === 'win32' ? toBashPath(cand) : cand, ostype: ostype };
+}
+
+function _resolveBash(plat, env, spawn, exists, tried) {
+  const seen = {};
+  const tryOne = function (cand, fixed) {
+    if (!cand) return null;
+    if (plat === 'win32') {
+      const key = _winKey(cand);
+      if (seen[key]) return null;
+      seen[key] = true;
+      if (/[\\/](system32|windowsapps)[\\/]/i.test(cand)) {
+        tried.push({ kind: 'bash', cmd: cand, result: 'rejected_wsl', detail: 'WSL launcher or WindowsApps shim' });
+        return null;
+      }
+      if (fixed && !exists(cand)) {
+        tried.push({ kind: 'bash', cmd: cand, result: 'not_found', detail: '' });
+        return null;
+      }
+    }
+    return _probeBash(cand, plat, spawn, tried);
+  };
+
+  if (plat === 'win32') {
+    const pf = env.ProgramFiles || 'C:\\Program Files';
+    const pf86 = env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const fixedList = [
+      env.MINDRIAN_BASH,
+      env.CLAUDE_CODE_GIT_BASH_PATH,
+      pf + '\\Git\\bin\\bash.exe',
+      pf + '\\Git\\usr\\bin\\bash.exe',
+      pf86 + '\\Git\\bin\\bash.exe',
+      env.LOCALAPPDATA ? env.LOCALAPPDATA + '\\Programs\\Git\\bin\\bash.exe' : null,
+    ];
+    const whereLines = function (name) {
+      try {
+        const w = spawn('where', [name], _spawnOpts());
+        if (w && !w.error && w.status === 0) {
+          return String(w.stdout || '').split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean);
+        }
+      } catch (_e) { /* fall through */ }
+      return [];
+    };
+    for (let i = 0; i < fixedList.length; i += 1) {
+      const entry = fixedList[i];
+      if (entry && !/[\\/]/.test(entry)) {
+        // Review IN-02: a bare command name (MINDRIAN_BASH=bash) is never a file on disk. Resolve it on PATH,
+        // then probe each hit like any other candidate (the System32 and WindowsApps rules still apply).
+        const hits = whereLines(entry);
+        if (!hits.length) tried.push({ kind: 'bash', cmd: entry, result: 'not_found', detail: 'not on PATH' });
+        for (let h = 0; h < hits.length; h += 1) {
+          const gotHit = tryOne(hits[h], false);
+          if (gotHit) return gotHit;
+        }
+        continue;
+      }
+      const got = tryOne(entry, true);
+      if (got) return got;
+    }
+    const lines = whereLines('bash');
+    for (let j = 0; j < lines.length; j += 1) {
+      const got = tryOne(lines[j], false);
+      if (got) return got;
+    }
+    return null;
+  }
+
+  const posix = [env.MINDRIAN_BASH, 'bash'];
+  for (let k = 0; k < posix.length; k += 1) {
+    const got = tryOne(posix[k], false);
+    if (got) return got;
+  }
+  return null;
+}
+
+function _probePython(cand, plat, spawn, tried) {
+  const label = [cand.cmd].concat(cand.pre).join(' ');
+  const note = function (result, detail) {
+    tried.push({ kind: 'python', cmd: label, result: result, detail: detail || '' });
+  };
+  const r = spawn(cand.cmd, cand.pre.concat(['--version']), _spawnOpts());
+  if (r && r.error) {
+    note(r.error.code === 'ENOENT' ? 'not_found' : 'probe_failed', String(r.error.message || r.error.code || ''));
+    return null;
+  }
+  const combined = String((r && r.stdout) || '') + '\n' + String((r && r.stderr) || '');
+  if ((r && r.status === 9009) || /Microsoft Store|was not found/i.test(combined)) {
+    note('rejected_store_stub', 'Microsoft Store stub');
+    return null;
+  }
+  if (!r || r.status !== 0) {
+    note('probe_failed', 'exit ' + (r ? r.status : 'none'));
+    return null;
+  }
+  const m = combined.match(/Python\s+(\d+)\.(\d+)\S*/);
+  if (!m) {
+    note('probe_failed', 'no version in the answer');
+    return null;
+  }
+  const major = parseInt(m[1], 10);
+  const minor = parseInt(m[2], 10);
+  const versionLine = m[0].replace(/\s+/g, ' ');
+  if (major < PY_FLOOR_MAJOR || (major === PY_FLOOR_MAJOR && minor < PY_FLOOR_MINOR)) {
+    note('below_floor', versionLine);
+    return null;
+  }
+  let exePath = cand.cmd;
+  if (plat === 'win32') {
+    const e = spawn(cand.cmd, cand.pre.concat(['-c', 'import sys;print(sys.executable)']), _spawnOpts());
+    const first = e && !e.error && e.status === 0
+      ? String(e.stdout || '').split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean)[0]
+      : '';
+    if (first) {
+      exePath = toBashPath(first);
+    } else if (cand.cmd === 'py') {
+      note('probe_failed', 'py -3 gave no sys.executable');
+      return null;
+    }
+  }
+  note('ok', versionLine);
+  return { path: exePath, cmd: cand.cmd, pre: cand.pre.slice(), version: major + '.' + minor, version_line: versionLine };
+}
+
+function _resolvePython(plat, env, spawn, tried) {
+  const cands = [];
+  if (env.MINDRIAN_PYTHON) cands.push({ cmd: env.MINDRIAN_PYTHON, pre: [] });
+  cands.push({ cmd: 'python3', pre: [] });
+  cands.push({ cmd: 'python', pre: [] });
+  if (plat === 'win32') cands.push({ cmd: 'py', pre: ['-3'] });
+  for (let i = 0; i < cands.length; i += 1) {
+    const got = _probePython(cands[i], plat, spawn, tried);
+    if (got) return got;
+  }
+  return null;
+}
+
+/**
+ * Find a working bash and a working Python 3.9 or newer for scripts/room-registry.
+ *
+ * A failed result is cached for NEGATIVE_CACHE_MS (default calls only); `refresh: true` always probes again.
+ *
+ * @param {{platform?: string, env?: object, spawnSync?: Function, existsSync?: Function, refresh?: boolean, now?: number}} [opts]
+ * @returns {{ok: boolean, bash: ({path: string, ostype: string}|null),
+ *   python: ({path: string, cmd: string, pre: string[], version: string, version_line: string}|null),
+ *   tried: Array<{kind: string, cmd: string, result: string, detail: string}>,
+ *   reason: (null|'no_bash'|'no_python'), plain: string}}
+ */
+function resolveRoomRuntime(opts) {
+  opts = opts || {};
+  const injected = opts.platform !== undefined || opts.env !== undefined ||
+    opts.spawnSync !== undefined || opts.existsSync !== undefined;
+  if (!injected && !opts.refresh && _cachedRuntime) return _cachedRuntime;
+  const now = typeof opts.now === 'number' ? opts.now : Date.now();
+  if (!injected && !opts.refresh && _cachedFailure &&
+      now - _cachedFailure.at < NEGATIVE_CACHE_MS && _cachedFailure.key === _envFingerprint(process.env)) {
+    return _cachedFailure.result;
+  }
+
+  const plat = opts.platform || process.platform;
+  const env = opts.env || process.env;
+  const spawn = opts.spawnSync || spawnSync;
+  const exists = opts.existsSync || fs.existsSync;
+  const tried = [];
+
+  // Probe both kinds every time so `tried` is complete in the failure report.
+  const bash = _resolveBash(plat, env, spawn, exists, tried);
+  const python = _resolvePython(plat, env, spawn, tried);
+
+  let reason = null;
+  let plain = '';
+  if (!bash) {
+    reason = 'no_bash';
+    plain = plat === 'win32' ? PLAIN_NO_BASH_WIN32 : PLAIN_NO_BASH_POSIX;
+  } else if (!python) {
+    reason = 'no_python';
+    plain = PLAIN_NO_PYTHON;
+  }
+  const result = { ok: reason === null, bash: bash, python: python, tried: tried, reason: reason, plain: plain };
+  if (!injected) {
+    if (result.ok) {
+      _cachedRuntime = result;
+      _cachedFailure = null;
+    } else {
+      _cachedFailure = { at: now, key: _envFingerprint(env), result: result };
+    }
+  }
+  return result;
+}
+
+/**
+ * Name the shell hooks/run-hook.cmd would pick on this machine. On win32 this mirrors the
+ * wrapper's lookup order exactly: the Program Files Git Bash, the Program Files (x86) Git Bash,
+ * then the first `where bash` hit, then a silent exit. Read-only: it checks files and runs
+ * `where bash`, it executes no hook (T-383-01). Doctor-only; detectPlatform never calls it.
+ *
+ * @param {{platform?: string, env?: object, spawnSync?: Function, existsSync?: Function}} [opts]
+ * @returns {{path: (string|null), kind: ('git-bash'|'wsl-launcher'|'path-bash'|'none'|'posix'), note?: string}}
+ */
+function resolveHookShell(opts) {
+  opts = opts || {};
+  const plat = opts.platform || process.platform;
+  if (plat !== 'win32') return { path: 'bash', kind: 'posix' };
+  const spawn = opts.spawnSync || spawnSync;
+  const exists = opts.existsSync || fs.existsSync;
+  const fixed = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  ];
+  for (let i = 0; i < fixed.length; i += 1) {
+    if (exists(fixed[i])) return { path: toBashPath(fixed[i]), kind: 'git-bash' };
+  }
+  let first = '';
+  try {
+    const w = spawn('where', ['bash'], _spawnOpts());
+    if (w && !w.error && w.status === 0) {
+      first = String(w.stdout || '').split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean)[0] || '';
+    }
+  } catch (_e) {
+    first = '';
+  }
+  if (!first) {
+    return { path: null, kind: 'none', note: 'hooks/run-hook.cmd exits 0 and the bash hooks do not run' };
+  }
+  const kind = /[\\/](system32|windowsapps)[\\/]/i.test(first) ? 'wsl-launcher' : 'path-bash';
+  return { path: toBashPath(first), kind: kind };
+}
+
+/**
+ * The one helper that runs scripts/room-registry. It refuses to spawn when the
+ * runtime is not ready. Argv array only, never a shell (T-383-02).
+ *
+ * @param {string[]} args registry arguments (rooms home first, then the subcommand)
+ * @param {{roomsHome?: string, cwd?: string, timeout?: number, env?: object, runtime?: object,
+ *   spawnSync?: Function, platform?: string, script?: string}} [opts]
+ */
+function spawnRoomRegistry(args, opts) {
+  opts = opts || {};
+  const plat = opts.platform || process.platform;
+  const runtime = opts.runtime || resolveRoomRuntime();
+  if (!runtime || !runtime.ok) {
+    const tried = (runtime && runtime.tried) || [];
+    return {
+      ok: false,
+      out: null,
+      stderr: 'room runtime not ready: ' + formatTried(tried),
+      status: null,
+      python: 'no working Python found (' + formatTried(tried) + ')',
+      reason: 'environment_not_ready',
+      plain: (runtime && runtime.plain) || '',
+      tried: tried,
+    };
+  }
+
+  const script = opts.script || path.resolve(__dirname, '..', '..', 'scripts', 'room-registry');
+  const cwd = opts.cwd || path.resolve(__dirname, '..', '..');
+  const timeout = typeof opts.timeout === 'number' ? opts.timeout : 10000;
+  const spawn = opts.spawnSync || spawnSync;
+  const roomsHome = opts.roomsHome || process.env.MINDRIAN_ROOMS_HOME || path.join(os.homedir(), 'MindrianRooms');
+  const argv = [toBashPath(script)].concat((args || []).map(function (a) {
+    // A drive path (C:\x) and a UNC path (\\server\share\x) both reach bash with forward slashes only.
+    return plat === 'win32' && /^(?:[A-Za-z]:[\\/]|\\\\)/.test(String(a)) ? toBashPath(a) : a;
+  }));
+  const env = Object.assign({}, process.env, opts.env || {}, {
+    MINDRIAN_ROOMS_HOME: plat === 'win32' ? toBashPath(roomsHome) : roomsHome,
+    MINDRIAN_PYTHON: runtime.python.path,
+  });
+  const python = runtime.python.version_line || runtime.python.path;
+
+  const r = spawn(runtime.bash.path, argv, {
+    cwd: cwd, env: env, stdio: 'pipe', encoding: 'utf8', timeout: timeout, windowsHide: true,
+  });
+  if (r && r.error) {
+    if (r.error.code === 'ETIMEDOUT') {
+      return { ok: false, out: null, stderr: 'room-registry timed out after ' + timeout + ' ms', status: null, python: python, reason: 'timeout', plain: '', tried: runtime.tried || [] };
+    }
+    return { ok: false, out: null, stderr: 'could not run bash: ' + (r.error.message || r.error.code), status: null, python: python, reason: 'spawn_error', plain: '', tried: runtime.tried || [] };
+  }
+  if (!r || r.status !== 0) {
+    return {
+      ok: false,
+      out: String((r && r.stdout) || '').trim(),
+      stderr: String((r && r.stderr) || ''),
+      status: r ? r.status : null,
+      python: python,
+      reason: 'exit_nonzero',
+      plain: '',
+      tried: runtime.tried || [],
+    };
+  }
+  return { ok: true, out: String(r.stdout || '').trim(), stderr: '', status: 0, python: '', reason: null, plain: '', tried: runtime.tried || [] };
+}
+
 /**
  * Test-only helper. Resets the module-level memoization so tests can
  * exercise detectPlatform() under controlled conditions.
  */
 function __resetForTests() {
   _cachedPlatform = null;
+  _cachedRuntime = null;
+  _cachedFailure = null;
 }
 
 /**
@@ -253,5 +623,33 @@ module.exports = {
   getPluginVersion,
   resolveHookScript,
   openBrowser,
+  resolveRoomRuntime,
+  resolveHookShell,
+  toBashPath,
+  spawnRoomRegistry,
+  formatTried,
+  PLAIN_NO_BASH_WIN32,
+  PLAIN_NO_BASH_POSIX,
+  PLAIN_NO_PYTHON,
+  PROBE_TIMEOUT_MS,
+  NEGATIVE_CACHE_MS,
   __resetForTests,
 };
+
+// CLI: node lib/core/platform.cjs room-runtime (the output is always JSON)
+if (require.main === module) {
+  switch (process.argv[2]) {
+    case 'room-runtime': {
+      const r = resolveRoomRuntime({ refresh: true });
+      process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+      if (!r.ok) {
+        process.stderr.write(r.plain + '\n');
+        process.exitCode = 1;
+      }
+      break;
+    }
+    default:
+      process.stderr.write('usage: node lib/core/platform.cjs room-runtime\n');
+      process.exitCode = 2;
+  }
+}

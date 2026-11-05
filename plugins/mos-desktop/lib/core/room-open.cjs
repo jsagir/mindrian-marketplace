@@ -59,7 +59,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const child_process = require('node:child_process');
+const platform = require('./platform.cjs');
 
 const REGISTRY_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'room-registry');
 
@@ -103,13 +103,15 @@ function readRegistry(roomsHome) {
  */
 function pythonVersion(env) {
   try {
-    const r = child_process.spawnSync('python3', ['--version'], {
-      env: env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-    });
-    if (r.error) return 'python3 not found';
-    const txt = ((r.stdout || '') + (r.stderr || '')).trim().split('\n')[0] || '';
-    if (r.status === 0) return txt || 'python3 (version unknown)';
-    return 'python3 --version failed (exit ' + r.status + ')' + (txt ? ': ' + txt.slice(0, 80) : '');
+    // Phase 383 (D-03): the shared resolver runs each candidate, so a Store stub or a too-old Python is named,
+    // not reported as a version.
+    // Review WR-02: an env that matches the process on every probe input reuses the cached answer (a failure is
+    // cached for a short window), so a failing machine does not pay the whole probe cost on each call.
+    const sameProbeEnv = ['PATH', 'Path', 'MINDRIAN_BASH', 'MINDRIAN_PYTHON', 'CLAUDE_CODE_GIT_BASH_PATH']
+      .every(function (k) { return (env || {})[k] === process.env[k]; });
+    const rt = platform.resolveRoomRuntime(sameProbeEnv ? {} : { env: env });
+    if (rt.python) return rt.python.version_line || rt.python.path;
+    return 'no working Python found (' + platform.formatTried(rt.tried) + ')';
   } catch (_e) {
     return 'python3 not found';
   }
@@ -127,6 +129,16 @@ function stderrTail(text) {
   const tail = lines.slice(-3).join('\n');
   return tail.length > 400 ? tail.slice(tail.length - 400) : tail;
 }
+
+/**
+ * Phase 383 (QA383-06, D-05): the plain three-line failure messages. What failed, why, one fix.
+ * No file path and no raw error. The verbatim cause stays in `reason`, `stderr` and the log line
+ * (SEED-117); these are what the navigator sees first.
+ */
+const PLAIN_CREATE_FAILED = 'Your room was not created.\n  Why: the room list on this computer could not be updated, and nothing was left half made.\n  Fix: run /mos:doctor and share the bug report it prints.';
+const PLAIN_CREATE_FAILED_KEPT_FOLDER = 'Your room was not created.\n  Why: the room list on this computer could not be updated; your existing folder was kept as it was.\n  Fix: run /mos:doctor and share the bug report it prints.';
+const PLAIN_SWITCH_FAILED = 'The switch to that room did not happen.\n  Why: the room list on this computer could not be updated; your active room is unchanged.\n  Fix: run /mos:doctor and share the bug report it prints.';
+const PLAIN_ROOM_NOT_CREATED = 'Your room was not created.\n  Why: a step of the room setup stopped before it finished, and nothing was left half made.\n  Fix: run /mos:doctor and share the bug report it prints.';
 
 /**
  * Run a `scripts/room-registry` subcommand and report what happened.
@@ -152,26 +164,24 @@ function stderrTail(text) {
  */
 function runRegistry(args, roomsHome) {
   const env = Object.assign({}, process.env, { MINDRIAN_ROOMS_HOME: roomsHome });
-  const fail = (stderr, status) => ({
-    ok: false, out: null, stderr: stderrTail(stderr), status: status, python: pythonVersion(env),
-  });
   try {
-    if (!fs.existsSync(REGISTRY_SCRIPT)) return fail('room-registry script not found at ' + REGISTRY_SCRIPT, null);
-    const r = child_process.spawnSync('bash', [REGISTRY_SCRIPT].concat(args), {
-      cwd: process.cwd(),
-      env: env,
-      stdio: 'pipe',
-      timeout: 10000,
-      encoding: 'utf8',
-    });
-    if (r.error) {
-      const timedOut = r.error.code === 'ETIMEDOUT';
-      return fail(timedOut ? 'room-registry timed out after 10000 ms' : ('could not run bash: ' + (r.error.message || r.error.code)), null);
+    if (!fs.existsSync(REGISTRY_SCRIPT)) {
+      return { ok: false, out: null, stderr: stderrTail('room-registry script not found at ' + REGISTRY_SCRIPT), status: null, python: pythonVersion(env) };
     }
-    if (r.status !== 0) return fail(r.stderr || '', r.status);
-    return { ok: true, out: typeof r.stdout === 'string' ? r.stdout.trim() : '', stderr: '', status: 0, python: '' };
+    // Phase 383 (D-03): the one spawn helper resolves a real bash and Python, and refuses to spawn when it cannot.
+    const r = platform.spawnRoomRegistry(args, {
+      roomsHome: roomsHome, cwd: process.cwd(), timeout: 10000, script: REGISTRY_SCRIPT,
+    });
+    if (r.ok) return { ok: true, out: r.out, stderr: '', status: 0, python: '' };
+    const failed = { ok: false, out: null, stderr: stderrTail(r.stderr || ''), status: r.status, python: r.python || pythonVersion(env) };
+    if (r.reason === 'environment_not_ready') {
+      failed.reason = r.reason;
+      failed.plain = r.plain;
+      failed.tried = r.tried;
+    }
+    return failed;
   } catch (e) {
-    return fail(String((e && e.message) || e), null);
+    return { ok: false, out: null, stderr: stderrTail(String((e && e.message) || e)), status: null, python: pythonVersion(env) };
   }
 }
 
@@ -206,7 +216,7 @@ function getActive(roomsHome) {
  * @returns {{ok:boolean, reason?:string, room?:string, active?:string,
  *   previous?:string, status?:string, session_bound?:boolean, binding_reason?:string,
  *   room_id?:string, room_identity?:{state:string,reason:string}, abs_path?:string,
- *   stderr?:string, python?:string}}  (stderr / python: only on set_active_failed)
+ *   stderr?:string, python?:string, plain?:string}}  (stderr / python / plain: only on set_active_failed)
  */
 function openRoom(opts) {
   const o = opts || {};
@@ -259,6 +269,7 @@ function openRoom(opts) {
     return {
       ok: false,
       reason: 'set_active_failed',
+      plain: wrote.plain || PLAIN_SWITCH_FAILED,
       room: room,
       previous: previous,
       stderr: wrote.stderr,
@@ -348,4 +359,5 @@ function openRoom(opts) {
   return Object.assign(result, identityFields);
 }
 
-module.exports = { openRoom, getActive, resolveRoomsHome, pythonVersion, stderrTail };
+module.exports = { openRoom, getActive, resolveRoomsHome, pythonVersion, stderrTail,
+  PLAIN_CREATE_FAILED, PLAIN_CREATE_FAILED_KEPT_FOLDER, PLAIN_SWITCH_FAILED, PLAIN_ROOM_NOT_CREATED };
