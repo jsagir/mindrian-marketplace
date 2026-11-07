@@ -41,7 +41,11 @@ const path = require('node:path');
 const shared = require('./folder-memory-shared.cjs');
 const invariants = require('./feynman-minto-invariants.cjs');
 
-const RESERVED = new Set(['ROOM.md', 'STATE.md', 'MINTO.md', 'TEAM-STATE.md']);
+// FEYNMAN.md is a generated memory file (the timeline-runner and the
+// dial-memory-runner rewrite it on every session start), not a section
+// artifact. Counting it made every rewrite read as artifacts_newer_than_minto
+// (Phase 386 plan 12, B8).
+const RESERVED = new Set(['ROOM.md', 'STATE.md', 'MINTO.md', 'TEAM-STATE.md', 'FEYNMAN.md']);
 
 function safeStatSync(p) {
   try {
@@ -265,7 +269,10 @@ function isQuadrupleFresh(quadruple) {
 // Canon Part 9: FEYNMAN.md is a Files-preserve-meaning surface; reading its human
 // body back is a local-mind read, never a Brain egress.
 
-const timelineRunner = require('./feynman/timeline-runner.cjs');
+// Phase 386 plan 35 (Part 8 hardening): the timeline runner is NOT required here at module
+// load. Only extractFeynmanBody uses it, and its load pulls navigation and many modules into the
+// guard, hook and statusline processes (fewer eager dependencies for the guard). The require sits
+// inside the try of extractFeynmanBody, so a load failure takes the existing raw-buffer fallback.
 
 /**
  * extractFeynmanBody(sectionPath) -> string
@@ -280,6 +287,7 @@ function extractFeynmanBody(sectionPath) {
   if (buf === null) return '';
   let body = buf;
   try {
+    const timelineRunner = require('./feynman/timeline-runner.cjs');
     // The timeline-runner's frontmatter parser splits off any frontmatter so the
     // body region is the prose; bodyOutsideSentinels then excises the auto block.
     const parsed = timelineRunner.parseFrontmatter(buf);

@@ -148,33 +148,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/operator-update.cjs\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/jtbd-update.cjs\" stop",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hmi-compliance-poll.cjs\" --hook",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/gsd-graph-derive-sweep.cjs\"",
             "timeout": 5
           }
@@ -251,6 +224,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "^(?:WebSearch|WebFetch|mcp__(?:plugin_[a-z0-9_-]+_)?(?:tavily|tavily-mcp|claude_ai_Tavily)__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/web-credential-guard-hook.cjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -325,7 +308,7 @@
         ]
       },
       {
-        "matcher": "Read|Grep|Glob",
+        "matcher": "Grep|Glob",
         "hooks": [
           {
             "type": "command",
@@ -335,31 +318,11 @@
         ]
       },
       {
-        "matcher": "Write|Edit|MultiEdit|Read|Grep|Glob|AskUserQuestion|Bash|Task|TodoWrite",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/operator-update.cjs\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "mcp__(?:(?:plugin_[a-z0-9_-]+_)?(?:mindrian-brain|pws-brain-mcp)__.*|[a-z0-9_-]+__brain_[a-z0-9_]+)",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-response-sanitize-hook.cjs\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "SlashCommand",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/telemetry-command-invocation.cjs\"",
             "timeout": 5
           }
         ]
@@ -407,15 +370,6 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-derivation-drain.cjs\"",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/operator-update.cjs\"",
             "timeout": 3
           }
         ]

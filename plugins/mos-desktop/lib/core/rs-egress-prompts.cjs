@@ -84,10 +84,17 @@ function auditQueryString(s, surface) {
 // on purpose: a key is never echoed into an error. A credential check is not a
 // room-text check; Canon Part 8 (the Brain line) keeps auditQueryString.
 
+// Plan 386-31 (E-KEY): the 2 original rules stay; CREDENTIAL_SHAPES (the one
+// list the Brain scan also uses, lib/core/cross-room-aggregator.cjs) is added.
+// Credentials only: no content pattern is applied on the web lines.
+const CREDENTIAL_SHAPES = crossRoomAggregator.CREDENTIAL_SHAPES;
+if (!Array.isArray(CREDENTIAL_SHAPES) || CREDENTIAL_SHAPES.length < 1) {
+  throw new Error('rs-egress-prompts: CREDENTIAL_SHAPES re-export failed; credential check would be empty');
+}
 const WEB_CREDENTIAL_PATTERNS = Object.freeze([
   /\bBearer\s+[A-Za-z0-9._~+\/-]{12,}/i,
   /\bapi_key=\S+/i,
-]);
+].concat(CREDENTIAL_SHAPES));
 const WEB_CREDENTIAL_ENV_VARS = Object.freeze(['OPENALEX_API_KEY', 'TAVILY_API_KEY', 'PATENTSVIEW_API_KEY']);
 const WEB_CREDENTIAL_MIN_LEN = 8;
 
@@ -149,8 +156,20 @@ function auditQueryObject(obj, surface) {
 
 // ---------- Exports ----------
 
+// Plan 386-33: the 2 halves of the Canon list (ALWAYS: credentials and structured
+// identifiers, every shape; PROSE: word-list patterns, edge and body only). One
+// definition in cross-room-aggregator; the guard keeps no private copy.
+const ALWAYS_PATTERNS = crossRoomAggregator.ALWAYS_PATTERNS;
+const PROSE_PATTERNS = crossRoomAggregator.PROSE_PATTERNS;
+if (!Array.isArray(ALWAYS_PATTERNS) || !Array.isArray(PROSE_PATTERNS)) {
+  throw new Error('rs-egress-prompts: ALWAYS_PATTERNS or PROSE_PATTERNS re-export failed');
+}
+
 module.exports = {
   FORBIDDEN_PATTERNS,
+  CREDENTIAL_SHAPES,
+  ALWAYS_PATTERNS,
+  PROSE_PATTERNS,
   auditQueryString,
   auditWebCredential,
   auditQueryObject,

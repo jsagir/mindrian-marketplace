@@ -386,6 +386,41 @@ function _attachEgressDisclosure(result, disclosure) {
 }
 
 /**
+ * Plan 386-30 (E-FAIL): the typed result a belt returns when the Part 8 guard
+ * cannot run. A sentinel object, not null: null stays the transport-failure
+ * signal only. It carries the tool name and the reason, never a payload byte.
+ */
+function _guardUnavailableSentinel(toolName) {
+  return { error: 'egress_guard_unavailable', tool: toolName };
+}
+
+/**
+ * Plan 386-30: a payload is provably empty only when it is a plain object with
+ * no own keys. This check does not depend on the guard.
+ */
+function _isProvablyEmptyPayload(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+  return Object.keys(value).length === 0;
+}
+
+/**
+ * Plan 386-30: append one count-only outage line (tool name class and failure
+ * mode, never the arguments). The module has Node built-ins only and loads
+ * lazily here, so a healthy call loads nothing new. Never throws.
+ */
+function _recordGuardOutageBestEffort(toolName, mode) {
+  try {
+    require('./part8-outage-log.cjs').recordGuardOutage(
+      typeof toolName === 'string' ? toolName : '',
+      mode
+    );
+  } catch (_e) {
+    // A failing log never changes a verdict.
+  }
+}
+
+/**
  * Call a Brain MCP tool via HTTP.
  * @param {string} toolName - e.g., 'brain_query', 'brain_search', 'brain_schema'
  * @param {object} args - tool arguments
@@ -437,13 +472,24 @@ async function callTool(toolName, args) {
   // constant literal, unlike the `block` branch's reason which embeds the
   // matched pattern -- this path never reaches that branch).
   //
+  // Plan 386-27 (option-e, owner decision of plan 386-26, 2026-11-06): the
+  // Phase 254 Option A disposition above was CHANGED for the own shim by the
+  // owner decision (context-based decomposition). An ambiguous call whose
+  // payload carries an edge or a body string by shape is not sent: it returns
+  // the typed outcome sprouts_required (lib/core/part8-split-route.cjs) with
+  // the split guide, 0 network calls, no payload byte. An ambiguous call whose
+  // strings are all sprouts (or numbers) still DISCLOSES and PROCEEDS as
+  // before. The cypher key of brain_query is not read by the shape rule.
+  //
   // The host PreToolUse hook (`scripts/part8-egress-guard-hook.cjs`) still
   // gates `ambiguous` with a real Shape F.1 render on the model-issued path.
   // The two enforcement points now DIVERGE BY A STATED DECISION rather than
   // by omission -- COMP-02's literal wording.
   let ambiguousDisclosure = null;
+  let guardOutageMode = 'guard_load_failed';
   try {
     const callToolEgressGuard = require('./part8-egress-guard.cjs');
+    guardOutageMode = 'classify_threw';
     // Phase 369.2 Plan 01 (CODE-07, J4): a free-form Theo string gets the one
     // verdict with the bound room resolved; every block carries the one
     // vocabulary (token_class, reason). The packet `ambiguous` disclosure
@@ -452,7 +498,17 @@ async function callTool(toolName, args) {
       toolName: toolName,
       roomDir: callToolEgressGuard._isFreeFormTool(toolName) ? _resolveEgressRoomDir() : null,
     });
+    if (!callToolEgressVerdict || typeof callToolEgressVerdict !== 'object') {
+      guardOutageMode = 'verdict_invalid';
+      throw new Error('part8 guard returned an invalid verdict');
+    }
     if (callToolEgressVerdict && callToolEgressVerdict.verdict === 'block') {
+      // Plan 386-27 (option-e, owner decision of plan 386-26): the class
+      // sprouts_required is answered with the typed outcome and the split
+      // guide, never a bare block. No network call, no session, no payload byte.
+      if (callToolEgressVerdict.class === 'sprouts_required') {
+        return _sproutsRequiredSentinel(toolName, callToolEgressVerdict);
+      }
       if (callToolEgressGuard._isFreeFormTool(toolName)) {
         return _egressBlockedSentinel(toolName, callToolEgressVerdict);
       }
@@ -463,6 +519,14 @@ async function callTool(toolName, args) {
         egress_class: callToolEgressVerdict.class || 'content_set',
       };
     } else if (callToolEgressVerdict && callToolEgressVerdict.verdict === 'ambiguous') {
+      // Plan 386-27 (option-e): an ambiguous call that carries an edge or a
+      // body string by shape is not sent. It gets the typed outcome. A call
+      // whose strings are all sprouts (or numbers) keeps proceeding with the
+      // disclosure below, so a short keyword query is never stopped for being
+      // unproven. The cypher key of brain_query is not read (repo code paths).
+      if (_carriesEdgeOrBody(toolName, args)) {
+        return _sproutsRequiredSentinel(toolName);
+      }
       ambiguousDisclosure = {
         verdict: 'ambiguous',
         egress_class: callToolEgressVerdict.class || 'unknown',
@@ -472,8 +536,16 @@ async function callTool(toolName, args) {
       };
     }
   } catch (_e) {
-    // Belt-internal error (guard module missing/throws): degrade to existing
-    // behavior. This belt is a belt, not the primary control.
+    // Plan 386-30 (E-FAIL, owner decision of plan 386-29, 2026-11-06): the
+    // guard could not run (module missing, load error, classify threw). Fail
+    // CLOSED with a typed result and no network call, not even a session
+    // init. A provably empty payload (a plain object with no keys) carries
+    // zero bytes and proceeds. One count-only outage line is recorded either
+    // way; the log call never throws and never changes this verdict.
+    _recordGuardOutageBestEffort(toolName, guardOutageMode);
+    if (!_isProvablyEmptyPayload(args)) {
+      return _guardUnavailableSentinel(toolName);
+    }
   }
 
   try {
@@ -728,12 +800,18 @@ async function query(cypher, params) {
   // (every legitimate methodology query looks ambiguous at this tier) and is
   // deliberately NOT blocked; only a proven 'block' (a CONTENT-SET hit) stops
   // the call.
+  let queryOutageMode = 'guard_load_failed';
   try {
     const queryEgressGuard = require('./part8-egress-guard.cjs');
+    queryOutageMode = 'classify_threw';
     const queryEgressVerdict = queryEgressGuard.classify(
       { cypher: String(cypher || '') },
       { toolName: 'brain_query', roomDir: _resolveEgressRoomDir() }
     );
+    if (!queryEgressVerdict || typeof queryEgressVerdict !== 'object') {
+      queryOutageMode = 'verdict_invalid';
+      throw new Error('part8 guard returned an invalid verdict');
+    }
     if (queryEgressVerdict && queryEgressVerdict.verdict === 'block') {
       _logEventBestEffort(undefined, 'brain_egress_blocked', {
         egress_class: queryEgressVerdict.class || 'content_set',
@@ -749,8 +827,11 @@ async function query(cypher, params) {
       return _egressBlockedSentinel('brain_query', queryEgressVerdict);
     }
   } catch (_e) {
-    // Belt-internal error (guard module missing/throws): degrade to existing
-    // behavior. This backstop is a belt, not the primary control.
+    // Plan 386-30 (E-FAIL): the guard could not run. Fail CLOSED with the
+    // typed result, no network call. The payload here always carries the
+    // cypher key, so the empty-payload proceed never applies to query().
+    _recordGuardOutageBestEffort('brain_query', queryOutageMode);
+    return _guardUnavailableSentinel('brain_query');
   }
 
   const args = { cypher: cypher };
@@ -918,7 +999,36 @@ function _egressRefusalReason(verdict) {
   return 'The question names something from this room (a ' + label + '), so it was not sent to Theo. Ask it in general terms.';
 }
 
+// Plan 386-27: the typed sprouts_required outcome. The class name, route,
+// message and sentinel come from lib/core/part8-split-route.cjs (plan 386-42);
+// nothing is copied here. Required lazily so a healthy run loads nothing new.
+// If the module cannot load, fail closed with the plain refusal (never a send).
+function _sproutsRequiredSentinel(toolName, verdict) {
+  let out;
+  try {
+    out = require('./part8-split-route.cjs').sproutsRequiredResult(toolName);
+  } catch (_e) {
+    out = { error: 'egress_blocked', tool: toolName, egress_class: 'sprouts_required' };
+  }
+  // The one refusal vocabulary (Phase 369.2 J4): token_class and reason. Both
+  // come from the guard verdict as constants (body_shape, edge_rule,
+  // private_marker, room_check_unavailable); neither holds a byte of the input.
+  out.token_class = (verdict && typeof verdict.token_class === 'string') ? verdict.token_class : null;
+  if (verdict && typeof verdict.reason === 'string') out.reason = verdict.reason;
+  return out;
+}
+
+function _carriesEdgeOrBody(toolName, args) {
+  try {
+    return require('./part8-split-route.cjs').carriesEdgeOrBody(toolName, args) !== false;
+  } catch (_e) {
+    // The shape test cannot run: the safe class, refuse and send nothing.
+    return true;
+  }
+}
+
 function _egressBlockedSentinel(toolName, verdict) {
+  if (verdict && verdict.class === 'sprouts_required') return _sproutsRequiredSentinel(toolName, verdict);
   const sentinel = {
     error: 'egress_blocked',
     tool: toolName,

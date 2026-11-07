@@ -30,7 +30,9 @@ const path = require('node:path');
 const shared = require('./folder-memory-shared.cjs');
 const invariants = require('./feynman-minto-invariants.cjs');
 
-const RESERVED = new Set(['ROOM.md', 'STATE.md', 'MINTO.md', 'TEAM-STATE.md']);
+// FEYNMAN.md is a generated memory file, not a section artifact. Keep this set
+// equal to the sync reader (Phase 386 plan 12, B8).
+const RESERVED = new Set(['ROOM.md', 'STATE.md', 'MINTO.md', 'TEAM-STATE.md', 'FEYNMAN.md']);
 
 async function safeStatAsync(p) {
   try {
@@ -217,7 +219,9 @@ async function isQuadrupleFresh(quadruple) {
 // (Phase 87-04 key-set-parity discipline). The bodyOutsideSentinels helper is
 // pure-CPU; FEYNMAN.md is small so the one read here is negligible.
 
-const timelineRunner = require('./feynman/timeline-runner.cjs');
+// Phase 386 plan 35 (Part 8 hardening): the runner is required inside extractFeynmanBodyAsync, in
+// the existing try, not at module load (fewer eager dependencies for the guard; a load failure
+// takes the existing raw-buffer fallback). Same move as the sync twin.
 
 async function extractFeynmanBodyAsync(sectionPath) {
   const feyPath = path.join(sectionPath, 'FEYNMAN.md');
@@ -225,6 +229,7 @@ async function extractFeynmanBodyAsync(sectionPath) {
   if (buf === null) return '';
   let body = buf;
   try {
+    const timelineRunner = require('./feynman/timeline-runner.cjs');
     const parsed = timelineRunner.parseFrontmatter(buf);
     body = parsed && typeof parsed.body === 'string' ? parsed.body : buf;
     body = timelineRunner.bodyOutsideSentinels(body);

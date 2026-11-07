@@ -1,17 +1,16 @@
 'use strict';
 
-const { registerEurekaTool, response: eurekaResponse, signalFromExtra } = require('../eureka-tool-contract.cjs');
+const { registerEurekaTool, response: eurekaResponse, signalFromExtra, engineRootOrRefusal, refusalFromEngineText, captureStartLine, startFailureRefusal, ENGINE_REQUIREMENT } = require('../eureka-tool-contract.cjs');
 
 // End-to-end local handoff: authorized MindrianOS graph projection -> Eureka's
 // own stdio MCP engine -> proposals returned to MindrianOS. The engine never
 // receives a room path or a graph handle and cannot write host state.
 
-const fs = require('node:fs');
-const path = require('node:path');
 const { z } = require('zod');
 const { Client } = require('@modelcontextprotocol/client');
 const { StdioClientTransport } = require('@modelcontextprotocol/client/stdio');
 const { eurekaChildEnvironment } = require('./eureka-capability-run.cjs');
+const requirements = require('../../core/eureka/eureka-engine-requirements.cjs');
 const { project } = require('./eureka-graph-projection.cjs');
 
 const CAPABILITY_ID = 'graph.explore_local_relationships';
@@ -21,27 +20,29 @@ async function callEurekaWorkflow(capabilityId, request, env = process.env, sign
   const configuredTimeout = Number(env.MINDRIAN_EUREKA_WORKFLOW_TIMEOUT_MS || 120000);
   const timeoutMs = Number.isFinite(configuredTimeout) ? Math.min(Math.max(configuredTimeout, 1000), 1800000) : 120000;
   const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
-  const configuredRoot = env.MINDRIAN_EUREKA_ROOT;
-  if (typeof configuredRoot !== 'string' || !configuredRoot.trim()) {
-    return { ok: false, reason: 'engine_not_configured', message: 'Set MINDRIAN_EUREKA_ROOT to the Mindrian Eureka checkout before calling this tool.' };
-  }
-  const root = path.resolve(configuredRoot);
-  if (!fs.existsSync(path.join(root, 'pyproject.toml'))) {
-    return { ok: false, reason: 'engine_checkout_unavailable', message: 'The configured Mindrian Eureka checkout is unavailable.' };
-  }
+  const rootResult = engineRootOrRefusal(env);
+  if (!rootResult.ok) return rootResult;
+  const root = rootResult.root;
 
-  // Graph workflows need no model download or package fetch: run them offline.
+  // Graph workflows need no model download or package fetch: run them offline and without a sync. The uv
+  // arguments come from uvRunArgs (--no-sync --offline --locked --no-python-downloads); the environment forces
+  // the three offline variables. MINDRIAN_EUREKA_ALLOW_NETWORK=1 lifts the rule (Plan 387-06).
   const Transport = deps.StdioClientTransport || StdioClientTransport;
   const transport = new Transport({
     command: env.MINDRIAN_EUREKA_UV || 'uv',
-    args: ['run', '--project', root, '--extra', 'mcp-server', 'eureka-mcp'],
+    args: requirements.uvRunArgs(root, ['mcp-server'], { allowNetwork: env.MINDRIAN_EUREKA_ALLOW_NETWORK === '1' }),
     cwd: root,
     env: eurekaChildEnvironment(env, { forceOffline: true }),
+    stderr: 'pipe',
   });
   const McpClient = deps.Client || Client;
   const client = new McpClient({ name: 'mindrian-os-eureka-bridge', version: '1.0.0' }, { capabilities: {} });
+  const capture = captureStartLine(transport);
+  let connected = false;
   try {
     await client.connect(transport);
+    connected = true;
+    capture.stop();
     const response = await client.callTool({
       name: 'scout_run_workflow',
       arguments: {
@@ -50,10 +51,14 @@ async function callEurekaWorkflow(capabilityId, request, env = process.env, sign
       },
     }, { signal: requestSignal });
     return decodeEurekaResponse(response, 'Eureka MCP rejected the graph analysis request.');
-  } catch (_error) {
+  } catch (error) {
     if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'Eureka workflow was cancelled.' };
     if (requestSignal.aborted) return { ok: false, reason: 'engine_timeout', message: 'Eureka workflow exceeded its configured runtime limit.' };
-    return { ok: false, reason: 'engine_unavailable', message: 'Could not start or call the configured local Eureka MCP server.' };
+    // Typed refusal from fixed sentences: no raw spawn text, no path (Plans 387-05 and 387-11). The start line
+    // is used only when the connect itself failed, before the engine received any request.
+    capture.stop();
+    if (!connected) await capture.settle();
+    return startFailureRefusal(error, connected ? '' : capture.line(), { root, home: env.HOME || env.USERPROFILE });
   } finally {
     try { await client.close(); } catch (_error) { /* close is best-effort after the single call */ }
   }
@@ -62,6 +67,9 @@ async function callEurekaWorkflow(capabilityId, request, env = process.env, sign
 function decodeEurekaResponse(response, fallbackMessage) {
   if (response && response.isError) {
     const detail = (response.content || []).filter((item) => item.type === 'text').map((item) => item.text).join('\n');
+    // Phase 387 plan 11: an engine reply that names a known need becomes a typed fixed answer, never raw text.
+    const typed = refusalFromEngineText(detail);
+    if (typed) return typed;
     return { ok: false, reason: 'engine_rejected_request', message: detail || fallbackMessage };
   }
   if (response && response.structuredContent && typeof response.structuredContent === 'object') {
@@ -102,27 +110,30 @@ function waitForPoll(signal, delayMs) {
 // in-memory worker while it is running.
 async function callEurekaOpportunityScout(request, env = process.env, signal, deps = {}) {
   if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'Eureka opportunity scout was cancelled before launch.' };
-  const configuredRoot = env.MINDRIAN_EUREKA_ROOT;
-  if (typeof configuredRoot !== 'string' || !configuredRoot.trim()) {
-    return { ok: false, reason: 'engine_not_configured', message: 'Set MINDRIAN_EUREKA_ROOT to the Mindrian Eureka checkout before calling this tool.' };
-  }
-  const root = path.resolve(configuredRoot);
-  if (!fs.existsSync(path.join(root, 'pyproject.toml'))) {
-    return { ok: false, reason: 'engine_checkout_unavailable', message: 'The configured Mindrian Eureka checkout is unavailable.' };
-  }
-  const encoderExtra = env.MINDRIAN_EUREKA_RS_ENCODER === 'reference-bert' ? 'reference-encoder' : 'modern-encoder';
+  const rootResult = engineRootOrRefusal(env);
+  if (!rootResult.ok) return rootResult;
+  const root = rootResult.root;
+  // The scout does not install an extra on its first call (Plan 387-06). The engine folder must be prepared once
+  // with /mos:eureka enable engine --sync --extras modern-encoder, and a model folder must exist (the engine
+  // never downloads one). MINDRIAN_EUREKA_ALLOW_NETWORK=1 lifts the offline rule for a person who wants that.
+  const needs = requirements.needsForCall('eureka_graph_opportunity_scout', {}, env);
   const Transport = deps.StdioClientTransport || StdioClientTransport;
   const transport = new Transport({
     command: env.MINDRIAN_EUREKA_UV || 'uv',
-    args: ['run', '--project', root, '--extra', 'mcp-server', '--extra', encoderExtra, 'eureka-mcp'],
+    args: requirements.uvRunArgs(root, needs.extras, { allowNetwork: env.MINDRIAN_EUREKA_ALLOW_NETWORK === '1' }),
     cwd: root,
-    env: eurekaChildEnvironment(env),
+    env: eurekaChildEnvironment(env, { forceOffline: true }),
+    stderr: 'pipe',
   });
   const McpClient = deps.Client || Client;
   const client = new McpClient({ name: 'mindrian-os-eureka-bridge', version: '1.0.0' }, { capabilities: {} });
+  const capture = captureStartLine(transport);
+  let connected = false;
   let jobId;
   try {
     await client.connect(transport);
+    connected = true;
+    capture.stop();
     const started = decodeEurekaResponse(await client.callTool({
       name: 'scout_start_opportunity_signal_scout',
       arguments: { request },
@@ -188,9 +199,11 @@ async function callEurekaOpportunityScout(request, env = process.env, signal, de
       }
       return { ok: false, reason: 'cancelled', job_id: jobId || null, message: 'Eureka opportunity scout was cancelled; cancellation was requested when a job had started.' };
     }
-    const detail = String(error && error.message || error || 'unknown MCP transport error')
-      .replaceAll(root, '<MINDRIAN_EUREKA_ROOT>').slice(0, 500);
-    return { ok: false, reason: 'engine_unavailable', message: 'Could not complete the local Eureka opportunity scout MCP session: ' + detail };
+    // Typed refusal from fixed sentences: no raw spawn text, no path (Plans 387-05 and 387-11). The start line
+    // is used only when the connect itself failed, before the engine received any request.
+    capture.stop();
+    if (!connected) await capture.settle();
+    return startFailureRefusal(error, connected ? '' : capture.line(), { root, home: env.HOME || env.USERPROFILE });
   } finally {
     try { await client.close(); } catch (_error) { /* close is best-effort after the single job */ }
   }
@@ -240,7 +253,7 @@ function registerForCapability(server, ctx, options = {}) {
   const capabilityId = options.capabilityId || CAPABILITY_ID;
   registerEurekaTool(server, toolName, {
     title: options.title || 'Analyze MindrianOS Graph with Eureka',
-    description: options.description || 'Project explicit node IDs from the bound MindrianOS room through its read-only navigation boundary, call the configured local Eureka MCP graph engine, and return snapshot-bound unverified proposals. Requires MINDRIAN_EUREKA_ROOT and uv. Does not accept paths, expand graph scope, fetch remote sources, or write graph state.',
+    description: options.description || 'Project explicit node IDs from the bound MindrianOS room through its read-only navigation boundary, call the configured local Eureka MCP graph engine, and return snapshot-bound unverified proposals. ' + ENGINE_REQUIREMENT + ' Does not accept paths, expand graph scope, fetch remote sources, or write graph state.',
     inputSchema: z.object({
       node_ids: z.array(z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/)).min(1).max(2500),
       top: z.number().int().min(1).max(1000).optional(),

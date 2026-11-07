@@ -27,8 +27,10 @@
  * the same line the heal net draws (lib/core/graph-backfill.cjs step 0a, plan 09). The face and status are unchanged.
  *
  * The plugin never changes permissions: a room.db that cannot be written is a host decision, reported with the
- * remediation restore_write_permission (a person's action) and no recovery card. Every other not-ready reason has
- * the remediation recover_room_record (the heal net, runDeriveBackfill, behind its existing approval).
+ * remediation restore_write_permission (a person's action) and no recovery card. A room.db that could not be opened
+ * for a cause that is not damage (busy, io, cannot_open, other) gets retry_or_check_drive, also a person's action
+ * and no card (plan 386-47). Every other not-ready reason has the remediation recover_room_record (the heal net,
+ * runDeriveBackfill, behind its existing approval).
  *
  * Hook-safe: node built-ins only at load; room-identity is required lazily, only when the caller did not pass an
  * identity result it already read (opts.identity). Never throws for a room problem; throws TypeError for a
@@ -74,8 +76,111 @@ const REQUIREMENT_LINES = Object.freeze({
   room_graph_lost: "the room's graph was lost and recreated empty (the room record names an id that room.db no longer holds)",
 });
 
+// Plan 386-45 (B18): room_db_unreadable was one fixed line for every failure, so a healthy room.db held by a
+// Windows program (SQLITE_CANTOPEN) read as "damaged". The reason stays room_db_unreadable (readers and reason
+// sets are unchanged); the field cause says why, and the requirement line names it in plain words.
+const CAUSES = Object.freeze(['busy', 'io', 'cannot_open', 'not_a_database', 'other']);
+// Plan 386-47 (B19): for every cause except not_a_database the line also says what the person does, because
+// these causes can be false reports on a healthy file and get no recovery card (remediation retry_or_check_drive).
+const CAUSE_LINES = Object.freeze({
+  busy: 'room.db is in use by another process, so it could not be read just now; close the program that holds the file and try again',
+  io: 'room.db sits on a drive that cannot give the file locks or shared memory it needs (a Windows drive read from WSL); check that the drive is connected and available, close other programs that use the file, and try again',
+  cannot_open: 'room.db could not be opened: the path or the drive refused access, or another program holds the file (a Windows drive read from WSL); check that the drive is connected and available, close other programs that use the file, and try again',
+  not_a_database: REQUIREMENT_LINES.room_db_unreadable,
+  other: 'room.db could not be opened for another reason; nothing was changed',
+});
+
+function className(err) {
+  const n = err && typeof err === 'object' && typeof err.name === 'string' ? err.name : 'Error';
+  return n.replace(/[^A-Za-z0-9_]/g, '').slice(0, 40) || 'Error';
+}
+
+/**
+ * causeOfError(err) -> { cause, cause_class, cause_stage }. Never throws. Reads the SQLite result code of a
+ * node:sqlite error (primary code = errcode & 0xff), the typed room-db errors by name (no require, so the load
+ * stays hook-safe), then the message. cause_stage is 'sqlite' when SQLite answered and 'script' when it did not.
+ */
+function causeOfError(err) {
+  const cls = className(err);
+  try {
+    if (err && err.name === 'RoomDbBusyError') return { cause: 'busy', cause_class: cls, cause_stage: 'sqlite' };
+    const meta = err && typeof err.meta === 'object' && err.meta ? err.meta : null;
+    const code = (err && typeof err.errcode === 'number') ? err.errcode : (meta && typeof meta.errcode === 'number' ? meta.errcode : null);
+    if (code !== null) {
+      const primary = code & 0xff;
+      let cause = 'other';
+      if (primary === 5 || primary === 6) cause = 'busy';
+      else if (primary === 10) cause = 'io';
+      else if (primary === 14) cause = 'cannot_open';
+      else if (primary === 26 || primary === 11) cause = 'not_a_database';
+      return { cause: cause, cause_class: cause === 'other' ? 'SQLite code ' + primary : cls, cause_stage: 'sqlite' };
+    }
+    const sqliteShaped = !!err && typeof err.code === 'string' && err.code.indexOf('ERR_SQLITE') === 0;
+    if (sqliteShaped || (err && err.name === 'RoomDbBrokenError')) {
+      const msg = String((err && err.message) || '') + ' ' + String((meta && meta.causeMessage) || '');
+      let cause = 'other';
+      if (/database is locked|database table is locked|busy/i.test(msg)) cause = 'busy';
+      else if (/disk I.O error|shared.?memory/i.test(msg)) cause = 'io';
+      else if (/unable to open database/i.test(msg)) cause = 'cannot_open';
+      else if (/not a database|malformed|corrupt/i.test(msg)) cause = 'not_a_database';
+      return { cause: cause, cause_class: cls, cause_stage: 'sqlite' };
+    }
+  } catch (_e) { /* fall through to other */ }
+  return { cause: 'other', cause_class: cls, cause_stage: 'script' };
+}
+
+/**
+ * unreadableCause(roomDir, err, detail) -> { cause, cause_class, cause_stage }. With a thrown error, the error
+ * decides. With none (room-identity returns a result and drops the SQLite error), look at the file itself, local
+ * and read-only: the first 16 bytes, then one read-only open. A file that opens now was held a moment ago: busy.
+ */
+function unreadableCause(roomDir, err, detail) {
+  if (err) return causeOfError(err);
+  if (detail === 'no identity table') return { cause: 'not_a_database', cause_class: 'Error', cause_stage: 'sqlite' };
+  const dbPath = path.join(String(roomDir || ''), '.mindrian', 'room.db');
+  try {
+    const fd = fs.openSync(dbPath, 'r');
+    let size = 0;
+    let head = Buffer.alloc(16);
+    try {
+      size = fs.fstatSync(fd).size;
+      fs.readSync(fd, head, 0, 16, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (size > 0 && (size < 16 || head.toString('latin1') !== 'SQLite format 3\u0000')) {
+      return { cause: 'not_a_database', cause_class: 'Error', cause_stage: 'sqlite' };
+    }
+  } catch (e) {
+    const c = e && e.code;
+    if (c === 'EIO') return { cause: 'io', cause_class: className(e), cause_stage: 'script' };
+    return { cause: 'cannot_open', cause_class: className(e), cause_stage: 'script' };
+  }
+  // One read-only open through the navigation spine door (the only place that may touch node:sqlite).
+  const probe = require('./navigation/spine-events.cjs').probeRoomDbReadOnly(dbPath);
+  if (probe && probe.ok === false) return causeOfError(probe.error);
+  return { cause: 'busy', cause_class: 'Error', cause_stage: 'sqlite' };
+}
+
+/** The requirement line for a reason and an optional cause. Without a cause it is REQUIREMENT_LINES[reason]. */
+function requirementFor(reason, cause, causeClass, causeStage) {
+  if (reason === 'room_db_unreadable' && CAUSES.indexOf(cause) !== -1) {
+    if (cause === 'other') {
+      const cls = typeof causeClass === 'string' && causeClass.length > 0 ? causeClass : 'Error';
+      return causeStage === 'script'
+        ? 'room.db could not be checked: a ' + cls + ' stopped the check before SQLite answered; nothing was changed'
+        : 'room.db could not be opened for another reason (' + cls + '); nothing was changed';
+    }
+    return CAUSE_LINES[cause];
+  }
+  return REQUIREMENT_LINES[reason] || reason;
+}
+
 const REMEDIATION_RESTORE = 'restore_write_permission';
 const REMEDIATION_RECOVER = 'recover_room_record';
+// Plan 386-47 (B19): a person's action (close the program, try again, check the drive) for a room.db that could
+// not be opened for a cause that is not damage. No recovery card and no move-aside is offered for it.
+const REMEDIATION_RETRY = 'retry_or_check_drive';
 
 function isFile(p) {
   try { return fs.statSync(p).isFile(); } catch (_e) { return false; }
@@ -90,7 +195,10 @@ function readIdentity(roomDir, opts) {
     const mod = require('./navigation/room-identity.cjs');
     return mod.readRoomIdentity(roomDir, { door: 'in_place', roomsHome: opts && opts.roomsHome });
   } catch (e) {
-    return { ok: false, state: 'not_ready', reason: 'room_db_unreadable', detail: String((e && e.message) || e).slice(0, 160) };
+    const res = { ok: false, state: 'not_ready', reason: 'room_db_unreadable', detail: String((e && e.message) || e).slice(0, 160) };
+    // Plan 386-45: keep the thrown error for the cause, hidden from JSON and from copies of the result.
+    Object.defineProperty(res, 'thrown', { value: e, enumerable: false });
+    return res;
   }
 }
 
@@ -117,7 +225,15 @@ function recordedRoomId(dir, o) {
   return null;
 }
 
-function answer(operation, reason, roomId, detail, isRoom) {
+// Plan 386-47 (B19): only a real not-a-database failure (or no cause at all) offers the recovery; busy, io,
+// cannot_open and other can be false reports on a healthy file, so they get a person's action.
+function remediationFor(reason, causeInfo) {
+  if (reason === 'room_db_not_writable') return REMEDIATION_RESTORE;
+  if (reason === 'room_db_unreadable' && causeInfo && causeInfo.cause !== 'not_a_database') return REMEDIATION_RETRY;
+  return REMEDIATION_RECOVER;
+}
+
+function answer(operation, reason, roomId, detail, isRoom, causeInfo) {
   if (reason === null) {
     return { ok: true, operation, state: 'ready', reason: null, requirement: null, blocking: false, room_id: roomId || null, remediation: null };
   }
@@ -129,12 +245,16 @@ function answer(operation, reason, roomId, detail, isRoom) {
     operation,
     state: 'not_ready',
     reason,
-    requirement: REQUIREMENT_LINES[reason] || reason,
+    requirement: causeInfo ? requirementFor(reason, causeInfo.cause, causeInfo.cause_class, causeInfo.cause_stage) : (REQUIREMENT_LINES[reason] || reason),
     blocking: blocked,
     room_id: roomId || null,
-    remediation: reason === 'room_db_not_writable' ? REMEDIATION_RESTORE : REMEDIATION_RECOVER,
+    remediation: remediationFor(reason, causeInfo),
   };
   if (detail) out.detail = detail;
+  if (causeInfo) {
+    out.cause = causeInfo.cause;
+    if (causeInfo.cause === 'other') { out.cause_class = causeInfo.cause_class; out.cause_stage = causeInfo.cause_stage; }
+  }
   return out;
 }
 
@@ -146,7 +266,8 @@ function answer(operation, reason, roomId, detail, isRoom) {
  *   reason       null when ready, else one of ALL_REASONS
  *   requirement  null when ready, else the REQUIREMENT_LINES text
  *   blocking     true when this operation is refused for this reason
- *   remediation  null when ready; 'restore_write_permission' (a person's action) or 'recover_room_record' (the net)
+ *   remediation  null when ready; 'restore_write_permission' or 'retry_or_check_drive' (a person's action) or
+ *                'recover_room_record' (the net)
  *
  * opts.identity: a readRoomIdentity result the caller already holds (saves a second read on a hot path).
  * opts.roomsHome: passed to readRoomIdentity for the registry check.
@@ -174,9 +295,11 @@ function readinessFor(roomDir, operation, opts) {
     const recorded = recordedRoomId(dir, o);
     if (recorded) return answer(operation, 'room_graph_lost', recorded, id && id.detail, isRoom);
   }
-  const out = answer(operation, reason, storedId, id && id.detail, isRoom);
+  // Plan 386-45 (B18): say why room.db could not be read (busy, io, cannot_open, not_a_database, other).
+  const causeInfo = reason === 'room_db_unreadable' ? unreadableCause(dir, id && id.thrown, id && id.detail) : null;
+  const out = answer(operation, reason, storedId, id && id.detail, isRoom, causeInfo);
   if (reason === 'room_db_missing') out.is_room = isRoom;
   return out;
 }
 
-module.exports = { readinessFor, OPERATIONS, REQUIREMENT_LINES, BLOCKING };
+module.exports = { readinessFor, OPERATIONS, REQUIREMENT_LINES, BLOCKING, CAUSES, CAUSE_LINES, causeOfError, unreadableCause, requirementFor };

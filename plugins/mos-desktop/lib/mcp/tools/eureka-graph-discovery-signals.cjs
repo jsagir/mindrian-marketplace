@@ -1,6 +1,7 @@
 'use strict';
 
-const { registerEurekaTool, signalFromExtra } = require('../eureka-tool-contract.cjs');
+const { registerEurekaTool, signalFromExtra, ENGINE_REQUIREMENT } = require('../eureka-tool-contract.cjs');
+const { describeEngineState } = require('../../core/eureka/eureka-engine-resolver.cjs');
 const { z } = require('zod');
 const { project } = require('./eureka-graph-projection.cjs');
 const { ATTRIBUTE_KEYS } = require('../../core/navigation/engine-projection.cjs');
@@ -65,17 +66,33 @@ const ENGINE_FAILURE_STATUSES = new Set(['invalid_input', 'failed', 'blocked', '
 // Fixed text for each engine transport or call failure. The engine's own
 // message is never forwarded: it can name paths, tokens or stack frames.
 const ENGINE_CALL_FAILURES = Object.freeze({
-  engine_not_configured: 'The local Eureka engine is not configured. Set MINDRIAN_EUREKA_ROOT to the Mindrian Eureka checkout before calling this tool.',
-  engine_checkout_unavailable: 'The configured Mindrian Eureka checkout is unavailable.',
+  // One text source with the engine gate (Plan 387-05): the resolver sentences.
+  engine_not_configured: describeEngineState({ state: 'absent' }).sentence,
+  engine_checkout_unavailable: describeEngineState({ state: 'broken', cause: 'checkout_missing' }).sentence,
   cancelled: 'The Eureka analysis was cancelled.',
   engine_timeout: 'The Eureka analysis exceeded its configured runtime limit.',
   engine_unavailable: 'Could not start or call the configured local Eureka engine.',
+  // Phase 387 plan 11: a present engine that needs more for this route (fixed sentences from the resolver).
+  engine_extra_missing: describeEngineState({ state: 'broken', cause: 'extra_missing' }).sentence,
+  engine_model_missing: describeEngineState({ state: 'broken', cause: 'model_missing' }).sentence,
+  engine_node_missing: describeEngineState({ state: 'broken', cause: 'node_missing' }).sentence,
   engine_rejected_request: 'Eureka rejected the analysis request. Check the selected node IDs and the algorithm options, then retry.',
   engine_invalid_response: 'Eureka returned no usable structured result.',
   engine_failed: 'The Eureka analysis did not complete.',
 });
 
 function engineCallFailure(spec, host, engine) {
+  // A typed engine refusal (Plan 387-05) already carries a fixed sentence, the engine state and a fix.
+  if (engine && typeof engine.engine_state === 'string' && typeof engine.reason === 'string') {
+    return { ok: false, reason: engine.reason, engine_state: engine.engine_state,
+      ...(engine.cause ? { cause: engine.cause } : {}), ...(engine.route_state ? { route_state: engine.route_state } : {}),
+      ...(engine.needs ? { needs: engine.needs } : {}),
+      ...(typeof engine.engine_start_line === 'string' ? { engine_start_line: engine.engine_start_line } : {}),
+      fix: engine.fix,
+      capability_id: spec.capability_id, scope_id: host.scope_id, snapshot_id: host.snapshot_id,
+      ...projectionDisclosure(host.snapshot.meta), persistence: 'none', review_required: true,
+      message: engine.message };
+  }
   const reason = Object.prototype.hasOwnProperty.call(ENGINE_CALL_FAILURES, engine && engine.reason) ? engine.reason : 'engine_failed';
   return { ok: false, reason, capability_id: spec.capability_id, scope_id: host.scope_id, snapshot_id: host.snapshot_id,
     ...projectionDisclosure(host.snapshot.meta), persistence: 'none', review_required: true,
@@ -151,7 +168,7 @@ function register(server, ctx) {
   for (const spec of TOOLS) {
     registerEurekaTool(server, spec.tool, {
       title: spec.title,
-      description: `${spec.jtbd} The tool analyzes only explicit node IDs projected from the verified, bound MindrianOS room. It does not expand scope, fetch sources, accept findings, or write the graph. Partial projections are disclosed in the result. Requires MINDRIAN_EUREKA_ROOT and uv.`,
+      description: `${spec.jtbd} The tool analyzes only explicit node IDs projected from the verified, bound MindrianOS room. It does not expand scope, fetch sources, accept findings, or write the graph. Partial projections are disclosed in the result. ${ENGINE_REQUIREMENT}`,
       inputSchema: z.object({ node_ids: NODE_IDS, ...spec.options.shape }).strict(),
     }, async (args, extra) => {
       const result = await runDiscoverySignal(spec, args, ctx, extra);

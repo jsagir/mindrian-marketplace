@@ -89,34 +89,117 @@ const PROBLEM_TYPE_ENUM = Object.freeze(['UDP', 'IDP', 'WDP']);
 // must NEVER leak into aggregator output. sanitizeDetailScalar strips
 // them at the detail-object layer; the JSON.stringify audit is the
 // last line of defense.
-const FORBIDDEN_PATTERNS = Object.freeze([
-  /@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}/,                                       // email
-  /\$[0-9][\d,.]*[KMB]?\b/,                                               // currency magnitude
-  /\b(Lawrence|Jonathan|Nimrod|Oren|Dror)\s+(said|revealed|told|mentioned)\b/i, // quoted-person
-  /\bmeeting with\b/i,                                                    // meeting fragment
-  /\b\d{3}-\d{2}-\d{4}\b/,                                                // SSN-like
-  /\b\+?1?[\s.\-]?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b/,                // phone-like
-  // Phase 155-07 additive PII patterns (defense-in-depth for domain-insight-sweep
-  // Part 8 egress gate; re-exported by rs-egress-prompts.cjs byte-for-byte).
-  // Catches TitleCase first-name + last-name + academic degree sequences so
-  // full CV prose cannot slip into a Tavily query even if extractDomains strips PII:
-  /\b[A-Z][a-z]{1,20}\s+[A-Z][a-z]{1,20}\s+(?:PhD|MD|JD|MPH|MBA|MSc|BSc|MA|MS|BS|BA|DPhil|DrPH|DO)\b/, // name + degree
-  // Phase 196-03 additive Part-8 CONTENT-SET patterns. The 89.x currency rule
-  // requires a leading $; the 155-07 name+degree rule requires a space before
-  // the degree. The Plurai boundary-guardrail fixture (evals/plurai) surfaces
-  // the same categories written WITHOUT those anchors (bare magnitude, percent,
-  // honorific+name, company proper-noun, identifying location, meeting/verbatim
-  // prose). These close the CONTENT-SET parity gap in the Canon-authoritative
-  // source so every egress surface inherits the tightening (no private copy).
-  /\b\d+(?:\.\d+)?[KMB]\b/,                                               // bare financial magnitude (2.3M, 140K, 22M)
-  /\b\d+(?:\.\d+)?\s*percent\b/i,                                         // percent metric (80 percent churn)
-  /\b(?:Series\s+[A-E]\b|ARR|MRR|burn\s+rate|runway|\d+x\s+growth)\b/i,   // financial idiom (Series A, ARR, burn rate, 3x growth)
-  /\b\d[\d,]*\s+active users\b/i,                                         // user-count metric (12000 active users)
-  /\b(?:meeting transcript|standup|board notes|board meeting|the customer wrote|the investor emailed)\b/i, // meeting / verbatim content
-  /\b[A-Z][a-z]+\s+[A-Z][a-z]+,\s+(?:PhD|MD|JD|MPH|MBA|MSc|BSc|MA|MS|BS|BA|DPhil|DrPH|DO)\b/, // name + comma + degree (the 155-07 rule with a comma; NO bare honorific so legit author titles like "Dr. Solo" still egress)
-  /\b[A-Z][a-z]+\s+(?:Corp|Inc|Ltd|LLC|Robotics|Ventures|Fintech)\b/,     // venture proper-noun (Acme Corp, Nimbus Robotics); Labs/Systems/Technologies deliberately EXCLUDED so academic institutions egress
-  /\b(?:Haifa|Beersheba|Be'er\s?Sheva|Ramat\s+Gan|Tel\s+Aviv|Jerusalem|Herzliya|Netanya)\b/, // identifying location (synthetic-fixture gazetteer)
+// Plan 386-31 (E-KEY): CREDENTIAL_SHAPES, the credential shapes that always
+// block (owner principle of 2026-11-06: credentials always block). One list for
+// the Brain scan (it is part of FORBIDDEN_PATTERNS below) and for the web
+// credential check (rs-egress-prompts.cjs auditWebCredential). Shape rules, not
+// word lists: a vendor prefix followed by a long token, a 3-part JWT, a Bearer
+// token that holds a digit, an api_key= parameter. No money, percent or
+// k-suffix pattern lives here: those are ordinary keywords in a short query.
+// Vendor prefixes are matched in any letter case; AWS ids and the Google key
+// prefix are matched in their real upper-case form.
+const CREDENTIAL_SHAPES = Object.freeze([
+  /\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{20,}/i,                  // sk- API keys
+  /\bgh[pousr]_[A-Za-z0-9]{30,}/i,                                        // GitHub tokens
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/i,                                      // GitHub fine-grained token
+  /\bxox[abprso]-[A-Za-z0-9-]{10,}/i,                                     // Slack tokens
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,                                        // AWS access key id
+  /\bAIza[0-9A-Za-z_-]{35}/,                                              // Google API key
+  /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/i,                       // Stripe keys
+  /\bnpm_[A-Za-z0-9]{30,}/i,                                              // npm token
+  /\bglpat-[A-Za-z0-9_-]{16,}/i,                                          // GitLab token
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,         // JWT (3 parts)
+  /\bBearer\s+(?=[A-Za-z0-9._~+\/=-]*\d)[A-Za-z0-9._~+\/=-]{16,}/,        // Bearer token (16+ chars, holds a digit)
+  /\bapi_key=\S+/i,                                                       // api_key= parameter
 ]);
+
+// Plan 386-33 (E-OVER, owner decision option-e, 2026-11-06): the list is split in
+// two by what a pattern protects.
+//   ALWAYS: structured identifiers and credentials. These block in every shape
+//     (sprout, edge, body): email, SSN-like, phone-like, name plus degree, the
+//     quoted-person rule and the credential shapes.
+//   PROSE: word-list patterns (figures, money, percent, idioms, meeting words,
+//     venture suffixes, city names). They decide an edge or a body (the guard
+//     answers sprouts_required), never a clear sprout (a short keyword query).
+// FORBIDDEN_PATTERNS stays the union, in its original order and with the same
+// regex objects, for every other consumer. No pattern was deleted or changed.
+const _P_EMAIL = /@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}/;                                       // email
+const _P_CURRENCY = /\$[0-9][\d,.]*[KMB]?\b/;                                               // currency magnitude
+const _P_QUOTED_PERSON = /\b(Lawrence|Jonathan|Nimrod|Oren|Dror)\s+(said|revealed|told|mentioned)\b/i; // quoted-person
+const _P_MEETING_WITH = /\bmeeting with\b/i;                                                    // meeting fragment
+const _P_SSN = /\b\d{3}-\d{2}-\d{4}\b/;                                                // SSN-like
+const _P_PHONE = /\b\+?1?[\s.\-]?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b/;                // phone-like
+// Phase 155-07 additive PII patterns (defense-in-depth for domain-insight-sweep
+// Part 8 egress gate; re-exported by rs-egress-prompts.cjs byte-for-byte).
+// Catches TitleCase first-name + last-name + academic degree sequences so
+// full CV prose cannot slip into a Tavily query even if extractDomains strips PII:
+const _P_NAME_DEGREE = /\b[A-Z][a-z]{1,20}\s+[A-Z][a-z]{1,20}\s+(?:PhD|MD|JD|MPH|MBA|MSc|BSc|MA|MS|BS|BA|DPhil|DrPH|DO)\b/; // name + degree
+// Phase 196-03 additive Part-8 CONTENT-SET patterns. The 89.x currency rule
+// requires a leading $; the 155-07 name+degree rule requires a space before
+// the degree. The Plurai boundary-guardrail fixture (evals/plurai) surfaces
+// the same categories written WITHOUT those anchors (bare magnitude, percent,
+// honorific+name, company proper-noun, identifying location, meeting/verbatim
+// prose). These close the CONTENT-SET parity gap in the Canon-authoritative
+// source so every egress surface inherits the tightening (no private copy).
+const _P_MAGNITUDE = /\b\d+(?:\.\d+)?[KMB]\b/;                                               // bare financial magnitude (2.3M, 140K, 22M)
+const _P_PERCENT = /\b\d+(?:\.\d+)?\s*percent\b/i;                                         // percent metric (80 percent churn)
+const _P_IDIOM = /\b(?:Series\s+[A-E]\b|ARR|MRR|burn\s+rate|runway|\d+x\s+growth)\b/i;   // financial idiom (Series A, ARR, burn rate, 3x growth)
+const _P_ACTIVE_USERS = /\b\d[\d,]*\s+active users\b/i;                                     // user-count metric (12000 active users)
+const _P_MEETING_VERBATIM = /\b(?:meeting transcript|standup|board notes|board meeting|the customer wrote|the investor emailed)\b/i; // meeting / verbatim content
+const _P_NAME_COMMA_DEGREE = /\b[A-Z][a-z]+\s+[A-Z][a-z]+,\s+(?:PhD|MD|JD|MPH|MBA|MSc|BSc|MA|MS|BS|BA|DPhil|DrPH|DO)\b/; // name + comma + degree (the 155-07 rule with a comma; NO bare honorific so legit author titles like "Dr. Solo" still egress)
+const _P_VENTURE_SUFFIX = /\b[A-Z][a-z]+\s+(?:Corp|Inc|Ltd|LLC|Robotics|Ventures|Fintech)\b/;     // venture proper-noun (Acme Corp, Nimbus Robotics); Labs/Systems/Technologies deliberately EXCLUDED so academic institutions egress
+const _P_CITY = /\b(?:Haifa|Beersheba|Be'er\s?Sheva|Ramat\s+Gan|Tel\s+Aviv|Jerusalem|Herzliya|Netanya)\b/; // identifying location (synthetic-fixture gazetteer)
+
+// Plan 386-46 (E-IDENT): two always-block identifier forms, appended at the end
+// of ALWAYS_PATTERNS and FORBIDDEN_PATTERNS (no existing pattern changed, the
+// order of the rest is kept). Shape rules, not word lists. Owner principle of
+// 2026-11-06: emails and phone-like strings always block, whatever their shape.
+//   _P_EMAIL_OBFUSCATED: a local part, an at marker ("[at]" or "(at)", or the
+//     plain word "at"), a label, then dot markers ("[dot]", "(dot)", a real dot
+//     or the plain word "dot") and a top-level label. The plain-word form needs
+//     both words in that order, and its label is not a determiner or a pronoun
+//     (so "look at the dot com bubble" is an ordinary question).
+//   _P_PHONE_INTL: a plus sign (not after a word character), a country code of
+//     1 to 3 digits and digit groups, 8 digits or more in the run. "3 + 2" and
+//     "+30%" do not match.
+const _P_EMAIL_OBFUSCATED = new RegExp(
+  '[A-Za-z0-9._%+-]+\\s*[\\[(]\\s*at\\s*[\\])]\\s*[A-Za-z0-9-]+' +
+  '(?:\\s*(?:[\\[(]\\s*dot\\s*[\\])]|\\.)\\s*[A-Za-z0-9-]+)*?' +
+  '\\s*(?:[\\[(]\\s*dot\\s*[\\])]|\\.)\\s*[A-Za-z]{2,}' +
+  '|' +
+  '\\b[A-Za-z0-9._%+-]+\\s+at\\s+' +
+  '(?!(?:the|a|an|this|that|these|those|my|our|your|its|his|her|their|each|every|any|some|all|one|it|us|me|you|them|least|most|first|last|once|home|work|launch|noon|night|scale|dot)\\b)' +
+  '[A-Za-z0-9-]+(?:\\s+dot\\s+[A-Za-z0-9-]+)*?\\s+dot\\s+(?!dot\\b)[A-Za-z]{2,}\\b',
+  'i'
+);                                                                                         // obfuscated email
+const _P_PHONE_INTL = /(?<![\w+])\+(?=(?:[\s.\-]*\(?\d\)?){8,})\d{1,3}(?:[\s.\-]?\(?\d{1,5}\)?){1,5}(?!\d)/; // international phone-like
+
+const ALWAYS_PATTERNS = Object.freeze([
+  _P_EMAIL, _P_QUOTED_PERSON, _P_SSN, _P_PHONE, _P_NAME_DEGREE, _P_NAME_COMMA_DEGREE,
+].concat(CREDENTIAL_SHAPES, [_P_EMAIL_OBFUSCATED, _P_PHONE_INTL]));
+
+const PROSE_PATTERNS = Object.freeze([
+  _P_CURRENCY, _P_MEETING_WITH, _P_MAGNITUDE, _P_PERCENT, _P_IDIOM, _P_ACTIVE_USERS,
+  _P_MEETING_VERBATIM, _P_VENTURE_SUFFIX, _P_CITY,
+]);
+
+const FORBIDDEN_PATTERNS = Object.freeze([
+  _P_EMAIL,
+  _P_CURRENCY,
+  _P_QUOTED_PERSON,
+  _P_MEETING_WITH,
+  _P_SSN,
+  _P_PHONE,
+  _P_NAME_DEGREE,
+  _P_MAGNITUDE,
+  _P_PERCENT,
+  _P_IDIOM,
+  _P_ACTIVE_USERS,
+  _P_MEETING_VERBATIM,
+  _P_NAME_COMMA_DEGREE,
+  _P_VENTURE_SUFFIX,
+  _P_CITY,
+].concat(CREDENTIAL_SHAPES, [_P_EMAIL_OBFUSCATED, _P_PHONE_INTL]));
 
 const DETAIL_STRING_MAX = 40; // detail_scalar strings must be short & structural
 
@@ -1118,6 +1201,9 @@ module.exports = {
   RELEVANCE_SIGNALS: RELEVANCE_SIGNALS,
   RELEVANCE_SCALARS: RELEVANCE_SCALARS,
   FORBIDDEN_PATTERNS: FORBIDDEN_PATTERNS,
+  CREDENTIAL_SHAPES: CREDENTIAL_SHAPES,
+  ALWAYS_PATTERNS: ALWAYS_PATTERNS,
+  PROSE_PATTERNS: PROSE_PATTERNS,
   DETAIL_STRING_MAX: DETAIL_STRING_MAX,
   // Test surface
   _test: Object.freeze({

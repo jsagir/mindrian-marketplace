@@ -1,17 +1,16 @@
 'use strict';
 
-const { registerEurekaTool, response: eurekaResponse, signalFromExtra } = require('../eureka-tool-contract.cjs');
+const { registerEurekaTool, response: eurekaResponse, signalFromExtra, engineRootOrRefusal, refusalFromEngineText, captureStartLine, startFailureRefusal } = require('../eureka-tool-contract.cjs');
 
 // Catalog-driven access to Eureka capabilities that do not need a dedicated
 // MindrianOS graph adapter. The request is caller supplied; this tool does not
 // read a room, persist accepted knowledge, or approve proposals. Async Eureka
 // routes do persist their own local job and derived-cache state.
 
-const fs = require('node:fs');
-const path = require('node:path');
 const { z } = require('zod');
 const { Client } = require('@modelcontextprotocol/client');
 const { StdioClientTransport } = require('@modelcontextprotocol/client/stdio');
+const requirements = require('../../core/eureka/eureka-engine-requirements.cjs');
 
 const ALLOWED_MCP_ROUTES = new Set([
   'scout_run_workflow',
@@ -23,7 +22,12 @@ const ALLOWED_MCP_ROUTES = new Set([
 ]);
 const TERMINAL_JOB_STATES = new Set(['completed', 'completed_empty', 'failed', 'blocked', 'cancelled', 'expired']);
 const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
+// Phase 387 plan 06 (decision network_terms: sync-on-grant-then-offline): the runtime child gets
+// UV_PROJECT_ENVIRONMENT, because the engine must find the same environment folder that the sync wrote, and
+// nothing else from the UV_ family. UV_CACHE_DIR and UV_PYTHON_INSTALL_DIR stay out on purpose: a run with
+// --no-sync and --offline writes no cache and installs no Python. Only the sync child (Plan 387-09) gets them.
 const EUREKA_CHILD_ENV_KEYS = Object.freeze([
+  'UV_PROJECT_ENVIRONMENT',
   'HOME', 'USERPROFILE', 'PATH', 'SHELL', 'TERM', 'USER', 'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'TMP',
   'MINDRIAN_EUREKA_LOG_LEVEL', 'MINDRIAN_EUREKA_RS_ENCODER', 'MINDRIAN_EUREKA_RS_MODEL_PATH',
   'MINDRIAN_EUREKA_RS_MODEL_REVISION', 'MINDRIAN_EUREKA_CACHE_DIR', 'MINDRIAN_EUREKA_DATA_DIR',
@@ -36,6 +40,9 @@ const EUREKA_CHILD_ENV_KEYS = Object.freeze([
 function decodeResponse(response, fallbackMessage) {
   if (response && response.isError) {
     const detail = (response.content || []).filter((item) => item.type === 'text').map((item) => item.text).join('\n');
+    // Phase 387 plan 11: an engine reply that names a known need becomes a typed fixed answer, never raw text.
+    const typed = refusalFromEngineText(detail);
+    if (typed) return typed;
     return { ok: false, reason: 'engine_rejected_request', message: detail || fallbackMessage };
   }
   if (response && response.structuredContent && typeof response.structuredContent === 'object') {
@@ -50,15 +57,15 @@ function decodeResponse(response, fallbackMessage) {
   }
 }
 
+// The one uv argument array comes from uvRunArgs (Plan 387-03): --no-sync, --offline, --locked and
+// --no-python-downloads are in the arguments of every start, so a partial setup becomes a typed answer and never
+// a silent install. MINDRIAN_EUREKA_ALLOW_NETWORK=1 lifts all but --locked. The package groups come from the
+// needs map (one rule for the hmm and encoder groups).
 function clientOptions(root, env, capabilityId) {
-  const args = ['run', '--project', root, '--extra', 'mcp-server'];
-  if (capabilityId === 'decision.compare_sequence_patterns' || capabilityId === 'decision.fit_sequence_patterns') args.push('--extra', 'hmm');
-  if (capabilityId === 'opportunity.find_cross_domain_pairs' || capabilityId === 'opportunity.synthesize_discovery_signals') {
-    const encoderExtra = env.MINDRIAN_EUREKA_RS_ENCODER === 'reference-bert' ? 'reference-encoder' : 'modern-encoder';
-    args.push('--extra', encoderExtra);
-  }
-  args.push('eureka-mcp');
-  return { command: env.MINDRIAN_EUREKA_UV || 'uv', args, cwd: root, env: eurekaChildEnvironment(env) };
+  const needs = requirements.needsForCall('eureka_capability_run', { capability_id: capabilityId }, env);
+  const args = requirements.uvRunArgs(root, needs.extras, { allowNetwork: env.MINDRIAN_EUREKA_ALLOW_NETWORK === '1' });
+  // stderr is piped so the start-up error line of uv or the engine can be captured (Plan 387-11).
+  return { command: env.MINDRIAN_EUREKA_UV || 'uv', args, cwd: root, env: eurekaChildEnvironment(env, { forceOffline: true }), stderr: 'pipe' };
 }
 
 const OFFLINE_FORCED_KEYS = Object.freeze(['UV_OFFLINE', 'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE']);
@@ -186,19 +193,14 @@ async function invokeCapabilityWithClient(client, capability, request, env, sign
   return { ok: true, route, readiness: capability.status, contract: contract.schemas, result: started };
 }
 
-async function callEurekaCapability(capabilityId, request, env = process.env, signal) {
+async function callEurekaCapability(capabilityId, request, env = process.env, signal, deps = {}) {
   if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'Eureka capability call was cancelled before launch.' };
   const configuredTimeout = Number(env.MINDRIAN_EUREKA_WORKFLOW_TIMEOUT_MS || 900000);
   const timeoutMs = Number.isFinite(configuredTimeout) ? Math.min(Math.max(configuredTimeout, 1000), 1800000) : 900000;
   const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
-  const configuredRoot = env.MINDRIAN_EUREKA_ROOT;
-  if (typeof configuredRoot !== 'string' || !configuredRoot.trim()) {
-    return { ok: false, reason: 'engine_not_configured', message: 'Set MINDRIAN_EUREKA_ROOT to the Mindrian Eureka checkout before calling this tool.' };
-  }
-  const root = path.resolve(configuredRoot);
-  if (!fs.existsSync(path.join(root, 'pyproject.toml'))) {
-    return { ok: false, reason: 'engine_checkout_unavailable', message: 'The configured Mindrian Eureka checkout is unavailable.' };
-  }
+  const rootResult = engineRootOrRefusal(env);
+  if (!rootResult.ok) return rootResult;
+  const root = rootResult.root;
   if (!request || typeof request !== 'object' || Array.isArray(request)) {
     return { ok: false, reason: 'invalid_request', message: 'request must be a JSON object.' };
   }
@@ -206,10 +208,16 @@ async function callEurekaCapability(capabilityId, request, env = process.env, si
     return { ok: false, reason: 'request_too_large', message: 'request exceeds the 20 MiB host limit.' };
   }
 
-  const transport = new StdioClientTransport(clientOptions(root, env, capabilityId));
-  const client = new Client({ name: 'mindrian-os-eureka-capability-bridge', version: '1.0.0' }, { capabilities: {} });
+  const Transport = deps.StdioClientTransport || StdioClientTransport;
+  const McpClient = deps.Client || Client;
+  const transport = new Transport(clientOptions(root, env, capabilityId));
+  const client = new McpClient({ name: 'mindrian-os-eureka-capability-bridge', version: '1.0.0' }, { capabilities: {} });
+  const capture = captureStartLine(transport);
+  let connected = false;
   try {
     await client.connect(transport);
+    connected = true;
+    capture.stop();
     const catalogResponse = decodeResponse(await client.callTool({ name: 'scout_capabilities', arguments: {} }, { signal: requestSignal }), 'Eureka could not load its capability catalog.');
     if (!catalogResponse.ok) return catalogResponse;
     const resolved = resolveCapability(catalogResponse.result, capabilityId);
@@ -218,9 +226,11 @@ async function callEurekaCapability(capabilityId, request, env = process.env, si
   } catch (error) {
     if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'Eureka capability call was cancelled.' };
     if (requestSignal.aborted) return { ok: false, reason: 'engine_timeout', message: 'Eureka capability exceeded its configured runtime limit.' };
-    const detail = String(error && error.message || error || 'unknown MCP transport error')
-      .replaceAll(root, '<MINDRIAN_EUREKA_ROOT>').slice(0, 500);
-    return { ok: false, reason: 'engine_unavailable', message: 'Could not call the configured local Eureka MCP server: ' + detail };
+    // Typed refusal from fixed sentences: no raw spawn text, no path (Plans 387-05 and 387-11). The start line
+    // is used only when the connect itself failed, before the engine received any request.
+    capture.stop();
+    if (!connected) await capture.settle();
+    return startFailureRefusal(error, connected ? '' : capture.line(), { root, home: env.HOME || env.USERPROFILE });
   } finally {
     try { await client.close(); } catch (_error) { /* close is best-effort after one call */ }
   }

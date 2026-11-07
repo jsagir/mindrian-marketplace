@@ -12,6 +12,7 @@
  *
  * Pitfall 6 gates (RESEARCH §8):
  *   - Requires cascade.cascade_status === 'completed' (Phase 95 contract)
+ *   - Counts each cascade record once (386-15: timestamp|file_path)
  *   - Requires within-session current.confidence >= 0.6
  *   - Manual `/mos:memory complete` is the user override for false negatives
  *
@@ -51,6 +52,16 @@ function detectAndFire(roomDir, roomSlug) {
     // accept "complete" or "completed" for forward compatibility.
     const statusOk = cascade.cascade_status === 'completed' || cascade.cascade_status === 'complete';
     if (!statusOk) return;
+
+    // Phase 386-15 (B7): count a cascade record once. last-cascade.json is a
+    // single file that survives every later write, so without an identity check
+    // each later PostToolUse would count the same record again. The identity is
+    // timestamp plus file_path (the 8-key side-channel contract has no id key).
+    const cascadeId = String(cascade.timestamp || '') + '|' + String(cascade.file_path || '');
+    const countedPath = path.join(roomDir, '.mindrian', 'last-cascade-counted');
+    try {
+      if (fs.readFileSync(countedPath, 'utf8').trim() === cascadeId) return;
+    } catch (_) { /* no stored identity yet */ }
 
     // 2. Read within-session JTBD (Phase 100).
     let cur = null;
@@ -124,6 +135,7 @@ function detectAndFire(roomDir, roomSlug) {
     //   - graph-edge intent line for Canon Part 4 (drained later)
     const acrossSession = require('../lib/hmi/across-session-memory.cjs');
     acrossSession.completeJtbd(roomSlug, cur.jtbd, matched, cascade.file_path || '');
+    try { fs.writeFileSync(countedPath, cascadeId + '\n'); } catch (_) { /* advisory marker */ }
 
     // Phase 144.1-06 RETRO-03 (audit item 66): fire SENS-06 (context_block /
     // jtbd-inference / pull_back) through the navigation chokepoint so the engine
@@ -173,27 +185,33 @@ function matchGlob(filePath, glob) {
 }
 
 // resolveRoomSlug -- maps roomDir to a room slug via the registry.
-// Falls back to basename(roomDir) if registry is missing/unreadable.
+// Falls back to basename(roomDir) if registry is missing/unreadable or no entry matches.
+// Phase 386-06 (B3): each entry's directory comes from registryRoomPath in
+// lib/core/resolve-active-room.cjs (entry.abs_path, else entry.path against the
+// rooms home), for both registry shapes (rooms object keyed by slug, and the
+// legacy rooms array). No private copy of the registry shape lives here.
 function resolveRoomSlug(roomDir) {
   try {
     const home = process.env.MINDRIAN_ROOMS_HOME || path.join(os.homedir(), 'MindrianRooms');
     const regPath = path.join(home, '.rooms', 'registry.json');
     if (!fs.existsSync(regPath)) return path.basename(roomDir);
     const reg = JSON.parse(fs.readFileSync(regPath, 'utf8'));
-    const rooms = (reg && Array.isArray(reg.rooms)) ? reg.rooms : [];
+    const canonical = require('../lib/core/resolve-active-room.cjs');
     const target = path.resolve(roomDir);
-    const entry = rooms.find(x => {
-      if (!x) return false;
-      // Two registry conventions:
-      //   - across-session-memory: rooms[].path (relative or absolute)
-      //   - jtbd-update: rooms[].abs_path (absolute)
-      const candidate = (typeof x.abs_path === 'string' && x.abs_path) ||
-                        (typeof x.path === 'string' && x.path) || null;
-      if (!candidate) return false;
-      const rd = path.isAbsolute(candidate) ? candidate : path.join(home, candidate);
-      try { return path.resolve(rd) === target; } catch (_) { return false; }
-    });
-    return (entry && entry.slug) ? entry.slug : path.basename(roomDir);
+    const slugs = [];
+    if (reg && Array.isArray(reg.rooms)) {
+      reg.rooms.forEach(function (x) {
+        const sl = x && (x.slug || x.name);
+        if (typeof sl === 'string' && sl) slugs.push(sl);
+      });
+    } else if (reg && reg.rooms && typeof reg.rooms === 'object') {
+      Object.keys(reg.rooms).forEach(function (k) { slugs.push(k); });
+    }
+    for (let i = 0; i < slugs.length; i++) {
+      const rd = canonical.registryRoomPath(home, slugs[i], reg);
+      if (rd && path.resolve(rd) === target) return slugs[i];
+    }
+    return path.basename(roomDir);
   } catch (_) { return path.basename(roomDir || ''); }
 }
 

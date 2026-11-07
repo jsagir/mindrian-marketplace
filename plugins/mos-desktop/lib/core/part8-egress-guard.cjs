@@ -193,6 +193,26 @@ function _summaryLeavesAllHashed(node, seen) {
   return true;
 }
 
+// Plan 386-28 (E-JOB): the packet key allowlist, read lazily from
+// data/brain-packet-schema.json ($defs.<job>.in.properties; additionalProperties
+// is false on every object node there). The five handle fields that
+// _proveMoveSet checks one by one are allowed in addition. A load failure or an
+// unknown job returns false (no proof), never a wider proof.
+const PACKET_HANDLE_KEYS = Object.freeze(['framework', 'slug', 'handle', 'reach_id', 'methodology']);
+let _packetSchemaDoc;
+function _packetKeysWithinSchema(payload) {
+  if (_packetSchemaDoc === undefined) _packetSchemaDoc = _loadJsonSafe(['data', 'brain-packet-schema.json']);
+  const defs = _packetSchemaDoc && _packetSchemaDoc.$defs;
+  const def = defs && typeof payload.job === 'string' ? defs[payload.job] : null;
+  const props = def && def.in && def.in.properties;
+  if (!props || typeof props !== 'object') return false;
+  const keys = Object.keys(payload);
+  for (let i = 0; i < keys.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(props, keys[i]) && PACKET_HANDLE_KEYS.indexOf(keys[i]) === -1) return false;
+  }
+  return true;
+}
+
 /**
  * _proveMoveSet(payload) -> boolean
  *
@@ -207,6 +227,11 @@ function _summaryLeavesAllHashed(node, seen) {
 function _proveMoveSet(payload) {
   if (!SHIPPED_JOBS) return false;
   if (typeof payload.job !== 'string' || !SHIPPED_JOBS.has(payload.job)) return false;
+  // Plan 386-28 (E-JOB): the payload keys must be keys of the packet schema for
+  // this job (plus the five handle fields checked below). An extra key, such as
+  // a nested object, a free-text field or a key that holds a token, makes the
+  // packet unproven.
+  if (!_packetKeysWithinSchema(payload)) return false;
   if (!_summaryLeavesAllHashed(payload)) return false;
   const handleFields = ['framework', 'slug', 'handle', 'reach_id', 'methodology'];
   for (let i = 0; i < handleFields.length; i++) {
@@ -337,6 +362,20 @@ function _isFreeFormTool(toolName) {
   return toolName.indexOf('brain_ask') !== -1 ||
     toolName.indexOf('brain_query') !== -1 ||
     toolName.indexOf('brain_search') !== -1;
+}
+
+/**
+ * _isBrainWriteTool(toolName) -> boolean
+ *
+ * Plan 386-04 (B2). True when the tool name contains brain_write: the bare
+ * name the script path uses and every scoped name (plugin, project,
+ * pws-brain-mcp, theo). It is a tool-NAME test only. It reads no payload and
+ * adds no word list. classify() blocks on it (class write_blocked) after the
+ * CONTENT-SET scan and the empty-payload proof.
+ */
+function _isBrainWriteTool(toolName) {
+  if (typeof toolName !== 'string') return false;
+  return toolName.indexOf('brain_write') !== -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +673,201 @@ function _isKnownFrameworkHandle(v) {
   // vocabulary would be vacuously permissive rather than fail-closed.
   if (CANONICAL_PHRASES.length === 0) return false;
   return CANONICAL_PHRASES.indexOf(v.toLowerCase()) !== -1;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 386-25 (E-TYPED): allow arms for the typed Theo read tools.
+// Debug session: part8-egress-guard-blocks-pws-brain-mcp-unconditionally.
+//
+// WHY. Before this plan classify() had allow arms for 9 tool shapes. Every other
+// typed read tool (normalize_framework_name, discover_structure,
+// orchestration_readiness, feeds_into_chains, framework_concepts, search,
+// brain_ask in op mode) fell to the terminal ambiguous. The hook blocks an
+// ambiguous verdict on a direct connector whatever the payload says, which is
+// the "unconditional block" symptom. An allow needs a positive rule; these are
+// those rules.
+//
+// TWO KINDS.
+//   handle    exact key set; each value a canonical framework handle, a command
+//             slug, an integer in a closed range, or (brain_ask op mode) a closed
+//             enum. No word list: the proof is membership in a closed set.
+//   freeform  the one string value is decided by theoVerdict, exactly as a
+//             brain_ask question is decided (parity): allow or block, never
+//             ambiguous. This plan adds no new loosening and no new tightening
+//             for a keyword query. The sprout bypass for every free-form route is
+//             the owner's decision in plan 386-32 and is built in plan 386-33.
+//
+// BOUNDARY NEUTRALITY. Same argument as _proveKnownToolShape. _proveTypedReadShape
+// and the freeform route sit AFTER step 1 (the default-deny scan) and step 1b,
+// and BEFORE only the navigator release arm and the terminal ambiguous return.
+// They can turn an ambiguous into an allow (handle arms) or an ambiguous into a
+// theoVerdict answer (freeform). They cannot shadow a block. Weakening step 1
+// would turn these arms into a hole, as with every arm of this kind.
+//
+// FAIL CLOSED ON SCHEMA DRIFT. Key sets are exact. An extra or renamed key
+// declines the proof and the call stays ambiguous.
+//
+// A NEW TYPED TOOL needs a row in TYPED_READ_TOOLS and a test in
+// tests/test-386-typed-theo-allow-arms.cjs.
+//
+// CREDENTIALS. A credential-shaped token is a sprout by shape, so it would pass
+// a shape test. The freeform route therefore refuses one long opaque token
+// (_hasOpaqueSecretToken) before it asks theoVerdict. Plan 386-31 adds the full
+// credential shape list to the Canon scan, which then covers every route.
+// ---------------------------------------------------------------------------
+const TYPED_READ_TOOLS = Object.freeze({
+  normalize_framework_name: Object.freeze({ kind: 'handle', required: ['raw'], optional: [], fields: Object.freeze({ raw: 'handle' }) }),
+  discover_structure: Object.freeze({ kind: 'handle', required: ['framework_name'], optional: [], fields: Object.freeze({ framework_name: 'handle' }) }),
+  orchestration_readiness: Object.freeze({ kind: 'handle', required: ['framework_name'], optional: [], fields: Object.freeze({ framework_name: 'handle' }) }),
+  feeds_into_chains: Object.freeze({
+    kind: 'handle',
+    required: ['seeds', 'max_hops'],
+    optional: [],
+    fields: Object.freeze({ seeds: 'seeds', max_hops: Object.freeze({ min: 1, max: 3 }) }),
+  }),
+  framework_concepts: Object.freeze({
+    kind: 'handle',
+    required: ['framework'],
+    optional: ['limit'],
+    fields: Object.freeze({ framework: 'handle', limit: Object.freeze({ min: 1, max: 10 }) }),
+  }),
+  search: Object.freeze({
+    kind: 'freeform',
+    required: ['query'],
+    optional: ['topK'],
+    stringKey: 'query',
+    fields: Object.freeze({ topK: Object.freeze({ min: 1, max: 20 }) }),
+  }),
+  // Theo's classify_problem_type takes no parameters (strictObject, empty); {}
+  // already allows as an empty payload. A `statement` string is decided as
+  // brain_ask decides it. Theo refuses the key, so no live channel is added.
+  classify_problem_type: Object.freeze({
+    kind: 'freeform',
+    required: ['statement'],
+    optional: [],
+    stringKey: 'statement',
+    fields: Object.freeze({}),
+  }),
+});
+
+const BRAIN_ASK_OP_NAMES = Object.freeze(['list_frameworks', 'framework_edges', 'framework_chain_slice']);
+const BRAIN_ASK_EDGE_TYPE_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const BRAIN_ASK_PARAM_KEYS = Object.freeze(['framework', 'edge_type', 'seeds', 'max_hops', 'limit']);
+const TYPED_SEEDS_MAX = 10;
+
+// The tool-name rule: the part after the last double underscore, or the whole
+// name. mcp__theo__search -> search; mcp__x__brain_search -> brain_search (not a
+// typed tool here; brain_search is a free-form tool decided in step 3).
+function _typedToolBase(toolName) {
+  if (typeof toolName !== 'string' || toolName.length === 0) return '';
+  const at = toolName.lastIndexOf('__');
+  return at === -1 ? toolName : toolName.slice(at + 2);
+}
+
+function _inIntRange(v, range) {
+  return Number.isInteger(v) && v >= range.min && v <= range.max;
+}
+
+// A seed is a canonical framework handle, or a command slug /mos:<slug> that
+// the command registry carries (Theo accepts both as exact node names).
+function _isSeedHandle(v) {
+  if (_isKnownFrameworkHandle(v)) return true;
+  if (typeof v !== 'string' || v.indexOf('/mos:') !== 0) return false;
+  if (COMMAND_SLUG_SET.size === 0) return false;
+  return COMMAND_SLUG_SET.has(v.slice('/mos:'.length).toLowerCase()) && _isSafeShortLabel(v);
+}
+
+function _isSeedList(v) {
+  if (!Array.isArray(v) || v.length < 1 || v.length > TYPED_SEEDS_MAX) return false;
+  for (let i = 0; i < v.length; i++) {
+    if (!_isSeedHandle(v[i])) return false;
+  }
+  return true;
+}
+
+function _typedFieldOk(spec, value) {
+  if (spec === 'handle') return _isKnownFrameworkHandle(value);
+  if (spec === 'seeds') return _isSeedList(value);
+  if (spec !== null && typeof spec === 'object') return _inIntRange(value, spec);
+  return false;
+}
+
+// One long opaque token (32 or more characters without a space) is the shape
+// of a key or a token, not of a keyword. A shape rule, not a word list.
+function _hasOpaqueSecretToken(str) {
+  if (typeof str !== 'string') return false;
+  return /[^\s]{32,}/.test(str);
+}
+
+// brain_ask op mode: {op, params?}. op is a closed enum; params is a plain
+// object whose keys are the five Theo allows and whose values are canonical
+// handles, command slugs, an edge type token, or integers.
+function _proveBrainAskOpShape(payload) {
+  if (!_hasExactKeys(payload, ['op'], ['params'])) return null;
+  if (typeof payload.op !== 'string' || BRAIN_ASK_OP_NAMES.indexOf(payload.op) === -1) return null;
+  if (Object.prototype.hasOwnProperty.call(payload, 'params')) {
+    const p = payload.params;
+    if (p === null || typeof p !== 'object' || Array.isArray(p)) return null;
+    const keys = Object.keys(p);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (BRAIN_ASK_PARAM_KEYS.indexOf(k) === -1) return null;
+      const val = p[k];
+      if (k === 'framework') {
+        if (!_isKnownFrameworkHandle(val)) return null;
+      } else if (k === 'edge_type') {
+        if (typeof val !== 'string' || !BRAIN_ASK_EDGE_TYPE_RE.test(val)) return null;
+      } else if (k === 'seeds') {
+        if (!_isSeedList(val)) return null;
+      } else if (k === 'max_hops') {
+        if (!_inIntRange(val, { min: 1, max: 3 })) return null;
+      } else if (k === 'limit') {
+        if (!_inIntRange(val, { min: 1, max: 200 })) return null;
+      }
+    }
+  }
+  return { class: 'typed_read_shape', reason: 'brain_ask op mode: closed op, handle params' };
+}
+
+/**
+ * _typedFreeformString(payload, toolName) -> string | null
+ *
+ * The free-text value of a freeform typed tool (search, classify_problem_type),
+ * when the key set is exact and the optional numeric field is in range. Null
+ * otherwise (the call then stays ambiguous, as before this plan).
+ */
+function _typedFreeformString(payload, toolName) {
+  const row = TYPED_READ_TOOLS[_typedToolBase(toolName)];
+  if (!row || row.kind !== 'freeform') return null;
+  if (!_hasExactKeys(payload, row.required, row.optional)) return null;
+  const s = payload[row.stringKey];
+  if (typeof s !== 'string' || s.length === 0) return null;
+  const keys = Object.keys(row.fields);
+  for (let i = 0; i < keys.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(payload, keys[i]) && !_typedFieldOk(row.fields[keys[i]], payload[keys[i]])) return null;
+  }
+  return s;
+}
+
+/**
+ * _proveTypedReadShape(payload, toolName) -> null | { class, reason }
+ *
+ * The handle arms and brain_ask op mode. See the section comment above for the
+ * boundary-neutrality argument. Freeform typed tools are not decided here; they
+ * go to theoVerdict through _typedFreeformString.
+ */
+function _proveTypedReadShape(payload, toolName) {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const base = _typedToolBase(toolName);
+  if (base === 'brain_ask') return _proveBrainAskOpShape(payload);
+  const row = TYPED_READ_TOOLS[base];
+  if (!row || row.kind !== 'handle') return null;
+  if (!_hasExactKeys(payload, row.required, row.optional)) return null;
+  const keys = Object.keys(payload);
+  for (let i = 0; i < keys.length; i++) {
+    if (!_typedFieldOk(row.fields[keys[i]], payload[keys[i]])) return null;
+  }
+  return { class: 'typed_read_shape', reason: base + ' typed read: exact keys, canonical handles' };
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1289,186 @@ function _theoBlock(klass, tokenClass, reason) {
   return { verdict: 'block', class: klass, token_class: tokenClass || null, reason: reason };
 }
 
+// ---------------------------------------------------------------------------
+// Plan 386-33 (E-OVER, owner decision option-e of 2026-11-06): the sprout, edge
+// and body outcomes of a free-form string.
+// ---------------------------------------------------------------------------
+// Owner principle (PRD, 2026-11-06): a short keyword query may leave the room, a
+// full body of text may not, and the guard must never cripple contextualised
+// work. Shape (lib/core/part8-sprout-shape.cjs: size, sentences, lines, quoted
+// text) separates a sprout from a body; a word list on an ordinary keyword is
+// the wrong tool. So, for a free-form string that is not an assembled Cypher
+// template:
+//   - credentials and structured identifiers (the ALWAYS half of the Canon list,
+//     and the artifact-style identifier rule) block in every shape;
+//   - a room-lexicon term blocks in every shape (room_content, its token class);
+//   - a body is answered with the class sprouts_required, whatever words it holds;
+//   - an edge is answered sprouts_required when a prose rule fires (the PROSE
+//     half of the Canon list, the private-context rules or the name rule), and
+//     is allow when none fires;
+//   - a clear sprout skips the word-list rules and is allow, unless it holds a
+//     private-claim marker (a my or our possessive, a first-person clause, a
+//     private word), which is answered sprouts_required: the claim stays local,
+//     only a generic sprout leaves.
+// The class name is SPROUTS_REQUIRED of lib/core/part8-split-route.cjs. The
+// reason of every outcome is a constant that holds no word of the input. The
+// Cypher key of brain_query is NOT shaped: repo code paths (enrichCausalEdges,
+// suggestValidationSteps, hatAwareRecommend) send assembled templates with no
+// model to split them (plan 386-26 RCA), so a Cypher string keeps the full
+// default-deny list and the old rules.
+// If the shape module cannot load, every string takes the old, stricter path.
+let _sproutShape = null;
+try {
+  _sproutShape = require('./part8-sprout-shape.cjs');
+} catch (_e) {
+  _sproutShape = null;
+}
+const _ALWAYS_PATTERNS = Array.isArray(egress.ALWAYS_PATTERNS) ? egress.ALWAYS_PATTERNS : null;
+const _PROSE_PATTERNS = Array.isArray(egress.PROSE_PATTERNS) ? egress.PROSE_PATTERNS : null;
+
+let _splitRoute = null;
+function _sproutsRequiredClass() {
+  if (!_splitRoute) {
+    try { _splitRoute = require('./part8-split-route.cjs'); } catch (_e) { _splitRoute = null; }
+  }
+  return _splitRoute && typeof _splitRoute.SPROUTS_REQUIRED === 'string' ? _splitRoute.SPROUTS_REQUIRED : 'sprouts_required';
+}
+
+const SR_REASONS = Object.freeze({
+  body_shape: 'the string is a body of text; split it into claims and send only sprouts',
+  edge_rule: 'the string fails a prose rule; split it into claims and send only generic sprouts',
+  private_marker: 'the string carries a private-claim marker; keep the claim local and send only a generic sprout',
+  room_check_unavailable: 'the room check could not run, so the lexicon check was skipped; split the text and send only sprouts',
+});
+
+function _sproutsRequired(tokenClass) {
+  return { verdict: 'block', class: _sproutsRequiredClass(), token_class: tokenClass, reason: SR_REASONS[tokenClass] };
+}
+
+// A private-claim marker on a sprout. Measured on the corpora: 0 hits on the 26
+// positives, the 535 extended questions, the 16 compliant and the 31 generic
+// 354 questions (plan 386-33 RCA evidence).
+const PRIVATE_WORD = /\b(?:confidential|secret|proprietary|undisclosed|internal only|under nda)\b/i;
+const POSSESSIVE_MARKER = /\b(?:my|our)\s+\p{L}/iu;
+const FIRST_PERSON_CLAUSE_MARKER = /(?:^|[,;:.!]\s+)(?:i|we)\s+\p{L}/iu;
+
+function _hasPrivateMarker(str, shape) {
+  return PRIVATE_WORD.test(str) || POSSESSIVE_MARKER.test(str) || FIRST_PERSON_CLAUSE_MARKER.test(str) ||
+    PRIVATE_POSSESSIVE.test(str) || (shape && shape.firstPersonStatement === true);
+}
+
+function _hasProseHit(str) {
+  if (!_PROSE_PATTERNS) return true; // cannot prove it clean: treat as a hit
+  for (let i = 0; i < _PROSE_PATTERNS.length; i++) {
+    if (_PROSE_PATTERNS[i].test(str)) return true;
+  }
+  return false;
+}
+
+function _hasAlwaysHit(str) {
+  if (!_ALWAYS_PATTERNS) return true;
+  for (let i = 0; i < _ALWAYS_PATTERNS.length; i++) {
+    if (_ALWAYS_PATTERNS[i].test(str)) return true;
+  }
+  return false;
+}
+
+// A string is an assembled Cypher template (not shaped) when it sits under the
+// cypher key, or opens with a Cypher verb and holds an upper-case Cypher
+// keyword. A natural-language body that starts with the word With does not.
+function _isCypherForShape(str, payload) {
+  if (payload !== null && typeof payload === 'object' && typeof payload.cypher === 'string' && payload.cypher === str) return true;
+  return /^\s*(?:OPTIONAL\s+)?(?:MATCH|CALL|WITH|RETURN|UNWIND)\b/i.test(str) && /\b(?:MATCH|RETURN|UNWIND|CALL)\b/.test(str);
+}
+
+// -> { kind, ... } | null (null: take the old path)
+function _shapeOfFreeform(str, payload) {
+  if (!_sproutShape || !_ALWAYS_PATTERNS || !_PROSE_PATTERNS) return null;
+  if (_isCypherForShape(str, payload)) return null;
+  try {
+    return _sproutShape.classifyShape(str);
+  } catch (_e) {
+    return null;
+  }
+}
+
+function _theoShapedVerdict(str, shape, payload, opts) {
+  // 1. Credentials, emails, phone-like and SSN-like numbers: every shape.
+  if (_hasAlwaysHit(str)) {
+    return _theoBlock('content_set', null, 'the string matches a private-content pattern');
+  }
+  const kind = shape.kind;
+  const proseHit = kind === 'edge' && _hasProseHit(str);
+
+  // 2. The recognizer stays the allow fast path (never for a body or a prose hit).
+  if (kind !== 'body' && !proseHit && _proveTypedQuestion(str)) {
+    return { verdict: 'allow', class: 'typed_question', token_class: null, reason: 'closed-vocabulary methodology question' };
+  }
+
+  // 3. Provenance: the bound room's lexicon.
+  let lex = opts.lexicon || null;
+  let unreadable = false;
+  if (!lex) {
+    let roomDir = opts.roomDir;
+    if (roomDir === undefined) roomDir = _roomLexicon ? _roomLexicon.resolveLexiconRoom() : null;
+    if (roomDir) {
+      if (!_roomLexicon) unreadable = true;
+      else lex = _roomLexicon.loadRoomLexicon(roomDir);
+    }
+  }
+  if (lex && (!_roomLexicon || lex.ok === false)) unreadable = true;
+  if (lex && !unreadable) {
+    const hit = _roomLexicon.matchLexicon(str, lex);
+    if (hit) return _lexiconBlock(str, lex, hit);
+  }
+
+  // 4. A structured identifier blocks in every shape.
+  if (_hasUnknownIdentifier(str)) {
+    return _theoBlock('room_content', 'identifier', 'the string carries an identifier no methodology handle matches');
+  }
+
+  // 5. The lexicon cannot be read: the lexicon check is skipped.
+  if (unreadable) {
+    if (kind !== 'sprout') return _sproutsRequired('room_check_unavailable');
+    if (_hasPrivateMarker(str, shape)) return _sproutsRequired('private_marker');
+    return { verdict: 'allow', class: 'room_check_skipped', token_class: null, reason: 'the room check could not run; a clear sprout with no other hit is allowed' };
+  }
+
+  // 6. By shape.
+  if (kind === 'body') return _sproutsRequired('body_shape');
+  if (kind === 'sprout') {
+    if (_hasPrivateMarker(str, shape)) return _sproutsRequired('private_marker');
+    return { verdict: 'allow', class: 'generic_question', token_class: null, reason: 'plain methodology question with no room-local token' };
+  }
+  // edge: the narrowed prose rules, the private-context rules and the name rule.
+  if (proseHit || PRIVATE_POSSESSIVE.test(str) || PRIVATE_CONFIDENTIAL.test(str) || shape.firstPersonStatement === true ||
+      _hasUnknownProperName(str, false)) {
+    return _sproutsRequired('edge_rule');
+  }
+  return { verdict: 'allow', class: 'generic_question', token_class: null, reason: 'plain methodology question with no room-local token' };
+}
+
+// The lexicon block with the kind, the word count and the hit count (quick
+// 261012-sph). Shared by the old path and the shaped path (plan 386-33).
+function _lexiconBlock(str, lex, hit) {
+  const block = _theoBlock('room_content', hit.token_class, 'the string names something the bound room recorded');
+  block.matched_kind = hit.token_class;
+  if (Number.isInteger(hit.token_count) && hit.token_count > 0) block.matched_token_count = hit.token_count;
+  if (Number.isInteger(hit.at)) {
+    const all = Array.isArray(lex) ? lex : lex.entries;
+    let count = 1;
+    let start = hit.at + 1;
+    while (count < THEO_MATCH_COUNT_CAP && start < all.length) {
+      const more = _roomLexicon.matchLexicon(str, all.slice(start));
+      if (!more || !Number.isInteger(more.at)) break;
+      count += 1;
+      start += more.at + 1;
+    }
+    block.matched_count = count;
+  }
+  return block;
+}
+
 // The refusal counts lexicon hits up to this cap, so a long string with many
 // hits costs at most 5 extra matchLexicon calls, on the block path only.
 const THEO_MATCH_COUNT_CAP = 5;
@@ -1085,6 +1499,11 @@ function theoVerdict(payload, opts) {
     return _theoBlock('unknown', null, 'no free-form string to check');
   }
 
+  // Plan 386-33 (option-e): a free-form string that is not an assembled Cypher
+  // template is decided by shape (sprout, edge, body). See the section above.
+  const shaped = _shapeOfFreeform(str, payload);
+  if (shaped) return _theoShapedVerdict(str, shaped, payload, opts);
+
   // 1. CONTENT-SET default-deny. Unchanged; the city fence stays on this line.
   if (!_safeAudit(str)) {
     return _theoBlock('content_set', null, 'the string matches a private-content pattern');
@@ -1110,24 +1529,7 @@ function theoVerdict(payload, opts) {
       return _theoBlock('room_check_unavailable', null, 'the bound room names could not be read');
     }
     const hit = _roomLexicon.matchLexicon(str, lex);
-    if (hit) {
-      const block = _theoBlock('room_content', hit.token_class, 'the string names something the bound room recorded');
-      block.matched_kind = hit.token_class;
-      if (Number.isInteger(hit.token_count) && hit.token_count > 0) block.matched_token_count = hit.token_count;
-      if (Number.isInteger(hit.at)) {
-        const all = Array.isArray(lex) ? lex : lex.entries;
-        let count = 1;
-        let start = hit.at + 1;
-        while (count < THEO_MATCH_COUNT_CAP && start < all.length) {
-          const more = _roomLexicon.matchLexicon(str, all.slice(start));
-          if (!more || !Number.isInteger(more.at)) break;
-          count += 1;
-          start += more.at + 1;
-        }
-        block.matched_count = count;
-      }
-      return block;
-    }
+    if (hit) return _lexiconBlock(str, lex, hit);
   }
 
   // 4. Content rules.
@@ -1147,6 +1549,32 @@ function theoVerdict(payload, opts) {
   return { verdict: 'allow', class: 'generic_question', token_class: null, reason: 'plain methodology question with no room-local token' };
 }
 
+// Plan 386-33: the free-form string of a payload that theoVerdict decides by
+// shape: { key, str } for a brain_ask / brain_query / brain_search string that is
+// not under the cypher key and not an assembled template, or for a typed
+// freeform tool (search, classify_problem_type) with its exact key set. null
+// otherwise (the full default-deny list runs on the whole payload).
+function _shapedFreeformEntry(payload, toolName) {
+  if (!_sproutShape || !_ALWAYS_PATTERNS || !_PROSE_PATTERNS) return null;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  if (_isFreeFormTool(toolName)) {
+    for (let i = 0; i < FREEFORM_KEYS.length; i++) {
+      const v = payload[FREEFORM_KEYS[i]];
+      if (typeof v === 'string' && v.length > 0) {
+        if (FREEFORM_KEYS[i] === 'cypher' || _isCypherForShape(v, payload)) return null;
+        return { key: FREEFORM_KEYS[i], str: v };
+      }
+    }
+    return null;
+  }
+  const typed = _typedFreeformString(payload, toolName);
+  if (typed !== null) {
+    if (_isCypherForShape(typed, payload)) return null;
+    return { key: TYPED_READ_TOOLS[_typedToolBase(toolName)].stringKey, str: typed };
+  }
+  return null;
+}
+
 /**
  * classify(payload, { toolName }) -> { verdict, class, reason }
  *
@@ -1154,7 +1582,16 @@ function theoVerdict(payload, opts) {
  *   1. CONTENT-SET default-deny scan first (any hit -> block, the safe default).
  *   1b. A provably empty plain object (zero own keys) -> allow. Positive proof
  *      of emptiness, never a relaxed default (Phase 245-03).
- *   2. A proven typed MOVE-SET packet -> allow; an unproven packet -> ambiguous.
+ *   1c. Plan 386-04 (B2): a brain_write tool name -> block, class write_blocked,
+ *      for every payload, on every scope name. This arm closes B2. It has no
+ *      allow rule; an allow for brain_write needs a positive proven shape and
+ *      a gate. It borrows nothing from the vocabulary test and sits after
+ *      step 1 and 1b, before the packet check.
+ *   2. Plan 386-28 (E-JOB): a free-form brain_ask / brain_query / brain_search
+ *      string is decided by theoVerdict BEFORE the packet arm, whatever other
+ *      keys the payload carries (a job key no longer skips the room-word rules).
+ *      2b. A proven typed MOVE-SET packet (job in SHIPPED_JOBS, keys within the
+ *      packet schema for that job) -> allow; an unproven packet -> ambiguous.
  *   3. Phase 369.2 Plan 01 (CODE-07, J4): a free-form brain_ask / brain_query /
  *      brain_search string is decided by theoVerdict(), by content and
  *      provenance, and never comes back ambiguous: allow (typed_question fast
@@ -1175,6 +1612,9 @@ function theoVerdict(payload, opts) {
  *      (find_connections, taxonomy_ladder) that clears default-deny -> allow;
  *      else falls through. See _proveKnownToolShape's own docblock for the
  *      boundary-neutrality argument.
+ *   3a. Plan 386-25: a freeform typed Theo tool (search, classify_problem_type)
+ *      is decided by theoVerdict as brain_ask is (credential-shaped opaque token
+ *      first). 3b2: typed Theo read tools by shape (_proveTypedReadShape).
  *   3c. Phase 366-11: a normalize_framework_name term the navigator released on an F.8 card
  *      (opts.release receipt: gate id + exact term) -> allow, class navigator_released.
  *      Runs after every arm above, so it only narrows ambiguous. See _proveNavigatorRelease.
@@ -1190,7 +1630,14 @@ function classify(payload, opts) {
   }
 
   // 1. CONTENT-SET: the shipped default-deny scan is the discriminator.
-  const scan = scanForContent(payload);
+  // Plan 386-33 (option-e): for a free-form string that is decided by shape
+  // (not a Cypher template), the string itself is scanned inside theoVerdict
+  // (ALWAYS patterns for every shape, PROSE patterns for an edge or a body).
+  // Every OTHER field of the payload still gets the full default-deny list here.
+  const shapedEntry = _shapedFreeformEntry(payload, toolName);
+  const scan = shapedEntry
+    ? scanForContent(Object.assign({}, payload, { [shapedEntry.key]: '' }))
+    : scanForContent(payload);
   if (scan.hit) {
     return { verdict: 'block', class: 'content_set', reason: 'forbidden pattern hit: ' + scan.matched_pattern };
   }
@@ -1206,15 +1653,24 @@ function classify(payload, opts) {
     return { verdict: 'allow', class: 'empty_payload', reason: 'zero-key payload carries no bytes' };
   }
 
-  // 2. typed MOVE-SET packet.
-  if (_looksLikePacket(payload)) {
-    if (_proveMoveSet(payload)) {
-      return { verdict: 'allow', class: 'move_set', reason: 'proven Phase 110 packet shape' };
-    }
-    return { verdict: 'ambiguous', class: 'unproven_packet', reason: 'packet shape not proven' };
+  // 1c. Plan 386-04 (finding B2, owner decision option A, 2026-11-06): a Brain
+  // WRITE is blocked for every payload. A write sends data to be stored in the
+  // remote graph, not a query sprout, so no shape of it is a proven-safe
+  // sprout. Placed AFTER step 1 and step 1b (step 1 stays first and
+  // byte-unchanged; a content hit still reports content_set) and BEFORE the
+  // packet check. It adds NO allow rule for brain_write and borrows nothing
+  // from the vocabulary test. The reason is a constant literal that carries no
+  // payload bytes. An allow for brain_write needs its own positive proven
+  // shape and a gate; until then the verdict is block, never ambiguous.
+  if (_isBrainWriteTool(toolName)) {
+    return { verdict: 'block', class: 'write_blocked', token_class: null, reason: 'brain_write is blocked: Part 8 sends no write to the Brain' };
   }
 
-  // 3. free-form brain_ask / brain_query / brain_search string path.
+  // 2. Plan 386-28 (E-JOB): a free-form string is decided by theoVerdict
+  // BEFORE the packet arm, whatever other keys the payload carries. A job key
+  // no longer skips the name, my or our and lexicon rules. Step 1 still ran
+  // first and is unchanged.
+  // free-form brain_ask / brain_query / brain_search string path.
   // Phase 369.2 Plan 01 (CODE-07, J4): one verdict by CONTENT and PROVENANCE,
   // not by shape. A free-form string never comes back ambiguous: theoVerdict
   // answers allow (typed_question fast path or generic_question) or block
@@ -1228,10 +1684,39 @@ function classify(payload, opts) {
     }
   }
 
+  // 2b. typed MOVE-SET packet (exact schema keys, see _proveMoveSet).
+  if (_looksLikePacket(payload)) {
+    if (_proveMoveSet(payload)) {
+      return { verdict: 'allow', class: 'move_set', reason: 'proven Phase 110 packet shape' };
+    }
+    return { verdict: 'ambiguous', class: 'unproven_packet', reason: 'packet shape not proven' };
+  }
+
+  // 3a. Plan 386-25 (E-TYPED): a freeform typed Theo tool (search,
+  // classify_problem_type) is decided exactly as brain_ask decides the same
+  // string (parity through theoVerdict: allow or block, never ambiguous). A
+  // credential-shaped opaque token blocks first. No shape bypass here: the
+  // sprout rule for all free-form routes is plans 386-32 and 386-33.
+  const typedFreeform = _typedFreeformString(payload, toolName);
+  if (typedFreeform !== null) {
+    if (_hasOpaqueSecretToken(typedFreeform)) {
+      return { verdict: 'block', class: 'content_set', token_class: null, reason: 'the string carries a credential-shaped token' };
+    }
+    return theoVerdict(typedFreeform, { toolName: toolName, roomDir: opts.roomDir, lexicon: opts.lexicon });
+  }
+
   // 3b. known-safe structural shape for a specific Brain tool.
   const knownShape = _proveKnownToolShape(payload, toolName);
   if (knownShape) {
     return { verdict: 'allow', class: knownShape.class, reason: knownShape.reason };
+  }
+
+  // 3b2. Plan 386-25 (E-TYPED): typed Theo read tools by shape (exact keys,
+  // canonical handles, integers). After step 1 and before the navigator
+  // release arm; it only narrows ambiguous.
+  const typedShape = _proveTypedReadShape(payload, toolName);
+  if (typedShape) {
+    return { verdict: 'allow', class: typedShape.class, reason: typedShape.reason };
   }
 
   // 3c. Phase 366-11 (D-13 a): the navigator-consent allow. AFTER the CONTENT-SET scan and every
@@ -1258,6 +1743,7 @@ module.exports = {
   _summaryLeavesAllHashed: _summaryLeavesAllHashed,
   _extractFreeFormString: _extractFreeFormString,
   _isFreeFormTool: _isFreeFormTool,
+  _isBrainWriteTool: _isBrainWriteTool,
   _proveTypedQuestion: _proveTypedQuestion,
   QUESTION_FUNCTION_WORDS: QUESTION_FUNCTION_WORDS,
   METHODOLOGY_TOKEN_SET: METHODOLOGY_TOKEN_SET,
@@ -1265,6 +1751,8 @@ module.exports = {
   CANONICAL_PHRASES: CANONICAL_PHRASES,
   _isProvablyEmptyPayload: _isProvablyEmptyPayload,
   _proveKnownToolShape: _proveKnownToolShape,
+  _proveTypedReadShape: _proveTypedReadShape,
+  TYPED_READ_TOOLS: TYPED_READ_TOOLS,
   _proveNavigatorRelease: _proveNavigatorRelease,
   _releaseIntentVocabulary: _releaseIntentVocabulary,
   _releasePerspectiveIds: _releasePerspectiveIds,
