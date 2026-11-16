@@ -192,6 +192,46 @@ function splitRouteMessage() {
   }
 }
 
+// Plan 395-13 (owner ruling 37, "cut the paste, send the rest"). The refusal
+// for a Brain route with no shim behind it: nothing is sent, and the message
+// gives the cut input to send once more. The cut input is the question with
+// each pasted span replaced by the note; it holds no pasted byte, and the
+// guard already allowed it. A shim-backed route needs no resend: the shim cuts
+// the same spans before any wire call (lib/core/brain-client.cjs).
+function pasteResendMessage(cutInput) {
+  return 'Canon Part 8: pasted text (a quote, a block quote or a code block) stays on this machine (reason pasted_text). Nothing was sent. ' +
+    'Send the call 1 more time with exactly this input; the note in square brackets marks the pasted text: ' + JSON.stringify(cutInput) +
+    ' Write a method name without quote marks.';
+}
+
+// Plan 395-13 review WR-06: the paste branch lets a call go on with the
+// uncut input only on this plugin's own shim, never on a name match alone.
+// The project or user scope name mcp__mindrian-brain__* can belong to a
+// user-level entry that shadows the shim, and any plugin can name a server
+// mindrian-brain. So the route goes on only when (1) the tool name is the
+// plugin scope of THIS plugin (the name in .claude-plugin/plugin.json), (2)
+// this plugin's .mcp.json registers mindrian-brain with the shim script, and
+// (3) the shim script exists. Any other Brain route gets exit 2 with the cut
+// input to send 1 more time. A read or parse failure answers false.
+const PLUGIN_ROOT = path.join(__dirname, '..');
+const SHIM_SCRIPT = path.join(__dirname, 'mindrian-brain-mcp-client.cjs');
+
+function ownPluginShimRoute(toolName, sanitizer) {
+  try {
+    if (!(sanitizer && sanitizer.isShimBackedBrainTool(toolName))) return false;
+    const name = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).name;
+    if (typeof name !== 'string' || !/^[a-z0-9_-]+$/.test(name)) return false;
+    if (toolName.indexOf('mcp__plugin_' + name + '_mindrian-brain__') !== 0) return false;
+    const mcp = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, '.mcp.json'), 'utf8'));
+    const entry = mcp && mcp.mcpServers && mcp.mcpServers['mindrian-brain'];
+    const args = entry && Array.isArray(entry.args) ? entry.args : [];
+    const registered = args.some(function (a) { return typeof a === 'string' && /(?:^|[\\/])scripts[\\/]mindrian-brain-mcp-client\.cjs$/.test(a); });
+    return registered && fs.existsSync(SHIM_SCRIPT);
+  } catch (_) {
+    return false;
+  }
+}
+
 function carriesEdgeOrBody(toolName, toolInput) {
   try {
     return require(SPLIT_ROUTE_PATH).carriesEdgeOrBody(toolName, toolInput) !== false;
@@ -327,6 +367,7 @@ function main() {
 
   let verdictObj;
   let guard;
+  let roomDir = null;
   try {
     guard = require(GUARD_PATH);
   } catch (_) {
@@ -338,7 +379,6 @@ function main() {
     // shared resolver (never the payload cwd directly) and its lexicon is
     // read from room.db rows only, inside this hook's 2000 ms budget. A
     // resolver miss is "no room bound" (null), never a throw.
-    let roomDir = null;
     try {
       roomDir = require(LEXICON_PATH).resolveLexiconRoom({});
     } catch (_) {
@@ -352,7 +392,37 @@ function main() {
     return guardUnavailable(toolName, toolInput, 'verdict_invalid');
   }
 
-  // Best-effort telemetry BEFORE the exit branch (process.exit terminates).
+  // Best-effort telemetry BEFORE each exit (process.exit terminates). Plan
+  // 395-13 review IN-02: it records the final disposition, so it runs after
+  // the paste branch below (a cut call that proceeds is recorded as an allow).
+
+  // Plan 395-13 (owner ruling 37, "cut the paste, send the rest"): the guard
+  // found pasted text (a quote, a block quote or a code block) and no rule
+  // for every shape fired. classifyAndCut cuts the paste and decides the rest.
+  // Rest allowed: this plugin's own shim route proceeds (the shim cuts the
+  // same spans before any wire call and discloses the cut; WR-06: checked by
+  // ownPluginShimRoute, not by the name alone); any other Brain route gets
+  // exit 2 with the cut input to send once more. Rest blocked: the verdict of
+  // the rest is answered below. This hook never rewrites the tool input.
+  if (verdictObj.verdict === 'block' && verdictObj.token_class === 'pasted_text' && typeof guard.classifyAndCut === 'function') {
+    let planned = null;
+    try {
+      planned = guard.classifyAndCut(toolInput, { toolName: toolName, roomDir: roomDir });
+    } catch (_) {
+      return guardUnavailable(toolName, toolInput, 'classify_threw');
+    }
+    if (planned && planned.cut > 0 && planned.verdict && planned.verdict.verdict === 'allow') {
+      // Plan 395-13 review WR-06: the name alone is not trusted here.
+      if (ownPluginShimRoute(toolName, sanitizer)) {
+        bestEffortRecord({ verdict: 'allow', class: 'pasted_text', reason: 'sent_without_paste' }, sessionId);
+        return allow();
+      }
+      bestEffortRecord(verdictObj, sessionId);
+      return block(pasteResendMessage(planned.payload));
+    }
+    if (planned && planned.cut > 0 && planned.verdict && planned.verdict.verdict === 'block') verdictObj = planned.verdict;
+    else if (planned && planned.cut > 0) { bestEffortRecord(verdictObj, sessionId); return block(splitRouteMessage()); }
+  }
   bestEffortRecord(verdictObj, sessionId);
 
   const verdict = verdictObj.verdict;

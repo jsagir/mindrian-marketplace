@@ -7,6 +7,8 @@ const { registerEurekaTool, response: eurekaResponse, signalFromExtra, engineRoo
 // read a room, persist accepted knowledge, or approve proposals. Async Eureka
 // routes do persist their own local job and derived-cache state.
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { z } = require('zod');
 const { Client } = require('@modelcontextprotocol/client');
 const { StdioClientTransport } = require('@modelcontextprotocol/client/stdio');
@@ -19,9 +21,79 @@ const ALLOWED_MCP_ROUTES = new Set([
   'decision_compare_sequence_patterns',
   'decision_fit_sequence_patterns',
   'scout_start_opportunity_signal_scout',
+  'scout_start_pair_screen',
 ]);
+// Plan routes are not job routes and not start routes: a plan call changes nothing in the engine job store. The
+// plan route of a catalog entry is read from routes.mcp.plan_tool and must be in this set (Phase 374 plan 08).
+const PLAN_ROUTES = new Set(['scout_plan_pair_screen']);
 const TERMINAL_JOB_STATES = new Set(['completed', 'completed_empty', 'failed', 'blocked', 'cancelled', 'expired']);
 const MAX_REQUEST_BYTES = 20 * 1024 * 1024;
+
+// One size rule for the sync path and the job path (Phase 374 plan 06, E4 and E7). Returns the refusal object
+// or null. It runs before any child process starts.
+function requestTooLarge(request) {
+  if (Buffer.byteLength(JSON.stringify(request), 'utf8') > MAX_REQUEST_BYTES) {
+    return { ok: false, reason: 'request_too_large', message: 'request exceeds the 20 MiB host limit.' };
+  }
+  return null;
+}
+
+// Per-process catalog cache (Phase 374 plan 06, E19). It holds only the engine catalog and the capability
+// contracts, keyed by the engine root and the modification time of its pyproject.toml. Nothing per request or
+// per room is stored. An entry lives 30 minutes. A failed fetch is never stored. A caller gets a copy.
+const CATALOG_LIFETIME_MS = 30 * 60 * 1000;
+const catalogCache = new Map();
+let catalogClock = Date.now;
+
+function clearCatalogCache() { catalogCache.clear(); }
+function setCatalogClock(fn) { catalogClock = typeof fn === 'function' ? fn : Date.now; }
+
+function rootStamp(root) {
+  let mtime = 0;
+  try { mtime = Math.floor(fs.statSync(path.join(root, 'pyproject.toml')).mtimeMs); } catch (_error) { mtime = 0; }
+  return root + '\u0000' + mtime;
+}
+
+function cacheGet(key) {
+  const entry = catalogCache.get(key);
+  if (!entry) return null;
+  if (catalogClock() - entry.at >= CATALOG_LIFETIME_MS) { catalogCache.delete(key); return null; }
+  return entry;
+}
+
+function cachePut(root, key, value) {
+  // A changed pyproject.toml stamp replaces every older entry of the same root.
+  const stamp = key.split('\u0001')[0];
+  const prefix = root + '\u0000';
+  for (const existing of Array.from(catalogCache.keys())) {
+    if (existing.startsWith(prefix) && existing.split('\u0001')[0] !== stamp) catalogCache.delete(existing);
+  }
+  catalogCache.set(key, { at: catalogClock(), value: structuredClone(value) });
+}
+
+async function getCatalog(client, root, signal) {
+  const key = rootStamp(root) + '\u0001catalog';
+  const hit = cacheGet(key);
+  if (hit) return { ok: true, result: structuredClone(hit.value) };
+  const response = decodeResponse(await client.callTool({ name: 'scout_capabilities', arguments: {} }, { signal }), 'Eureka could not load its capability catalog.');
+  if (response.ok) cachePut(root, key, response.result);
+  return response;
+}
+
+async function getContract(client, root, capabilityId, signal) {
+  const key = rootStamp(root) + '\u0001contract\u0001' + capabilityId;
+  const hit = cacheGet(key);
+  if (hit) return { ok: true, result: structuredClone(hit.value) };
+  const response = decodeResponse(await client.callTool({
+    name: 'scout_capability_contract', arguments: { capability_id: capabilityId },
+  }, { signal }), 'Eureka could not load the capability contract.');
+  // Only a contract that matches the capability is stored.
+  const contract = response.ok ? response.result : null;
+  if (contract && contract.capability && contract.capability.id === capabilityId && contract.schemas && contract.schemas.input && contract.schemas.output) {
+    cachePut(root, key, contract);
+  }
+  return response;
+}
 // Phase 387 plan 06 (decision network_terms: sync-on-grant-then-offline): the runtime child gets
 // UV_PROJECT_ENVIRONMENT, because the engine must find the same environment folder that the sync wrote, and
 // nothing else from the UV_ family. UV_CACHE_DIR and UV_PYTHON_INSTALL_DIR stay out on purpose: a run with
@@ -98,7 +170,13 @@ function resolveCapability(catalog, capabilityId) {
     return { ok: false, reason: 'unsupported_mcp_route', readiness: capability.status,
       message: 'The catalog MCP route is not supported by this host bridge.' };
   }
-  return { ok: true, capability };
+  // The plan route (Phase 374 plan 08): kept on the resolved capability, and refused when it is not a known plan route.
+  const planTool = capability.routes.mcp.plan_tool;
+  if (planTool !== undefined && !PLAN_ROUTES.has(planTool)) {
+    return { ok: false, reason: 'unsupported_mcp_route', readiness: capability.status,
+      message: 'The catalog MCP route is not supported by this host bridge.' };
+  }
+  return { ok: true, capability: planTool === undefined ? capability : { ...capability, plan_tool: planTool } };
 }
 
 async function waitForJob(client, started, env, capabilityId, signal) {
@@ -158,14 +236,22 @@ async function waitForJob(client, started, env, capabilityId, signal) {
   return { ok: true, job_id: jobId, status: terminalStatus.status, result: resultResponse.result };
 }
 
-async function invokeCapabilityWithClient(client, capability, request, env, signal) {
+async function invokeCapabilityWithClient(client, capability, request, env, signal, cacheRoot) {
   const route = capability.routes && capability.routes.mcp && capability.routes.mcp.tool;
   if (!ALLOWED_MCP_ROUTES.has(route)) {
     return { ok: false, reason: 'unsupported_mcp_route', message: 'The catalog MCP route is not supported by this host bridge.' };
   }
-  const contractResponse = decodeResponse(await client.callTool({
-    name: 'scout_capability_contract', arguments: { capability_id: capability.id },
-  }, { signal }), 'Eureka could not load the capability contract.');
+  // A capability that has a plan step starts only after a person approves the plan card (Phase 374 plan 08, D-04).
+  // The sync path makes no call for it.
+  if (route === 'scout_start_pair_screen') {
+    return { ok: false, reason: 'capability_requires_approval',
+      message: 'This capability starts only after a person approves a plan card. Use eureka_capability_start.' };
+  }
+  const contractResponse = cacheRoot
+    ? await getContract(client, cacheRoot, capability.id, signal)
+    : decodeResponse(await client.callTool({
+      name: 'scout_capability_contract', arguments: { capability_id: capability.id },
+    }, { signal }), 'Eureka could not load the capability contract.');
   if (!contractResponse.ok) return contractResponse;
   const contract = contractResponse.result;
   if (!contract || !contract.capability || contract.capability.id !== capability.id ||
@@ -218,11 +304,11 @@ async function callEurekaCapability(capabilityId, request, env = process.env, si
     await client.connect(transport);
     connected = true;
     capture.stop();
-    const catalogResponse = decodeResponse(await client.callTool({ name: 'scout_capabilities', arguments: {} }, { signal: requestSignal }), 'Eureka could not load its capability catalog.');
+    const catalogResponse = await getCatalog(client, root, requestSignal);
     if (!catalogResponse.ok) return catalogResponse;
     const resolved = resolveCapability(catalogResponse.result, capabilityId);
     if (!resolved.ok) return resolved;
-    return await invokeCapabilityWithClient(client, resolved.capability, request, env, requestSignal);
+    return await invokeCapabilityWithClient(client, resolved.capability, request, env, requestSignal, root);
   } catch (error) {
     if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'Eureka capability call was cancelled.' };
     if (requestSignal.aborted) return { ok: false, reason: 'engine_timeout', message: 'Eureka capability exceeded its configured runtime limit.' };
@@ -269,7 +355,7 @@ function textResponse(payload, isError) {
 function register(server) {
   registerEurekaTool(server, 'eureka_capability_run', {
     title: 'Run a Catalogued Eureka Capability',
-    description: 'Inspect the Eureka catalog and contract, then run one capability currently marked experimental or host_brokered through its advertised local MCP route. Supply the exact contract-shaped request. This generic bridge does not read MindrianOS room data; use the dedicated graph projection and graph-scoped tools when the capability needs room content. Planned and blocked capabilities are refused. For asynchronous routes, prefer eureka_capability_start and the job status/result/cancel tools; this convenience call can block until completion. Async routes persist a local Eureka job record and result for up to 30 days, and RS routes may write derived vectors to the local embedding cache. The structured response distinguishes engine-side state from accepted MindrianOS knowledge; this tool never accepts proposed knowledge.',
+    description: 'Inspect the Eureka catalog and contract, then run one capability currently marked experimental or host_brokered through its advertised local MCP route. Supply the exact contract-shaped request. This generic bridge does not read MindrianOS room data; use the dedicated graph projection and graph-scoped tools when the capability needs room content. Planned and blocked capabilities are refused. For asynchronous routes, prefer eureka_capability_start and the job status/result/cancel tools; this convenience call can block until completion. The pair screen opportunity.run_pair_screen is refused here (capability_requires_approval): start it with eureka_capability_start, which asks the person first. While an Eureka job runs, this call can answer engine_busy (one MindrianOS host process only). Async routes persist a local Eureka job record and result for up to 30 days, and RS routes may write derived vectors to the local embedding cache. The structured response distinguishes engine-side state from accepted MindrianOS knowledge; this tool never accepts proposed knowledge.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: z.object({
       capability_id: z.string().min(1).max(160).regex(/^[a-z][a-z0-9_.-]+$/),
@@ -291,4 +377,4 @@ const connectors = [{
   layer_why: 'Routes capability calls to the Eureka MCP server while exposing its readiness and schemas and leaving graph authorization and persistence in MindrianOS.',
 }];
 
-module.exports = { ALLOWED_MCP_ROUTES, EUREKA_CHILD_ENV_KEYS, decodeResponse, eurekaChildEnvironment, clientOptions, resolveCapability, waitForJob, invokeCapabilityWithClient, callEurekaCapability, run, register, connectors, textResponse };
+module.exports = { PLAN_ROUTES, MAX_REQUEST_BYTES, requestTooLarge, clearCatalogCache, setCatalogClock, getCatalog, getContract, ALLOWED_MCP_ROUTES, EUREKA_CHILD_ENV_KEYS, decodeResponse, eurekaChildEnvironment, clientOptions, resolveCapability, waitForJob, invokeCapabilityWithClient, callEurekaCapability, run, register, connectors, textResponse };

@@ -62,6 +62,7 @@
 
 const navigation = require('../navigation.cjs');
 const jtbdState = require('../../hmi/jtbd-state.cjs');
+const rungVocabulary = require('./rung-vocabulary.cjs');
 const { STRATEGY_CARD_KIND, STRATEGY_OPTION_IDS } = require('./strategy-card.cjs');
 
 /**
@@ -100,6 +101,16 @@ function _readOptionPreview(card, chosenId) {
   }
 }
 
+// _isVocabularyJob(jobId) -- true only for a job id in the job vocabulary (Phase 395-02).
+// An unreadable vocabulary answers false, so nothing outside it is ever written as a new job.
+function _isVocabularyJob(jobId) {
+  try {
+    return require('../section-registry.cjs').isDeclaredJob(jobId) === true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 /**
  * applyGoalFile(roomDir, pending) -> the outcome of the goal file write.
  *
@@ -123,7 +134,14 @@ function applyGoalFile(roomDir, pending) {
   }
   try {
     const setGoalOpts = { jtbd: p.jtbd, set_by: 'gate_answer' };
-    if (p.rung !== undefined) setGoalOpts.rung = p.rung;
+    if (p.rung !== undefined) {
+      setGoalOpts.rung = p.rung;
+    } else {
+      // Phase 395-01: a job change with no problem type keeps the problem type the goal already has.
+      // Phase 395-02: only when that problem type is one of Theo's four ids; any other stored value is dropped.
+      const prevGoal = jtbdState.getGoal(roomDir);
+      if (prevGoal && rungVocabulary.isTheoRung(prevGoal.rung)) setGoalOpts.rung = prevGoal.rung;
+    }
     if (typeof p.decision_node_id === 'string' && p.decision_node_id.length > 0) {
       setGoalOpts.decision_node_id = p.decision_node_id;
     }
@@ -164,6 +182,10 @@ function applyGoalFile(roomDir, pending) {
  *   { ok: true, goal_written: true, goal_version: number, anchor_confirmed:
  *     boolean } -- verdict is 'approve' and chosen is 'rewrite-jtbd' or
  *     'change-rung'. setGoal was called exactly once.
+ *   { ok: true, goal_written: false, anchor_confirmed: boolean, reason:
+ *     'goal_job_does_not_rank' } -- verdict is 'approve', chosen is
+ *     'rewrite-jtbd' or 'change-rung', and the job is `explore` (Phase
+ *     395-07, 395-07b). Nothing is written: `explore` never ranks the next move.
  *   { ok: true, goal_written: false, anchor_confirmed: boolean, reason:
  *     'goal_write_failed' } -- verdict is 'approve' and chosen is
  *     'rewrite-jtbd'/'change-rung', but setGoal failed (a file-write fault,
@@ -238,6 +260,14 @@ function ratifyGoalProposal(db, roomDir, params) {
     const rung = (payload.rung !== undefined) ? payload.rung : undefined;
     if (jtbd === null) {
       writeReason = 'goal_write_failed';
+    } else if (chosenId === 'rewrite-jtbd' && !_isVocabularyJob(jtbd)) {
+      // Phase 395-02: a new goal job must be in the job vocabulary. Nothing is written.
+      writeReason = 'goal_job_not_in_vocabulary';
+    } else if (jtbd === 'explore') {
+      // Phase 395-07: the job `explore` names no intent and never ranks the next move (lib/hmi/jtbd-state.cjs
+      // resolveSelectionJob), so it is not taken as a new goal job. Nothing is written.
+      // Phase 395-07b (cold check 395-07, mi2): the same for change-rung, which carries a job in its preview too.
+      writeReason = 'goal_job_does_not_rank';
     } else {
       const pending = { jtbd: jtbd };
       if (rung !== undefined) pending.rung = rung;

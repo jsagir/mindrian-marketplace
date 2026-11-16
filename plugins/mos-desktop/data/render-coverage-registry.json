@@ -20,9 +20,9 @@
   "render_counts": {
     "card_emission": 17,
     "render_only_excluded": 0,
-    "md_declared_wired": 97,
+    "md_declared_wired": 96,
     "md_declared_unwired": 0,
-    "skill_declared_wired": 103,
+    "skill_declared_wired": 101,
     "skill_declared_unwired": 0
   },
   "entries": [
@@ -402,12 +402,12 @@
     },
     {
       "surface": "commands/mva-brief.md",
-      "declared_shape": "F.1",
+      "declared_shape": "F.0",
       "wired": true
     },
     {
-      "surface": "commands/mva-option.md",
-      "declared_shape": "F.8",
+      "surface": "commands/mva-report.md",
+      "declared_shape": "F.0",
       "wired": true
     },
     {
@@ -553,11 +553,6 @@
     {
       "surface": "commands/status.md",
       "declared_shape": "F.1",
-      "wired": true
-    },
-    {
-      "surface": "commands/structure-argument.md",
-      "declared_shape": "F.9",
       "wired": true
     },
     {
@@ -916,17 +911,12 @@
     },
     {
       "surface": "skills/mva-brief/SKILL.md",
-      "declared_shape": "F.1",
+      "declared_shape": "F.0",
       "wired": true
     },
     {
-      "surface": "skills/mva-option/SKILL.md",
-      "declared_shape": "F.8",
-      "wired": true
-    },
-    {
-      "surface": "skills/mva-pipeline/SKILL.md",
-      "declared_shape": "F.1",
+      "surface": "skills/mva-report/SKILL.md",
+      "declared_shape": "F.0",
       "wired": true
     },
     {
@@ -1072,11 +1062,6 @@
     {
       "surface": "skills/status/SKILL.md",
       "declared_shape": "F.1",
-      "wired": true
-    },
-    {
-      "surface": "skills/structure-argument/SKILL.md",
-      "declared_shape": "F.9",
       "wired": true
     },
     {

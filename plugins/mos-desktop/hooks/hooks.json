@@ -231,7 +231,18 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/web-credential-guard-hook.cjs\"",
-            "timeout": 5
+            "timeout": 5,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/review-contract-hook.cjs\"",
+            "timeout": 3
           }
         ]
       }
@@ -344,15 +355,6 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" intent-classifier",
             "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mva-detect.cjs\"",
-            "timeout": 3
           }
         ]
       },

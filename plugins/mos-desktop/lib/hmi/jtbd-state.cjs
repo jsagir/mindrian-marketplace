@@ -284,6 +284,27 @@ function getGoal(roomDir) {
   return s && s.goal && typeof s.goal === 'object' ? s.goal : null;
 }
 
+// resolveSelectionJob(roomDir, sectionJobId) -- the ONE read order for the job
+// that selects the next move (Phase 395-01). A goal job that is in the job
+// vocabulary wins; else the section job, used as it is today; else none.
+// The cue job (`current`) is never read here. Never throws.
+function resolveSelectionJob(roomDir, sectionJobId) {
+  const sectionJob = typeof sectionJobId === 'string' && sectionJobId.length > 0 ? sectionJobId : null;
+  try {
+    const goal = getGoal(roomDir);
+    const rung = goal && typeof goal.rung === 'string' && goal.rung.length > 0 ? goal.rung : null;
+    const registry = require('../core/section-registry.cjs');
+    // Phase 395-04: a goal job `explore` names no intent (the same rule as the job offers), so it does not rank the
+    // move. The section job is used, as with no goal.
+    if (goal && goal.jtbd !== 'explore' && registry.isDeclaredJob(goal.jtbd) === true) {
+      return { id: goal.jtbd, origin: 'goal', rung: rung };
+    }
+    return { id: sectionJob, origin: sectionJob ? 'section' : null, rung: rung };
+  } catch (_e) {
+    return { id: sectionJob, origin: sectionJob ? 'section' : null, rung: null };
+  }
+}
+
 // setGoal(roomDir, opts) -- the ONLY writer of the top-level `goal` key.
 // Ratification happens at a Decision Gate (plan 07's gate approve branch is
 // the only intended caller); this function itself does not gate anything,
@@ -421,7 +442,7 @@ function isStale(roomDir, maxAgeHours) {
 
 module.exports = {
   getCurrent, setCurrent, clear, history, isStale, bumpTurnCount,
-  setGoal, getGoal, goalHistory, GOAL_HISTORY_MAX,
+  setGoal, getGoal, resolveSelectionJob, goalHistory, GOAL_HISTORY_MAX,
   SCHEMA_VERSION, HISTORY_MAX, DEFAULT_STALENESS_HOURS,
   _internal: { statePath, readState, writeStateAtomic, trimHistory, manualOverrideActive },
 };

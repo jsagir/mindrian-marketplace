@@ -16,7 +16,8 @@
  *     canonically_confirmed, which needs a node a person confirmed in room.db (Canon Part 9).
  *   - Proposed, selected, attempted and verified are four separate lines. A run with no terminal record, or a run.json
  *     whose shape is not recognized, is shown as unresolved, and an earlier unresolved run stays listed until reconciled.
- *   - The next move is what next-move.cjs composes (agreement across sources first, Theo's rank last), never Theo's
+ *   - The next move is what next-move.cjs composes (with a job known: the job first, then the ledger rating for the
+ *     job, then agreement across sources; Theo's rank last), never Theo's
  *     top line. When the command-line and Desktop/Cowork primaries differ both are printed, because BRIEF.md is one
  *     file read on all three surfaces.
  *   - Theo's real response envelope is unconfirmed, so the Theo block renders only what the face recorded. A face that
@@ -224,14 +225,34 @@ function maskGeneratedFeynmanLines(text) {
   return s.replace(GEN_DIAL_LINE_RE, '').replace(GEN_TIMELINE_LINE_RE, '*Last refreshed: <time>. $1 (<elapsed>).*');
 }
 
+// selectionBasis(roomDir) -- the goal job that ranks the move, when the room has one in the job vocabulary; else null.
+// Phase 395-02. Never throws.
+function selectionBasis(roomDir) {
+  try {
+    const sel = require('../../hmi/jtbd-state.cjs').resolveSelectionJob(roomDir, null);
+    if (sel && sel.origin === 'goal' && typeof sel.id === 'string' && sel.id.length > 0) {
+      return { id: sel.id, origin: 'goal', rung: typeof sel.rung === 'string' && sel.rung.length > 0 ? sel.rung : null };
+    }
+  } catch (_e) { /* no goal job: the basis is the input files only */ }
+  return null;
+}
+
 /**
- * recordBasis(sectionPath, identity, extras) -> { room_id, inputs, absent, fingerprint, full_fingerprint, extras }
+ * recordBasis(sectionPath, identity, extras, roomDir) -> { room_id, inputs, absent, fingerprint, full_fingerprint, extras, selector, selection? }
+ *   selector     next-move.cjs selectorMark(): the order rule of the selector and the build time of the ledger
+ *                (Phase 395-07). It is folded into full_fingerprint only, so a brief written under another order rule
+ *                or another ledger is rewritten 1 time by the two writers. `fingerprint` stays the hash of the input
+ *                files; a reader compares the "- selector:" line of the brief with this value. The mark is a constant
+ *                and one value of a plugin data file, so it is the same for every writer and reader on one install.
  *   inputs       [{ file, sha256, mtime }] for each input file that exists (MINTO, FEYNMAN, BRAIN, CONTEXT, ROOM)
  *   fingerprint  sha256 over the input files only (what a session-start reader recomputes from the nest alone)
  *   full_fingerprint  also folds in the extras the caller supplies ([{ label, digest }]: claim and run records)
+ *   selection    { id, origin: 'goal', rung } only when the room has a goal job in the job vocabulary (Phase 395-02); it
+ *                adds one line to the fingerprint. roomDir is the folder whose goal ranks the nest; default the parent
+ *                of sectionPath. renderBrief gives that same parent (Phase 395-05), so a writer and a reader agree.
  * The room id is shown, not hashed: every face already carries it, so an identity change moves the file hashes.
  */
-function recordBasis(sectionPath, identity, extras) {
+function recordBasis(sectionPath, identity, extras, roomDir) {
   const inputs = [];
   const absent = [];
   const lines = [];
@@ -247,11 +268,20 @@ function recordBasis(sectionPath, identity, extras) {
     inputs.push({ file: f, sha256: h, mtime });
     lines.push(f + ' ' + h);
   });
+  // Phase 395-02: a goal job in the job vocabulary ranks the move, so it is part of the basis. A room with no such
+  // goal adds no line here, so its fingerprint is the same as before this change.
+  const selection = selectionBasis(typeof roomDir === 'string' && roomDir.length > 0 ? roomDir : path.dirname(sectionPath));
+  if (selection) lines.push('selection job ' + selection.id + ' origin ' + selection.origin + ' problem type ' + (selection.rung || 'none'));
   const fingerprint = sha256(lines.join('\n'));
   const ex = arr(extras).filter(isObj).map((e) => ({ label: String(e.label), digest: String(e.digest) }));
-  const full = sha256(fingerprint + '\n' + ex.map((e) => e.label + ' ' + e.digest).sort().join('\n'));
+  // Phase 395-07: the selector order and the ledger build are part of the full basis (cold check 395-04, MA2). The
+  // input-file fingerprint above stays the hash of the input files; the reader compares the selector line itself.
+  const selector = NM.selectorMark();
+  const full = sha256(fingerprint + '\n' + ex.map((e) => e.label + ' ' + e.digest).sort().join('\n') + '\nselector ' + selector);
   const roomId = isObj(identity) && identity.ok === true && typeof identity.room_id === 'string' ? identity.room_id : roomIdFromFaces(sectionPath);
-  return { room_id: roomId || 'unknown', inputs, absent, fingerprint, full_fingerprint: full, extras: ex };
+  const out = { room_id: roomId || 'unknown', inputs, absent, fingerprint, full_fingerprint: full, extras: ex, selector };
+  if (selection) out.selection = selection;
+  return out;
 }
 
 // ---- the blocks -----------------------------------------------------------------------------------------------------
@@ -427,17 +457,19 @@ function moveBlock(nmInput, nest, claims, cap, clipLen) {
   return lines.join('\n');
 }
 
-function theoBlock(nest, clipLen) {
+function theoBlock(nest, clipLen, goalJob) {
   const face = nest.face;
+  // Phase 395-02: when the goal job ranked the move, the origin sentence names it.
+  const moveOrigin = goalJob ? 'the contract, the ledger, the nest itself and your goal job (' + goalJob.id + ')' : 'the contract, the ledger and the nest itself';
   let notAskedLines = {};
   try { notAskedLines = require('./theo-ask.cjs').NOT_ASKED_LINES || {}; } catch (_e) { notAskedLines = {}; }
-  if (!face.exists) return 'Theo: not asked. This nest has no BRAIN.md face yet (reason: face_missing), so no Theo guidance is on record. The move above comes from the contract, the ledger and the nest itself.';
+  if (!face.exists) return 'Theo: not asked. This nest has no BRAIN.md face yet (reason: face_missing), so no Theo guidance is on record. The move above comes from ' + moveOrigin + '.';
   if (!face.keyed) return 'Theo: not recorded. BRAIN.md has no FeyMinto face keys, so nothing says whether Theo was asked, with which handles, or what came back. See BRAIN.md for what it does hold.';
   if (!face.asked) {
     const code = face.not_asked_reason || 'not_recorded';
     const line = notAskedLines[code] || ('not asked: ' + code);
     const tier = face.staleness === 'unavailable' ? ' (staleness unavailable, so the engine reads this nest at tier_0)' : (face.staleness ? ' (staleness ' + face.staleness + ')' : '');
-    return 'Theo: ' + line + ' (reason: ' + code + '). This nest has no Theo guidance' + tier + '. The move above comes from the contract, the ledger and the nest itself. Full face: BRAIN.md.';
+    return 'Theo: ' + line + ' (reason: ' + code + '). This nest has no Theo guidance' + tier + '. The move above comes from ' + moveOrigin + '. Full face: BRAIN.md.';
   }
   const lines = [];
   lines.push('Theo was asked' + (face.asked_at ? ' on ' + face.asked_at : '') + (face.theo_origin ? ' (origin ' + face.theo_origin + ')' : '') + ': ' + (face.queries_sent === null ? 'query count not recorded' : face.queries_sent + ' queries') + '; handles on the wire: ' + (face.handles_on_wire || 'not recorded') + '.');
@@ -460,6 +492,8 @@ function basisBlock(basis, identity, extras) {
   lines.push('Inputs read at render time, each with its content hash and last-modified time:');
   basis.inputs.forEach((i) => lines.push('- ' + i.file + ' ' + i.sha256 + ' modified ' + i.mtime));
   basis.absent.forEach((f) => lines.push('- ' + f + ' absent'));
+  if (basis.selection) lines.push('- selection job: ' + basis.selection.id + ' (your goal job), problem type ' + (basis.selection.rung || 'not set'));
+  if (typeof basis.selector === 'string') lines.push('- selector: ' + basis.selector);
   extras.forEach((e) => lines.push('- ' + e.label + ': ' + e.summary + ' (digest ' + e.digest.slice(0, 12) + ')'));
   lines.push('Fingerprint: ' + basis.fingerprint);
   lines.push('Freshness is read off the inputs above: this brief is current only while every hash still matches the file on disk.');
@@ -467,6 +501,14 @@ function basisBlock(basis, identity, extras) {
 }
 
 function digestOf(v) { return crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex'); }
+
+// goalJobOf(nextMove) -- the job that ranked the move when it came from the goal, else null. Phase 395-02.
+// nextMove is one composeNextMove result or a { cli, mcp } pair; both surfaces carry the same job.
+function goalJobOf(nextMove) {
+  const n = normalizeNextMove(nextMove);
+  const found = [n.mcp, n.cli].map((m) => (isObj(m) ? m.job : null)).find((j) => isObj(j) && j.origin === 'goal' && typeof j.id === 'string' && j.id.length > 0);
+  return found ? { id: found.id, origin: 'goal' } : null;
+}
 
 // ---- renderBrief ----------------------------------------------------------------------------------------------------
 
@@ -488,7 +530,19 @@ function renderBrief(input) {
   const roomDir = path.resolve(String(inp.roomDir || path.dirname(sectionPath)));
   const section = path.basename(sectionPath);
   const identity = isObj(inp.identity) ? inp.identity : readIdentity(roomDir);
-  const nest = NM.gatherNest({ roomDir, sectionDir: sectionPath });
+  // Phase 395-07b (cold check 395-07, MA1): the next move is chosen from the nest as the per-turn selector reads it
+  // (`picked`, with the two ceilings). When the byte ceiling cut a nest file, the blocks of the brief read the files
+  // whole (`nest`), so no block says "none recorded" for a part after the cut. `cut` and `runs_not_read` stay those of
+  // `picked`: the RECORD BASIS note says what the next move was chosen from.
+  const picked = NM.gatherNest({ roomDir, sectionDir: sectionPath });
+  const nest = picked.cut.length > 0
+    ? Object.assign(NM.gatherNest({ roomDir, sectionDir: sectionPath, wholeFiles: true }), { cut: picked.cut, runs_not_read: picked.runs_not_read })
+    : picked;
+  // Phase 395-05 (finding mi1): the goal that ranks a nest is the goal of the folder that holds the nest (its parent
+  // folder). recordBasis and the session-start reader use the same folder. For a nest in a sub-room that folder is the
+  // sub-room, also when the caller gives the root room as roomDir. For a direct child of the room nothing changes.
+  const selectionRoom = path.dirname(sectionPath);
+  const selectionNest = selectionRoom === picked.roomDir ? picked : Object.assign({}, picked, { roomDir: selectionRoom });
   const claims = Array.isArray(inp.claims) ? inp.claims : gatherClaimRecords(roomDir, section);
 
   let nextMove = inp.nextMove;
@@ -500,24 +554,37 @@ function renderBrief(input) {
       };
     } else {
       nextMove = {
-        cli: NM.nextMoveForSection({ roomDir, sectionDir: sectionPath, surface: 'cli', nest }),
-        mcp: NM.nextMoveForSection({ roomDir, sectionDir: sectionPath, surface: 'mcp', nest }),
+        cli: NM.nextMoveForSection({ roomDir, sectionDir: sectionPath, surface: 'cli', nest: selectionNest }),
+        mcp: NM.nextMoveForSection({ roomDir, sectionDir: sectionPath, surface: 'mcp', nest: selectionNest }),
       };
     }
   }
+
+  // Phase 395-02: the job that ranked the move, when it came from the goal.
+  const goalJob = goalJobOf(nextMove);
 
   const claimsDigest = digestOf(claims.map((c) => [c.id, c.text, isObj(c.records) ? [c.records.review_status, c.records.confirmed_by, c.records.status, arr(c.records.verification).length] : null]));
   const runsDigest = digestOf(nest.runs.map((r) => [r.run_id, r.status, r.stop_reason, r.finished_at]));
   const extras = [
     { label: 'claim records', digest: claimsDigest, summary: claims.length + ' claim' + (claims.length === 1 ? '' : 's') + ' filed in this section' },
-    { label: 'run records', digest: runsDigest, summary: nest.runs.length + ' research run' + (nest.runs.length === 1 ? '' : 's') + ' for this nest' },
+    { label: 'run records', digest: runsDigest, summary: nest.runs.length + ' research run' + (nest.runs.length === 1 ? '' : 's') + ' for this nest'
+      // Phase 395-07: the two read ceilings of next-move.cjs, named when one of them left something out.
+      // Phase 395-07b (cold check 395-07, mi3, MA1): the count is of the runs read, and "newest" goes by the date in the
+      // run name. The cut note says that only the choice of the next move read the start of the large files.
+      + (nest.runs_not_read > 0 ? '; only the newest ' + NM.MAX_RUNS_READ + ' runs of the room were read, ' + nest.runs_not_read + ' older runs were not'
+        + '; that count is of the runs that were read, and newest goes by the date in the run name (runs of the same day go by name, not by time)' : '')
+      + (arr(nest.cut).length > 0 ? '; to choose the next move, these files were read only in part (first ' + NM.MAX_NEST_FILE_BYTES + ' bytes): ' + nest.cut.join(', ') + '; the blocks of this brief read them whole' : '') },
   ];
-  const basis = recordBasis(sectionPath, identity, extras.map((e) => ({ label: e.label, digest: e.digest })));
+  const basis = recordBasis(sectionPath, identity, extras.map((e) => ({ label: e.label, digest: e.digest })), selectionRoom);
   const nowIso = typeof inp.now === 'function' ? String(inp.now()) : new Date().toISOString();
   const preserved = typeof inp.yourDecision === 'string' && inp.yourDecision.trim().length > 0 ? inp.yourDecision.trim() : null;
 
   function build(cap, clipLen) {
-    const serves = (nest.job.id ? 'Job: ' + nest.job.id + '.' : 'Job: not declared for this nest.') + ' ' + (nest.job.statement ? nest.job.statement : 'This nest\'s ROOM.md carries no statement.');
+    // Phase 395-02: when the goal job ranked the move, the Job line names it and its origin; the nest's own job stays visible.
+    const jobLine = goalJob
+      ? 'Job: ' + goalJob.id + ' (your goal job; it ranks the move below). ' + (nest.job.id ? 'This nest\'s own job: ' + nest.job.id + '.' : 'This nest declares no job of its own.')
+      : (nest.job.id ? 'Job: ' + nest.job.id + '.' : 'Job: not declared for this nest.');
+    const serves = jobLine + ' ' + (nest.job.statement ? nest.job.statement : 'This nest\'s ROOM.md carries no statement.');
     let think;
     if (nest.minto.governing_thought && !nest.minto.placeholder) think = clip(nest.minto.governing_thought, clipLen * 3);
     else think = UNRESOLVED_THOUGHT;
@@ -530,7 +597,7 @@ function renderBrief(input) {
       changedBlock(nest, cap, clipLen),
       questionBlock(nest, clipLen),
       moveBlock(nextMove, nest, claims, cap, clipLen),
-      theoBlock(nest, clipLen),
+      theoBlock(nest, clipLen, goalJob),
       DECISION_START + '\n' + (preserved || DEFAULT_DECISION) + '\n' + DECISION_END,
       basisBlock(basis, identity, extras),
     ];

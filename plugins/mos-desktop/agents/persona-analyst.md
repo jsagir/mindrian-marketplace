@@ -3,14 +3,15 @@ name: persona-analyst
 description: Invoke De Bono hats and multi-perspective analysis when the user asks for a hat, persona, or tension-map view.
 model: inherit
 color: yellow
-allowed-tools:
+# 391: host-read tools list; plugin-scoped MCP names per card C1 of 391-DECISION.md. Quick 261108-es3 removed the allowed-tools key: the host does not recognize or apply it for plugin agents (SEED-147).
+tools:
   - Read
   - Write
   - Glob
   - WebSearch
   - WebFetch
-  - mcp__mindrian-brain__brain_search
-  - mcp__mindrian-brain__brain_query
+  - mcp__plugin_mos_mindrian-brain__brain_search
+  - mcp__plugin_mos_mindrian-brain__brain_query
 # --- Phase 144.1 connector frontmatter (generated via build-connector-registry --check) ---
 connector:
   connects_to_spine: true

@@ -59,6 +59,8 @@ Restart Claude Code. Larry starts talking. The Brain is part of what installs: y
 
 Prefer one command? `npx @mindrian_os/cli` does the same job. The full walkthrough is in the [install guide](https://mindrian-os.com/docs/install).
 
+**Optional: the Eureka engine.** After the install, `npx @mindrian_os/cli` offers one more step: set up the Eureka engine for the Eureka graph tools. It first shows what the step reaches and downloads, and the default answer is No. Add `--eureka` to see the card and the question even when the install would not ask, `--eureka --yes` to run the step after the card without the question (for scripts), or `--no-eureka` to skip it. With no terminal, `--eureka` alone shows the card and runs nothing. Inside Claude Code the same step is `/mos:eureka enable engine --setup`. MindrianOS works without it.
+
 **Quick start**
 
 ```text
@@ -66,6 +68,8 @@ Prefer one command? `npx @mindrian_os/cli` does the same job. The full walkthrou
 ```
 
 Then talk. Larry reaches for the right command for you.
+
+Tell Larry the job you want done in a room, and he puts the move for that job first. He shows you the jobs to pick from; he never picks one for you. Each offer comes with the reason that decided it.
 
 **Update.** Third-party plugins do not update on their own, so run both lines:
 
@@ -83,6 +87,7 @@ Something feels off? Run `/mos:doctor`. From a normal terminal, `mindrian-os doc
 - **A room on your machine.** A structured folder (default `~/MindrianRooms/`) that holds your venture, decisions and files. It is yours.
 - **Larry, a teaching partner.** He asks before he tells, and he marks when an answer came from the Brain and when it is just conversation.
 - **Methods that fit.** Reframing a problem, running discovery, grading an idea against real ventures, mapping the weakest assumption in your plan.
+- **One sentence becomes a one-page argument.** Give `/mos:structure-argument` one sentence about your venture, and Larry writes the situation, the complication, the question and the answer on one page. It needs no room and no outside lookup. Outside evidence comes only after a card shows the exact search phrases and you say yes.
 - **Claims you can trust.** A claim counts as confirmed only after it was checked against a source. Ask `/mos:status --checks` for the plain picture of your whole room.
 - **Research you approve.** `/mos:research` shows you every search before it is sent, runs only after you say yes, and files findings only when you say yes. A failed search never reads as "nothing found".
 - **Connections you did not ask about.** When your room changes in a way that matters, MindrianOS looks for links across your material and brings back at most one card, only when it holds up.
@@ -96,8 +101,8 @@ Be clear about what each part needs:
 
 - `/mos:eureka` works on a plain install. It needs no engine and no extra install. It needs a room with ideas from more than one area.
 - `/mos:eureka-portfolio` ranks your linked ideas with a measuring tool on your computer. `/mos:eureka enable` installs it (about 380 MB). Without it, the command tells you what is missing instead of guessing.
-- The Eureka engine tools are an advanced extra. The server lists 24 Eureka tools (the runtime count), and 22 of them need the engine. The engine is a separate folder that you already have. This plugin does not download or include the engine. `/mos:eureka enable engine --path` followed by your folder saves it.
-- Setup has three parts. First, the Python packages: run `/mos:eureka enable engine --sync` after you approve a card that lists every website it will contact. Second, a model folder that you place yourself (the engine never downloads one). Third, Node.js 22 or newer for some tools. The check also needs uv and Python 3.11 or newer.
+- The Eureka engine tools are an advanced extra. The server lists 24 Eureka tools (the runtime count), and 22 of them need the engine. The engine is a separate, public project. This plugin does not download or include the engine on its own. You have two ways to add it. `/mos:eureka enable engine --setup` does the whole setup in one step, only after you approve a card that says what it reaches (GitHub, the Python package sites and Hugging Face) and what it downloads (a meaning model of about 90 MB; about 1.3 GB on disk in all). The setup steps are pinned to the version tested for this MindrianOS release, but the engine code that they get is the newest public version of the engine, not a pinned copy. Or `/mos:eureka enable engine --path` followed by a folder that you already have saves it.
+- Setup has three parts. First, the Python packages: the one-step setup installs them, or run `/mos:eureka enable engine --sync` after you approve a card that lists every website it will contact. Second, a model folder: the one-step setup downloads it, or you place one yourself (the engine never downloads one by itself). Third, Node.js 22 or newer for some tools. The check also needs uv and Python 3.11 or newer.
 - After setup the plugin starts the engine offline, and it never lets the engine install anything by itself. It sees only the items you select, and your room text stays on your machine. A test of the engine itself, run by you, is still open.
 - If a tool needs a package group, a model or Node.js that you do not have, it says which, with one fix line. `/mos:doctor` shows one line named eureka-engine-readiness: not set up (fine), ready, or what is missing.
 - Claude Desktop on the same computer reads the saved setting. Where the setting is not found, the engine tools say the engine is not set up.
@@ -122,6 +127,7 @@ This is the promise, and it is a rule in the project's constitution ([`docs/MIND
 
 - **Your room never goes to the Brain.** Your notes, decisions and meetings stay local.
 - **Only generic methodology crosses.** A framework name or a type of problem goes out. Methodology comes back.
+- **A short question can go. Pasted text stays.** A plain methodology question of one or two sentences may go to the Brain. If you paste a quote or a block of text into it, that part is swapped for the note `[pasted text kept local]` and only the rest goes out. Passwords, keys and words from your room are still blocked.
 - **Search stays home.** The embeddings that power semantic search are made on your machine, with no network egress.
 - **Audio is the one thing you send on purpose.** If you transcribe a recording with /mos:file-meeting --audio, the audio file leaves your machine and goes to Modulate (Velma). It does not go to the Brain.
 - **The only per-install thing the Brain sees** is a random 32-character identifier, minted once and stored locally. It tells the Brain one install from another. It does not tell the Brain who you are. See [`docs/THEO-INSTALL-ID.md`](docs/THEO-INSTALL-ID.md).
@@ -166,7 +172,7 @@ Talk. That is the interface. These are here for when you already know what you w
 /mos:status --checks      # the plain-words state of your room
 ```
 
-This is a slice of what ships: 113 commands, 126 skills, 17 agents and 4 pipelines, with hooks on 12 session events. If you do not know which one to run, that is normal. Just talk.
+This is a slice of what ships: 113 commands, 125 skills, 17 agents and 4 pipelines, with hooks on 12 session events. If you do not know which one to run, that is normal. Just talk.
 
 ---
 

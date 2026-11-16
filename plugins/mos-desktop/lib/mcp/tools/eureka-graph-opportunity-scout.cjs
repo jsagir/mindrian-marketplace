@@ -9,6 +9,7 @@ const { registerEurekaTool, response: eurekaResponse, signalFromExtra, ENGINE_RE
 const { z } = require('zod');
 const { prepare } = require('./eureka-graph-prepare-artifacts.cjs');
 const { callEurekaOpportunityScout, textResponse, projectionDisclosure } = require('./eureka-graph-analyze.cjs');
+const { TOP_K_MAX } = require('../eureka-pair-screen.cjs');
 
 const CAPABILITY_ID = 'opportunity.synthesize_discovery_signals';
 
@@ -62,13 +63,13 @@ async function run(args, ctx, extra, deps = {}) {
 function register(server, ctx) {
   registerEurekaTool(server, 'eureka_graph_opportunity_scout', {
     title: 'Screen Local Graph for Candidate Pair Leads',
-    description: 'Screen explicitly selected nodes from the bound MindrianOS room for candidate relationship leads using Eureka RS+HSI. This compatibility tool waits for the job and can block; for non-blocking use, prepare artifacts and call eureka_capability_start with opportunity.synthesize_discovery_signals, then use the job status/result/cancel tools. Results are candidate pair signals, not validated or comprehensive opportunities. ' + ENGINE_REQUIREMENT + ' It does not fetch external research or write accepted MindrianOS graph/portfolio state. Eureka persists a local job record and result for up to 30 days and may write derived vectors to its local embedding cache.',
+    description: 'Screen explicitly selected nodes from the bound MindrianOS room for candidate relationship leads using Eureka RS+HSI. This compatibility tool waits for the job and can block; for non-blocking use, prepare artifacts and call eureka_capability_start with opportunity.synthesize_discovery_signals, then use the job status/result/cancel tools. Results are candidate pair signals, not validated or comprehensive opportunities. top_k is 1 to 200. While another Eureka job runs, this call answers engine_busy. ' + ENGINE_REQUIREMENT + ' It does not fetch external research or write accepted MindrianOS graph/portfolio state. Eureka persists a local job record and result for up to 30 days and may write derived vectors to its local embedding cache.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: z.object({
       node_ids: z.array(z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/)).min(2).max(2500),
       objective: z.string().min(1).max(5000),
       max_artifacts: z.number().int().min(2).max(2500).optional(),
-      top_k: z.number().int().min(1).max(100).optional(),
+      top_k: z.number().int().min(1).max(TOP_K_MAX).optional(),
       scoring: z.enum(['hybrid_2026', 'legacy']).optional(),
       lex_weight: z.number().min(0).max(1).optional(),
       min_percentile: z.number().min(0).max(1).optional(),

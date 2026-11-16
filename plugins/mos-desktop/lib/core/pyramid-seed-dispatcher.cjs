@@ -1,14 +1,14 @@
 /*
  * Copyright (c) 2026 Mindrian. BSL 1.1.
  *
- * Phase 118-01 Plan 01 Task 3 -- mva-dispatcher.
+ * Phase 118-01 Plan 01 Task 3 -- pyramid-seed-dispatcher.
  *
  * The parallel fan-out primitive used by Plan 118-03 (progressive streaming)
  * and Plan 118-04 (deck generation). Plan 118-02 supplies the 6 specific
  * agents (brain_similar, brain_cross_domain, brain_classic_traps,
  * tavily_funding, six_hats_red_black, dashboard_graph); this module knows
  * NOTHING about which agents are which -- it accepts any { id, fn } tuple
- * conforming to the Agent contract in lib/core/mva-agent-contract.cjs.
+ * conforming to the Agent contract in lib/core/pyramid-seed-agent-contract.cjs.
  *
  * Per binding decision B2 (HARD):
  *   - 45-second global wall-clock budget
@@ -35,8 +35,8 @@
  */
 'use strict';
 
-const { runAgent } = require('./mva-agent-contract.cjs');
-const { createBudget } = require('./mva-budget.cjs');
+const { runAgent } = require('./pyramid-seed-agent-contract.cjs');
+const { createBudget } = require('./pyramid-seed-budget.cjs');
 
 /**
  * dispatch -- parallel fan-out over agents, yielding each AgentResult as it

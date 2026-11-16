@@ -1071,6 +1071,27 @@ function resolveActiveSectionPathForRoom(roomDir) {
   }
 }
 
+// Phase 395-03: the section slug that decide() needs to reach the selector
+// (lib/core/navigation-engine.cjs reads ctx.section and joins it to ctx.roomDir).
+// Returns the folder name only when the active section is a direct child of the
+// room and its name is a slug; else undefined, and decide() runs as before.
+function sectionSlugForEngine(roomDir, sectionPath) {
+  if (typeof roomDir !== 'string' || !roomDir) return undefined;
+  if (typeof sectionPath !== 'string' || !sectionPath) return undefined;
+  let rel;
+  try { rel = path.relative(roomDir, sectionPath); } catch (_e) { return undefined; }
+  return /^[a-z0-9-]+$/.test(rel) ? rel : undefined;
+}
+
+// Phase 395-05 (cold check 395-03, Major 2, part 1): a time guard for the selector. decide() is synchronous, so the
+// NAV_HARD_TIMEOUT_MS timer cannot stop the selector after it starts. When the hook has already used that budget
+// before it builds the context for decide(), no section is given, so decide() does not start the selector and runs as
+// it did before Phase 395-03. The same rule as shouldSkipReachPenalties: a missing or non-finite clock never skips.
+function sectionForSelector(roomDir, sectionPath, elapsedMs) {
+  if (shouldSkipReachPenalties(elapsedMs)) return undefined;
+  return sectionSlugForEngine(roomDir, sectionPath);
+}
+
 function resolveRoomsRootForNav() {
   // Wider env-var acceptance than Phase 83 resolveMindrianRoomsRoot. The Phase
   // 91 hot path accepts either MINDRIAN_ROOMS_HOME or MINDRIAN_ROOMS_ROOT so
@@ -2404,6 +2425,9 @@ function runNavigationEngine(roomDir, sessionId) {
         // Phase 135-01 resolver production inputs:
         operator: operatorState,
         sectionPath: sectionPath, // scope + the [[wikilink]] target the grounded reason needs
+        // Phase 395-03: the selector inputs. section is the slug decide() joins to roomDir; the hook runs in Claude Code only.
+        section: sectionForSelector(roomDir, sectionPath, Date.now() - startedAt),
+        surface: 'cli',
         problemType: userPersona && userPersona.problem_type, // rankForSelector input (null when unknown)
         jtbd: jtbd,
         // Phase 150-04 (MEM-07 link L3): thread the STARVED decide() sensor inputs
@@ -3663,6 +3687,8 @@ module.exports = {
   // guard and its threshold, exported so the regression tests the PRODUCTION
   // predicate rather than a reimplementation.
   shouldSkipReachPenalties: shouldSkipReachPenalties,
+  // Phase 395-05: exported for tests/test-395-carried.cjs.
+  sectionForSelector: sectionForSelector,
   NAV_HARD_TIMEOUT_MS: NAV_HARD_TIMEOUT_MS,
 };
 

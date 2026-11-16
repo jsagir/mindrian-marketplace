@@ -280,7 +280,10 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "Red Teaming"
+        "Red Teaming",
+        "Pre-mortem Analysis",
+        "CIAs approach to challenging analytical assumptions",
+        "Black Hat Thinking"
       ],
       "produces": "room/**/challenge/*",
       "executable": null,
@@ -547,7 +550,8 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "Dominant Design"
+        "Dominant Design",
+        "Era of Ferment Analysis"
       ],
       "produces": "room/**/dominant-designs/*",
       "executable": null,
@@ -771,7 +775,8 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "Four Lenses of Innovation"
+        "Four Lenses of Innovation",
+        "TRIZ / Genrich Altshuller Innovation Algorithm"
       ],
       "produces": "room/**/analogies/*",
       "executable": null,
@@ -813,7 +818,8 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "Usher's Model of Cumulative Synthesis"
+        "Usher's Model of Cumulative Synthesis",
+        "Extensive Searching"
       ],
       "produces": "room/**/analogies/*",
       "executable": null,
@@ -1141,7 +1147,8 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "PEST Analysis"
+        "PEST Analysis",
+        "Macro Trends/Macro Trending"
       ],
       "produces": "room/**/trends/*",
       "executable": null,
@@ -1280,7 +1287,8 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "Mullins Model"
+        "Mullins Model",
+        "Macro Trends/Macro Trending"
       ],
       "produces": "room/**/mullins/*",
       "executable": null,
@@ -1306,30 +1314,11 @@
       "inputs": [],
       "autonomous_safe": false,
       "body_shape": "E",
-      "layer": "graph",
-      "serves_jtbd": [
-        "explore"
-      ],
-      "teaching": "When you have just typed a venture sentence and want a brief in under a minute, /mos:mva-brief runs the 6-agent fan-out and deploys a shareable deck. The reward-before-investment surface of Phase 118.",
-      "jtbd_label": "Explore",
-      "jtbd_summary": "No specific job - general thinking, talking, ranging."
-    },
-    {
-      "command": "/mos:mva-option",
-      "kind": "utility",
-      "surface": "navigator",
-      "visibility": null,
-      "frameworks": [],
-      "produces": null,
-      "executable": null,
-      "inputs": [],
-      "autonomous_safe": false,
-      "body_shape": "E",
       "layer": "harness",
       "serves_jtbd": [
         "explore"
       ],
-      "teaching": "When the 3-option footer shows after an MVA brief, /mos:mva-option routes your pick (refine / build a room / iterate) into the right next move. The hand-off after the first reward.",
+      "teaching": "Deprecated alias. Use /mos:structure-argument and choose the Seed depth to turn a venture sentence into a first argument pyramid. Scheduled removal: v2.0.0-beta.86.",
       "jtbd_label": "Explore",
       "jtbd_summary": "No specific job - general thinking, talking, ranging."
     },
@@ -1348,7 +1337,7 @@
       "serves_jtbd": [
         "audit-room"
       ],
-      "teaching": "When you have finished a conversation with Larry and want to see whether it fired the right things at the right time -- did it reach a conclusion or circle, did it elevate across frames, did the gates fire -- run /mos:mva-report. It emits a clean structured report you can forward, not a chat log. The tester-cohort report surface (2026-07-01 standup promise).",
+      "teaching": "Deprecated alias. Use /mos:session-report to get a clean structured report of the conversation you just had. Scheduled removal: v2.0.0-beta.86.",
       "jtbd_label": "Audit Room",
       "jtbd_summary": "Audit Data Room health - gaps, drift, evidence tier, decision quality."
     },
@@ -1667,7 +1656,9 @@
       "surface": "navigator",
       "visibility": null,
       "frameworks": [
-        "Root Cause Analysis"
+        "Root Cause Analysis",
+        "5 Whys Technique",
+        "Systems Thinking"
       ],
       "produces": "room/**/root-cause/*",
       "executable": null,
@@ -1816,7 +1807,8 @@
       "visibility": null,
       "frameworks": [
         "Scientific Roadmapping",
-        "Hypothesis-Driven Problem Solving"
+        "Hypothesis-Driven Problem Solving",
+        "Reverse Salient Analysis"
       ],
       "produces": "room/research-plan/*",
       "executable": null,
@@ -1873,6 +1865,25 @@
       "teaching": "When you want background scans running across the room without driving them yourself, /mos:scout fires the sentinel checks. The proactive layer, not the reactive one.",
       "jtbd_label": "Explore",
       "jtbd_summary": "No specific job - general thinking, talking, ranging."
+    },
+    {
+      "command": "/mos:session-report",
+      "kind": "utility",
+      "surface": "navigator",
+      "visibility": null,
+      "frameworks": [],
+      "produces": null,
+      "executable": null,
+      "inputs": [],
+      "autonomous_safe": false,
+      "body_shape": "E",
+      "layer": "harness",
+      "serves_jtbd": [
+        "audit-room"
+      ],
+      "teaching": "When you have finished a conversation with Larry and want to see whether it fired the right things at the right time -- did it reach a conclusion or circle, did it elevate across frames, did the gates fire -- run /mos:session-report. It emits a clean structured report you can forward, not a chat log. The tester-cohort report surface (2026-07-01 standup promise).",
+      "jtbd_label": "Audit Room",
+      "jtbd_summary": "Audit Data Room health - gaps, drift, evidence tier, decision quality."
     },
     {
       "command": "/mos:setup",
@@ -2321,6 +2332,7 @@
     ],
     "Systems Thinking": [
       "/mos:analyze-systems",
+      "/mos:root-cause",
       "/mos:systems-thinking"
     ],
     "S-Curve Analysis": [
@@ -2355,6 +2367,15 @@
     "Red Teaming": [
       "/mos:challenge-assumptions"
     ],
+    "Pre-mortem Analysis": [
+      "/mos:challenge-assumptions"
+    ],
+    "CIAs approach to challenging analytical assumptions": [
+      "/mos:challenge-assumptions"
+    ],
+    "Black Hat Thinking": [
+      "/mos:challenge-assumptions"
+    ],
     "PWS Triple Validation Compass": [
       "/mos:compare-ventures",
       "/mos:deep-grade",
@@ -2371,6 +2392,9 @@
     "Dominant Design": [
       "/mos:dominant-designs"
     ],
+    "Era of Ferment Analysis": [
+      "/mos:dominant-designs"
+    ],
     "Domain Selection": [
       "/mos:explore-domains"
     ],
@@ -2381,14 +2405,21 @@
     "Four Lenses of Innovation": [
       "/mos:find-analogies"
     ],
+    "TRIZ / Genrich Altshuller Innovation Algorithm": [
+      "/mos:find-analogies"
+    ],
     "Reverse Salient Analysis": [
       "/mos:find-bottlenecks",
       "/mos:rs-experts",
       "/mos:rs-explain",
       "/mos:rs-fetch",
-      "/mos:rs-thesis"
+      "/mos:rs-thesis",
+      "/mos:scientific-roadmap"
     ],
     "Usher's Model of Cumulative Synthesis": [
+      "/mos:find-connections"
+    ],
+    "Extensive Searching": [
       "/mos:find-connections"
     ],
     "Futures Wheel": [
@@ -2403,6 +2434,10 @@
     "PEST Analysis": [
       "/mos:macro-trends"
     ],
+    "Macro Trends/Macro Trending": [
+      "/mos:macro-trends",
+      "/mos:mullins"
+    ],
     "Knowns and Unknowns Matrix Framework": [
       "/mos:map-unknowns"
     ],
@@ -2416,6 +2451,9 @@
     "Hypothesis-Driven Problem Solving": [
       "/mos:research",
       "/mos:scientific-roadmap"
+    ],
+    "5 Whys Technique": [
+      "/mos:root-cause"
     ],
     "Scientific Roadmapping": [
       "/mos:scientific-roadmap"

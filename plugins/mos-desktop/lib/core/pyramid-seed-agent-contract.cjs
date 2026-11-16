@@ -1,9 +1,9 @@
 /*
  * Copyright (c) 2026 Mindrian. BSL 1.1.
  *
- * Phase 118-01 Plan 01 Task 1 -- mva-agent-contract.
+ * Phase 118-01 Plan 01 Task 1 -- pyramid-seed-agent-contract.
  *
- * The AgentResult shape + the runAgent wrapper used by mva-dispatcher.cjs
+ * The AgentResult shape + the runAgent wrapper used by pyramid-seed-dispatcher.cjs
  * (Task 3 of this plan). Plan 118-02 implements 6 specific agents against
  * the Agent contract documented below.
  *

@@ -7,20 +7,20 @@
     {
       "role": "posture",
       "path": "data/command-registry.json",
-      "digest": "c4c567ce90e02e0f5a88864192c09ca23dc450c920f915bc7093af6059474828",
+      "digest": "41e1a31c79700684f6556cd00d8ec822f777bf10e539b7d973465f911ceb8006",
       "source_count": 113
     },
     {
       "role": "wiring",
       "path": "data/connector-registry.json",
-      "digest": "ff142def95b18a40ad44ab4fb1dfaa7c38c237f33906284997fc34233aa855b4",
-      "source_count": 248
+      "digest": "f947f4e0d499f5ff920605edc3bfc87b93efdefa83bec0b0e888839821287f19",
+      "source_count": 244
     },
     {
       "role": "ranked_next_reach",
       "path": "data/brain-orchestration-projection.json",
-      "digest": "6fe4591a76a6dd18b2ccf7cb685f6565c5ed9b28a882050981e5585ed61ab5ec",
-      "source_count": 391
+      "digest": "14944e3c18ed296767d3b629a575bf77b3702521ce44e76fdee8bffeb90e4ad1",
+      "source_count": 395
     }
   ],
   "runtime_surfaces": [
@@ -32,7 +32,7 @@
     {
       "role": "decide_engine",
       "path": "lib/core/navigation-engine.cjs",
-      "digest": "1b3a9f596507a237c4c7d981a21ae0c82ac9b34fed2a7e2bc60a3cfa19b08431"
+      "digest": "04f425ff84e2f369b4978f286c97c96f3113b82a9bf2418e6e5ed33af10bf2f7"
     },
     {
       "role": "cockpit",
@@ -54,7 +54,7 @@
     {
       "role": "cli_agent",
       "path": "agents/larry-extended.md",
-      "digest": "c59f3ca507f14ac05fcd6c40286bd8a5185c914adf7022520cee2d289d3cbeea"
+      "digest": "fdf1627e76f70685c11253e15fcc4b654071fee22c658508a1f705a82770632b"
     },
     {
       "role": "personality_skill",
@@ -69,6 +69,6 @@
   ],
   "fixture_ref": {
     "path": "data/harness-fixtures/converged-room",
-    "digest": "6f2635a32872d7e066964da4dacd6f67a0cf7afc9bfde281fe4fb6f2035e0401"
+    "digest": "7ae9727d92920452b02ff465dd0e31a73bf958be6bb04c4857bbbafcb4ff35b8"
   }
 }

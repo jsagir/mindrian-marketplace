@@ -14,7 +14,10 @@
  *   minto            the nest has open counterevidence (a command serving surface-contradiction) or open assumptions
  *                    (a command serving validate-idea); these two add a source to a command another source already
  *                    names, they never put a new command in the pool
- * Order: score, then the ledger's own order, then the contract's order, then Theo's rank, which is only the last
+ * Order when a job is known (Phase 395-04): first the candidates that serve the job, then the ledger's rating of the
+ * command for that job (strong, then partial or not rated, then poor), then the score. Order when no job is known:
+ * the score first, as before. In both cases the ties go to the ledger's own order, then the contract's order, then
+ * Theo's rank, which is only the last
  * tie-breaker. The primary is the first candidate that is runnable HERE (capability.cjs, per surface); an
  * instruction-only command can only be an alternative, labeled so. Up to two alternatives are kept. outcomes_differ is
  * true when an alternative rests on a different set of sources than the primary.
@@ -54,6 +57,33 @@ const NEED_JOB_ASSUMPTION = 'validate-idea';
 function isObj(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 function arr(v) { return Array.isArray(v) ? v : []; }
 function readText(p) { try { return fs.readFileSync(p, 'utf8'); } catch (_e) { return null; } }
+
+// Phase 395-07: two ceilings on what one selector call reads from a room, so its cost does not grow with the room.
+//   MAX_NEST_FILE_BYTES  a nest file (BRAIN.md, MINTO.md, FEYNMAN.md, CONTEXT.md, ROOM.md) is read up to this size. A
+//                        generated face is some kilobytes, so a normal nest is read whole, as before. A larger file is
+//                        cut here, and its name goes to the `cut` list of gatherNest so the brief can say so.
+//   MAX_RUNS_READ        the research runs of a room are read newest first by run id (rp-YYYY-MM-DD-<hex>), at most
+//                        this many folders. Older runs are counted in `runs_not_read` and are not read.
+const MAX_NEST_FILE_BYTES = 262144;
+const MAX_RUNS_READ = 50;
+function readNestFile(p, cut) {
+  // Phase 395-07b (cold check 395-07, MA1): `cut` false reads the whole file (gatherNest wholeFiles, the brief blocks).
+  if (cut === false) return readText(p);
+  try {
+    if (fs.statSync(p).size <= MAX_NEST_FILE_BYTES) return fs.readFileSync(p, 'utf8');
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(MAX_NEST_FILE_BYTES);
+      const n = fs.readSync(fd, buf, 0, MAX_NEST_FILE_BYTES, 0);
+      if (Array.isArray(cut) && cut.indexOf(path.basename(p)) === -1) cut.push(path.basename(p));
+      return buf.toString('utf8', 0, n);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (_e) {
+    return null;
+  }
+}
 function readJson(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_e) { return null; } }
 function stripCmd(n) { return String(n).replace(/^\/mos:/, ''); }
 
@@ -67,13 +97,62 @@ function commandRegistry() {
   return registryCache;
 }
 
+// Phase 395-04: the ledger's rating of each command as a first move for one job.
+// data/section-command-ledger.json row `<job>|*|*` carries a `score` from 0 (poor fit) through 1 (partial fit) to
+// 2 (strong fit), and a `confidence` that says how sure the scorer is of that score. A high confidence does NOT mean
+// a good fit, so the confidence is used only as the gate it already is in section-ruling-candidates.cjs: a score
+// counts when its confidence is at or above the ledger's floor, or when it has no confidence and is ground truth.
+// Levels: 2 strong (score at or above 1.5), 1 partial (0.5 up to 1.5), 0 poor (under 0.5). A command with no
+// counted score has no entry; the caller gives it level 1 (no information is not a poor rating).
+const JOB_FIT_STRONG = 1.5;
+const JOB_FIT_POOR = 0.5;
+const JOB_FIT_UNRATED = 1;
+let ledgerDocCache = null;
+function ledgerDoc() {
+  if (ledgerDocCache === null) ledgerDocCache = readJson(path.join(PLUGIN_ROOT, 'data', 'section-command-ledger.json')) || {};
+  return ledgerDocCache;
+}
+// Phase 395-07: the mark of the rules and the data that order the candidates and word the why sentence. brief.cjs
+// puts it in the record basis, so a brief written under another order rule or another ledger build reads as stale and
+// is rewritten 1 time. Change SELECTOR_ORDER when the sort keys or the why sentences of composeNextMove change.
+// Phase 395-07b: the why sentence names a ledger row under the confidence floor (cold check 395-07, mi1).
+const SELECTOR_ORDER = '395-07b';
+function selectorMark() {
+  const doc = ledgerDoc();
+  return 'order ' + SELECTOR_ORDER + ', ledger built ' + (typeof doc.built_at === 'string' && doc.built_at ? doc.built_at : 'unknown');
+}
+// Phase 395-07b (cold check 395-07, mi1, mi6): ledgerRating gives the counted levels (`fit`) and the commands that
+// have a score row that does not count (`unsure`: a confidence under the floor, or no confidence and not ground
+// truth), so the why sentence never says "no rating" for a command that has a row. `doc` is optional: a ledger
+// document in the shape of data/section-command-ledger.json (a test seam). When it is absent the plugin ledger is read.
+function ledgerRating(jobId, doc) {
+  const fit = new Map();
+  const unsure = new Set();
+  if (typeof jobId !== 'string' || !jobId) return { fit, unsure };
+  const d = isObj(doc) ? doc : ledgerDoc();
+  const floor = typeof d.confidence_floor === 'number' ? d.confidence_floor : null;
+  arr(isObj(d.rows) ? d.rows[jobId + '|*|*'] : null).forEach((r) => {
+    if (!isObj(r) || typeof r.command !== 'string' || typeof r.score !== 'number') return;
+    const counted = typeof r.confidence === 'number' ? (floor === null || r.confidence >= floor) : r.source === 'ground-truth';
+    if (!counted) { unsure.add(stripCmd(r.command)); return; }
+    fit.set(stripCmd(r.command), r.score >= JOB_FIT_STRONG ? 2 : (r.score < JOB_FIT_POOR ? 0 : 1));
+  });
+  // A command with a counted row and a row that does not count is rated: the counted row decides.
+  fit.forEach((_v, k) => unsure.delete(k));
+  return { fit, unsure };
+}
+function jobFitFor(jobId, doc) {
+  return ledgerRating(jobId, doc).fit;
+}
+
 // ---- composition ----------------------------------------------------------------------------------------------------
 
 function capabilityOf(capabilityFor, name) {
   try {
     const c = capabilityFor(name, { kind: 'command' });
     if (!c || c.known === false) return null;
-    return { cli: c.cli, mcp: c.mcp, label: c.label || 'capability not labeled' };
+    // Phase 395-07: `mcp` and `label` are read on demand, so the command-line surface does not load the MCP router.
+    return { cli: c.cli, get mcp() { return c.mcp; }, get label() { return c.label || 'capability not labeled'; } };
   } catch (_e) {
     return null;
   }
@@ -95,8 +174,27 @@ function joinAnd(parts) {
  *   attempted         [{ command, status: 'terminal' | 'unresolved', verified, run_id? }]
  *   need              { counterevidence, assumptions } counts of open items in the nest's MINTO
  *   capabilityFor     capability.cjs capabilityFor, or a function with the same contract
+ *   jobFit            optional { <command name>: 0 | 1 | 2 }, the ledger rating for the job (see jobFitFor). When it
+ *                     is absent the rating is read from the ledger row of jobId. Phase 395-04.
  * @returns {{ primary, alternatives, outcomes_differ, why, provenance }}
  */
+// jobOffersFor(candidates, reg) -- when no job is set: the jobs that the most candidates
+// serve, at most three, `explore` left out (it names no intent). Phase 395-01.
+function jobOffersFor(candidates, reg) {
+  const count = new Map();
+  arr(candidates).forEach((c) => {
+    const e = reg.get(c.name);
+    arr(e && e.serves_jtbd).forEach((j) => {
+      if (typeof j !== 'string' || !j || j === 'explore') return;
+      count.set(j, (count.get(j) || 0) + 1);
+    });
+  });
+  return Array.from(count.entries())
+    .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1))
+    .slice(0, 3)
+    .map(([id, served]) => ({ id: id, served_by: served }));
+}
+
 function composeNextMove(input) {
   const inp = isObj(input) ? input : {};
   const surface = inp.surface === 'cli' ? 'cli' : 'mcp';
@@ -107,6 +205,7 @@ function composeNextMove(input) {
   const need = isObj(inp.need) ? inp.need : {};
   const capabilityFor = typeof inp.capabilityFor === 'function' ? inp.capabilityFor : require('./capability.cjs').capabilityFor;
   const jobId = typeof inp.jobId === 'string' && inp.jobId ? inp.jobId : null;
+  const jobOrigin = jobId ? (inp.jobOrigin === 'goal' ? 'goal' : 'section') : null;
 
   const theoNames = asked ? arr(face.commands).map((c) => stripCmd(c && c.name)).filter(Boolean) : [];
   const ledgerItems = [];
@@ -141,14 +240,29 @@ function composeNextMove(input) {
   const done = new Set(attempted.filter((a) => a.status === 'terminal' && a.verified === true && typeof a.command === 'string').map((a) => stripCmd(a.command)));
   const unresolvedAttempts = attempted.filter((a) => a.status === 'unresolved').length;
 
+  const jobFirst = jobId !== null;
+  const fit = new Map();
+  const unsure = new Set();
+  if (jobFirst && isObj(inp.jobFit)) {
+    Object.keys(inp.jobFit).forEach((k) => { const v = inp.jobFit[k]; if (v === 0 || v === 1 || v === 2) fit.set(stripCmd(k), v); });
+  } else if (jobFirst) {
+    // Phase 395-07b: `ledgerDoc` is an optional test seam (a ledger document). When it is absent the plugin ledger is read.
+    const rating = ledgerRating(jobId, isObj(inp.ledgerDoc) ? inp.ledgerDoc : undefined);
+    rating.fit.forEach((v, k) => fit.set(k, v));
+    rating.unsure.forEach((k) => unsure.add(k));
+  }
+
   const candidates = [];
   pool.forEach((c) => {
     if (done.has(c.name)) return;
     const cap = capabilityOf(capabilityFor, c.name);
     if (!cap) return; // not a command on this install: never offer a ghost
-    candidates.push(Object.assign({}, c, { cap, score: c.keys.size, runnable: cap[surface] === 'runnable' }));
+    const fitLevel = fit.has(c.name) ? fit.get(c.name) : JOB_FIT_UNRATED;
+    candidates.push(Object.assign({}, c, { cap, score: c.keys.size, runnable: cap[surface] === 'runnable', servesJob: c.keys.has('job') ? 1 : 0, jobFit: fitLevel, jobRated: fit.has(c.name), jobUnsure: unsure.has(c.name) }));
   });
-  candidates.sort((a, b) => (b.score - a.score) || (a.ledgerIdx - b.ledgerIdx) || (a.contractIdx - b.contractIdx) || (a.theoIdx - b.theoIdx) || (a.name < b.name ? -1 : 1));
+  // Phase 395-04: with a job known, the job orders the candidates first (serves the job, then the ledger rating for
+  // the job). With no job known both new keys are skipped, so the order is exactly the order before this change.
+  candidates.sort((a, b) => (jobFirst ? ((b.servesJob - a.servesJob) || (b.jobFit - a.jobFit)) : 0) || (b.score - a.score) || (a.ledgerIdx - b.ledgerIdx) || (a.contractIdx - b.contractIdx) || (a.theoIdx - b.theoIdx) || (a.name < b.name ? -1 : 1));
 
   const KEY_ORDER = ['contract', 'ledger', 'theo', 'navigator_table', 'job', 'minto'];
   const NAMING_KEYS = ['contract', 'ledger', 'theo', 'navigator_table'];
@@ -157,20 +271,38 @@ function composeNextMove(input) {
 
   function shape(c, primary) {
     const keys = orderedKeys(c);
-    const labels = sourceLabels(keys);
+    // Phase 395-02: when the goal job ranked the move, the label names that job and its origin.
+    const labels = keys.map((k) => (k === 'job' && jobOrigin === 'goal' ? 'your goal job (' + jobId + ')' : SOURCE_LABELS[k]));
     const namers = keys.filter((k) => NAMING_KEYS.indexOf(k) !== -1);
     const parts = [];
     if (namers.length > 0) parts.push('named by ' + joinAnd(sourceLabels(namers)));
-    if (c.keys.has('job')) parts.push('serves the nest job');
+    if (c.keys.has('job')) parts.push(jobOrigin === 'goal' ? 'serves your goal job' : 'serves the nest job');
     if (c.keys.has('minto')) parts.push('addresses open counterevidence or assumptions in MINTO');
     let why = parts.join('; ');
-    if (primary && theoTop && theoTop !== c.name && c.keys.size >= 2) why += '; Theo ranked ' + theoTop + ' first, but agreement across sources outranks one source\'s order';
+    // Phase 395-04, 395-07: when Theo's first command is not the primary, the sentence names the fact that decided.
+    // Each branch is the first true one in the order the code itself uses: dropped, not runnable here, then the sort keys.
+    if (primary && theoTop && theoTop !== c.name) {
+      const t = candidates.find((x) => x.name === theoTop) || null;
+      const head = '; Theo ranked ' + theoTop + ' first, but ';
+      if (!t) why += head + (done.has(theoTop) ? theoTop + ' already ran to a verified result in this nest' : theoTop + ' is not a command on this install');
+      else if (candidates.indexOf(t) < candidates.indexOf(c)) why += head + theoTop + ' is instruction-only on this surface';
+      else if (jobFirst && c.servesJob !== t.servesJob) why += head + 'a command that serves the job is ordered first';
+      else if (jobFirst && c.jobFit !== t.jobFit) {
+        if (c.jobRated && t.jobRated) why += head + 'the ledger rates this command higher for the job';
+        // Phase 395-07b (cold check 395-07, mi1): a command with a score row under the confidence floor has a rating
+        // that does not count; it is not a command with no rating.
+        else if (c.jobRated) why += head + 'the ledger rates this command higher for the job (a strong first move; ' + (t.jobUnsure ? 'the ledger rating for ' + theoTop + ' is not sure enough to count' : 'the ledger has no rating for ' + theoTop) + ')';
+        else why += head + 'the ledger rates ' + theoTop + ' as a poor first move for the job, and ' + (c.jobUnsure ? 'its rating for this command is not sure enough to count' : 'has no rating for this command');
+      } else if (c.score !== t.score) why += head + 'agreement across sources outranks one source\'s order';
+      else if (c.ledgerIdx !== t.ledgerIdx) why += head + 'the two are level, and the tie goes to ' + (t.ledgerIdx === Infinity ? 'the command that the ledger names' : 'the ledger\'s own order');
+      else why += head + 'the two are level, and the tie goes to ' + (t.contractIdx === Infinity ? 'the command that the section contract names' : 'the section contract\'s order');
+    }
     if (!c.runnable) why += '; instruction-only on this surface';
     return {
       command: c.name,
       why,
       sources: labels,
-      capability: { cli: c.cap.cli, mcp: c.cap.mcp, label: c.cap.label },
+      capability: { cli: c.cap.cli, get mcp() { return c.cap.mcp; }, get label() { return c.cap.label; } },
       instruction_only: !c.runnable,
     };
   }
@@ -187,6 +319,9 @@ function composeNextMove(input) {
     alternatives,
     outcomes_differ: outcomesDiffer,
     why: primary ? primary.why : NO_PRIMARY_LINE,
+    state: jobId ? 'ok' : 'job_unknown',
+    job: jobId ? { id: jobId, origin: jobOrigin } : null,
+    job_offers: jobId ? [] : jobOffersFor(candidates, reg),
     provenance: {
       face_asked: asked,
       theo_top: theoTop,
@@ -266,8 +401,8 @@ function decodeList(v) {
  *   { exists: true, keyed: true, asked, not_asked_reason, ... commands, frameworks, limitations }
  * List scalars are percent-encoded on disk; decodeFaceList (the frontmatter owner's reader) decodes them.
  */
-function readFace(sectionPath) {
-  const text = readText(path.join(sectionPath, 'BRAIN.md'));
+function readFace(sectionPath, cut) {
+  const text = readNestFile(path.join(sectionPath, 'BRAIN.md'), cut);
   if (text === null) return { exists: false };
   const f = flatFrontmatter(text);
   const keyed = f.face === 'feyminto-theo';
@@ -307,8 +442,8 @@ const OVERFLOW_RE = /^and \d+ more in /;
  * readMinto(sectionPath) -> { exists, governing_thought, placeholder, last_generated_at, decision_log, claims,
  *   counter, assumptions, would_change }. claims: [{ title, source, summary }]; assumptions: [{ text, state }].
  */
-function readMinto(sectionPath) {
-  const text = readText(path.join(sectionPath, 'MINTO.md'));
+function readMinto(sectionPath, cut) {
+  const text = readNestFile(path.join(sectionPath, 'MINTO.md'), cut);
   if (text === null) return { exists: false, governing_thought: null, placeholder: false, last_generated_at: null, decision_log: [], claims: [], counter: [], assumptions: [], would_change: [] };
   let parsed = null;
   try { parsed = require('../folder-memory-shared.cjs').parseMintoMd(text); } catch (_e) { parsed = null; }
@@ -356,8 +491,8 @@ function readMinto(sectionPath) {
 }
 
 /** readFeynman(sectionPath) -> { exists, what_changed: [lines], cannot_explain: [lines] } (the two generated blocks). */
-function readFeynman(sectionPath) {
-  const text = readText(path.join(sectionPath, 'FEYNMAN.md'));
+function readFeynman(sectionPath, cut) {
+  const text = readNestFile(path.join(sectionPath, 'FEYNMAN.md'), cut);
   if (text === null) return { exists: false, what_changed: [], cannot_explain: [] };
   let S;
   try { S = require('./feynman-blocks.cjs').SENTINELS; } catch (_e) { S = null; }
@@ -372,8 +507,8 @@ function readFeynman(sectionPath) {
 }
 
 /** The nest's job: the id from CONTEXT.md (the generated section ruling), else the canon, else the room's ratified declaration in .mindrian/section-jobs.json; the statement from ROOM.md. */
-function readJob(sectionPath, section, roomDir) {
-  const ctx = flatFrontmatter(readText(path.join(sectionPath, 'CONTEXT.md')) || '');
+function readJob(sectionPath, section, roomDir, cut) {
+  const ctx = flatFrontmatter(readNestFile(path.join(sectionPath, 'CONTEXT.md'), cut) || '');
   let id = typeof ctx.job_id === 'string' && ctx.job_id ? ctx.job_id : null;
   if (!id) {
     try {
@@ -381,7 +516,7 @@ function readJob(sectionPath, section, roomDir) {
       if (j && typeof j.job_id === 'string' && j.job_id) id = j.job_id;
     } catch (_e) { /* an unreadable canon leaves the job undeclared */ }
   }
-  const room = flatFrontmatter(readText(path.join(sectionPath, 'ROOM.md')) || '');
+  const room = flatFrontmatter(readNestFile(path.join(sectionPath, 'ROOM.md'), cut) || '');
   return { id, statement: typeof room.statement === 'string' && room.statement ? room.statement : null };
 }
 
@@ -389,10 +524,15 @@ function readJob(sectionPath, section, roomDir) {
  * readRuns(roomDir, section) -> records for the research runs whose plan names this nest, newest first.
  *   { run_id, status: 'terminal' | 'unresolved', reason, mode, stop_reason, finished_at, mtime }
  */
-function readRuns(roomDir, section) {
+function readRuns(roomDir, section, info) {
   const base = path.join(roomDir, RUN_DIR);
   let ids = [];
   try { ids = fs.readdirSync(base); } catch (_e) { return []; }
+  // Phase 395-07: at most MAX_RUNS_READ run folders are read, the newest by run id. The count of the rest is reported.
+  if (ids.length > MAX_RUNS_READ) {
+    if (isObj(info)) info.not_read = ids.length - MAX_RUNS_READ;
+    ids = ids.slice().sort((a, b) => (a < b ? 1 : (a > b ? -1 : 0))).slice(0, MAX_RUNS_READ);
+  }
   let planMod = null;
   try { planMod = require('../research-planner/plan.cjs'); } catch (_e) { planMod = null; }
   const out = [];
@@ -424,26 +564,33 @@ function readRuns(roomDir, section) {
 }
 
 /**
- * gatherNest({ roomDir, sectionDir }) -> everything the brief and the composition read from the nest's own files.
+ * gatherNest({ roomDir, sectionDir, wholeFiles? }) -> everything the brief and the composition read from the nest's own files.
+ *   wholeFiles  true reads each nest file whole, with no byte ceiling; `cut` is then []. The run ceiling stays.
+ *               Phase 395-07b (cold check 395-07, MA1): the blocks of the brief read the nest this way.
  */
 function gatherNest(input) {
   const inp = isObj(input) ? input : {};
   const sectionDir = path.resolve(String(inp.sectionDir || inp.sectionPath || ''));
   const roomDir = path.resolve(String(inp.roomDir || path.dirname(sectionDir)));
   const section = path.basename(sectionDir);
-  const minto = readMinto(sectionDir);
+  const cut = inp.wholeFiles === true ? false : [];
+  const runInfo = { not_read: 0 };
+  const minto = readMinto(sectionDir, cut);
   const unansweredCounter = minto.counter.filter((l) => !/\[answered:/.test(l) && !/\(model narrative\)$/.test(l)).length;
   const openAssumptions = minto.assumptions.filter((a) => a.state !== 'model narrative').length;
   return {
     section,
     sectionDir,
     roomDir,
-    job: readJob(sectionDir, section, roomDir),
-    face: readFace(sectionDir),
+    job: readJob(sectionDir, section, roomDir, cut),
+    face: readFace(sectionDir, cut),
     minto,
-    feynman: readFeynman(sectionDir),
-    runs: readRuns(roomDir, section),
+    feynman: readFeynman(sectionDir, cut),
+    runs: readRuns(roomDir, section, runInfo),
     need: { counterevidence: unansweredCounter, assumptions: openAssumptions },
+    // Phase 395-07: what the two ceilings left out (see MAX_NEST_FILE_BYTES and MAX_RUNS_READ). Empty and 0 for a normal room.
+    cut: Array.isArray(cut) ? cut : [],
+    runs_not_read: runInfo.not_read,
   };
 }
 
@@ -458,9 +605,13 @@ function nextMoveForSection(input) {
   const nest = isObj(inp.nest) ? inp.nest : gatherNest({ roomDir: inp.roomDir, sectionDir: inp.sectionDir });
   let sources = null;
   try { sources = require('./command-sources.cjs').sourcesForSection(nest.section); } catch (_e) { sources = null; }
+  // Phase 395-01: one read order for the job. A goal job in the vocabulary wins over the section job.
+  const sectionJobId = nest.job && typeof nest.job.id === 'string' && nest.job.id ? nest.job.id : null;
+  let sel = { id: sectionJobId, origin: sectionJobId ? 'section' : null, rung: null };
+  try { sel = require('../../hmi/jtbd-state.cjs').resolveSelectionJob(nest.roomDir, sectionJobId); } catch (_e) { /* keep the section job */ }
   let ledgerCandidates = null;
-  if (nest.job.id) {
-    try { ledgerCandidates = require('../section-ruling-candidates.cjs').buildLedgerCandidates({ jobId: nest.job.id }); } catch (_e) { ledgerCandidates = null; }
+  if (sel.id) {
+    try { ledgerCandidates = require('../section-ruling-candidates.cjs').buildLedgerCandidates({ jobId: sel.id }); } catch (_e) { ledgerCandidates = null; }
   }
   const face = nest.face && nest.face.keyed === true
     ? { asked: nest.face.asked === true, commands: nest.face.commands, not_asked_reason: nest.face.not_asked_reason }
@@ -468,7 +619,8 @@ function nextMoveForSection(input) {
   const attempted = nest.runs.map((r) => ({ command: null, status: r.status, verified: false, run_id: r.run_id }));
   return composeNextMove({
     section: nest.section,
-    jobId: nest.job.id,
+    jobId: sel.id,
+    jobOrigin: sel.origin,
     face,
     sources,
     ledgerCandidates,
@@ -487,6 +639,14 @@ module.exports = {
   readMinto,
   readFeynman,
   readRuns,
+  jobFitFor,
+  ledgerRating,
+  selectorMark,
+  SELECTOR_ORDER,
+  MAX_NEST_FILE_BYTES,
+  MAX_RUNS_READ,
+  JOB_FIT_STRONG,
+  JOB_FIT_POOR,
   NO_PRIMARY_LINE,
   NOTHING_RE,
 };

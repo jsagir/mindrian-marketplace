@@ -1081,6 +1081,10 @@ function _proveTypedQuestion(str) {
   if (!_TYPED_QUESTION_DATA_LOADED) return false;
   if (typeof str !== 'string' || str.length < 1 || str.length > 240) return false;
   if (str.indexOf('\r') !== -1 || str.indexOf('\n') !== -1) return false;
+  // Plan 395-13 review CR-04: the token split reads only ASCII words, so a
+  // string with any other character (Hebrew, Cyrillic, CJK, a guillemet) is
+  // not proven closed-vocabulary. It falls through to the full rules.
+  if (/[^\x00-\x7F]/.test(str.replace(/[\u2018\u2019\u201C\u201D]/g, ''))) return false;
   if (!_safeAudit(str)) return false;
 
   let lowered = str.toLowerCase();
@@ -1098,6 +1102,7 @@ function _proveTypedQuestion(str) {
   }
 
   const tokens = lowered.split(/[^a-z0-9_-]+/).filter(function (t) { return t.length > 0; });
+  if (tokens.length === 0) return false;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (QUESTION_FUNCTION_WORDS.has(t)) continue;
@@ -1339,6 +1344,7 @@ const SR_REASONS = Object.freeze({
   edge_rule: 'the string fails a prose rule; split it into claims and send only generic sprouts',
   private_marker: 'the string carries a private-claim marker; keep the claim local and send only a generic sprout',
   room_check_unavailable: 'the room check could not run, so the lexicon check was skipped; split the text and send only sprouts',
+  pasted_text: 'the string holds pasted text (a quote, a block quote or a code block); the pasted text stays local and only the rest of the question may be sent',
 });
 
 function _sproutsRequired(tokenClass) {
@@ -1400,8 +1406,10 @@ function _theoShapedVerdict(str, shape, payload, opts) {
   const kind = shape.kind;
   const proseHit = kind === 'edge' && _hasProseHit(str);
 
-  // 2. The recognizer stays the allow fast path (never for a body or a prose hit).
-  if (kind !== 'body' && !proseHit && _proveTypedQuestion(str)) {
+  // 2. The recognizer stays the allow fast path (never for a body, a prose
+  // hit or pasted text: plan 395-13 review CR-04, the paste rule of step 6
+  // must see a quoted span first).
+  if (kind !== 'body' && shape.quoted !== true && !proseHit && _proveTypedQuestion(str)) {
     return { verdict: 'allow', class: 'typed_question', token_class: null, reason: 'closed-vocabulary methodology question' };
   }
 
@@ -1434,7 +1442,9 @@ function _theoShapedVerdict(str, shape, payload, opts) {
     return { verdict: 'allow', class: 'room_check_skipped', token_class: null, reason: 'the room check could not run; a clear sprout with no other hit is allowed' };
   }
 
-  // 6. By shape.
+  // 6. By shape. Plan 395-13 (owner ruling 37): pasted text (a quoted span)
+  // is answered first, so classifyAndCut can cut it and decide the rest.
+  if (shape.quoted === true) return _sproutsRequired('pasted_text');
   if (kind === 'body') return _sproutsRequired('body_shape');
   if (kind === 'sprout') {
     if (_hasPrivateMarker(str, shape)) return _sproutsRequired('private_marker');
@@ -1445,6 +1455,9 @@ function _theoShapedVerdict(str, shape, payload, opts) {
       _hasUnknownProperName(str, false)) {
     return _sproutsRequired('edge_rule');
   }
+  // Plan 395-13 (owner ruling 35): a long edge (the size that was a body before
+  // the ruling) also keeps the private-claim marker rule of a sprout.
+  if (shape.longEdge === true && _hasPrivateMarker(str, shape)) return _sproutsRequired('private_marker');
   return { verdict: 'allow', class: 'generic_question', token_class: null, reason: 'plain methodology question with no room-local token' };
 }
 
@@ -1728,11 +1741,66 @@ function classify(payload, opts) {
   return { verdict: 'ambiguous', class: 'unknown', reason: 'neither proven move-set nor content hit' };
 }
 
+/**
+ * classifyAndCut(payload, opts) -> { verdict, payload, cut }
+ *
+ * Plan 395-13 (owner ruling 37, 2026-11-16, "cut the paste, send the rest").
+ * It runs classify() first. When the verdict is sprouts_required with the
+ * token class pasted_text, it cuts the pasted spans of the free-form string
+ * (part8-sprout-shape.cjs cutPastedText; each span becomes the note
+ * "[pasted text kept local]") and runs classify() again on the rest. The
+ * rules for every shape (credentials, room-lexicon terms, structured
+ * identifiers) ran first on the whole text with the paste, so a paste never
+ * hides a hit. verdict is the verdict of the payload to send; payload is a new
+ * object when cut > 0, else the same object; cut is the number of spans cut.
+ * Fail closed: when the quote marks cannot be paired cleanly, when the rest
+ * holds no letter, or when the cut text still holds a quoted span, the verdict
+ * stays sprouts_required/pasted_text and cut is 0.
+ * The reason of each verdict is a constant; no field but payload holds input.
+ */
+function classifyAndCut(payload, opts) {
+  const first = classify(payload, opts);
+  if (!first || first.verdict !== 'block' || first.token_class !== 'pasted_text') return { verdict: first, payload: payload, cut: 0 };
+  const entry = _shapedFreeformEntry(payload, (opts && opts.toolName) || '');
+  if (!entry || !_sproutShape || typeof _sproutShape.cutPastedText !== 'function') return { verdict: first, payload: payload, cut: 0 };
+  const cut = _sproutShape.cutPastedText(entry.str);
+  if (!cut || !(cut.count > 0) || typeof cut.text !== 'string') return { verdict: first, payload: payload, cut: 0 };
+  // Plan 395-13 review CR-03: quote marks that cannot be paired cleanly (a
+  // stray inch mark, an unclosed or a lone quote) fail closed: nothing is cut,
+  // the pasted_text block stays, and nothing is sent.
+  if (cut.ambiguous === true) return { verdict: first, payload: payload, cut: 0 };
+  const rest = cut.text.split(_sproutShape.PASTE_NOTE).join(' ');
+  if (!/\p{L}/u.test(rest) || _sproutShape.classifyShape(cut.text).quoted === true) return { verdict: first, payload: payload, cut: 0 };
+  if (!_pasteIsGone(cut)) return { verdict: first, payload: payload, cut: 0 };
+  // Plan 395-13 review round 2 NEW-BL-02: the cut must never join lines. If
+  // the cut text has fewer line breaks than the input, fail closed.
+  if (typeof _sproutShape.countNewlines !== 'function' ||
+      _sproutShape.countNewlines(cut.text) < _sproutShape.countNewlines(entry.str)) return { verdict: first, payload: payload, cut: 0 };
+  const cleaned = Object.assign({}, payload, { [entry.key]: cut.text });
+  return { verdict: classify(cleaned, opts), payload: cleaned, cut: cut.count };
+}
+
+// Plan 395-13 review IN-03: the shim disclosure says the pasted text stayed on
+// this machine. Check it before a cut is used: no cut span (its text without
+// the marks at each end, PASTE_GONE_MIN_CHARS or more characters) may stand in
+// the text to send. A short generic term that the question names twice does
+// not count. On a hit the cut fails closed.
+const PASTE_GONE_MIN_CHARS = 40;
+function _pasteIsGone(cut) {
+  if (!Array.isArray(cut.spans)) return false;
+  for (let i = 0; i < cut.spans.length; i++) {
+    const inner = String(cut.spans[i]).replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    if (inner.length >= PASTE_GONE_MIN_CHARS && cut.text.indexOf(inner) !== -1) return false;
+  }
+  return true;
+}
+
 // ---------- Exports ----------
 // classify + the test seams the adversarial suite spies (clone of the
 // brain-review-packet.cjs exports style).
 module.exports = {
   classify: classify,
+  classifyAndCut: classifyAndCut,
   theoVerdict: theoVerdict,
   TOKEN_CLASSES: TOKEN_CLASSES,
   scanForContent: scanForContent,

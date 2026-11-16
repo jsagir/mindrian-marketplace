@@ -1621,61 +1621,7 @@
       "id": "command:/mos:mva-brief",
       "kind": "command",
       "methodology_tier": "mindrian-operation",
-      "name": "/mos:mva-brief",
-      "reach_id": "deep_research",
-      "sub_mode": "mva-brief",
-      "hierarchy_rank": 10,
-      "posture": "push_forward",
-      "sensor_triggers": [
-        "SENS-01"
-      ],
-      "chain_provenance": {
-        "command": "/mos:mva-brief",
-        "reach_id": "deep_research",
-        "sub_mode": "mva-brief",
-        "firing_sensors": [
-          "SENS-01"
-        ]
-      },
-      "ranking": {
-        "reach_id": "deep_research",
-        "sub_mode": "mva-brief",
-        "hierarchy_rank": 10,
-        "posture": "push_forward",
-        "sensor_triggers": [
-          "SENS-01"
-        ]
-      }
-    },
-    {
-      "id": "command:/mos:mva-option",
-      "kind": "command",
-      "methodology_tier": "mindrian-operation",
-      "name": "/mos:mva-option",
-      "reach_id": "context_block",
-      "sub_mode": "mva-option",
-      "hierarchy_rank": 11,
-      "posture": "push_forward",
-      "sensor_triggers": [
-        "SENS-05"
-      ],
-      "chain_provenance": {
-        "command": "/mos:mva-option",
-        "reach_id": "context_block",
-        "sub_mode": "mva-option",
-        "firing_sensors": [
-          "SENS-05"
-        ]
-      },
-      "ranking": {
-        "reach_id": "context_block",
-        "sub_mode": "mva-option",
-        "hierarchy_rank": 11,
-        "posture": "push_forward",
-        "sensor_triggers": [
-          "SENS-05"
-        ]
-      }
+      "name": "/mos:mva-brief"
     },
     {
       "id": "command:/mos:mva-report",
@@ -2324,6 +2270,12 @@
           "SENS-07"
         ]
       }
+    },
+    {
+      "id": "command:/mos:session-report",
+      "kind": "command",
+      "methodology_tier": "mindrian-operation",
+      "name": "/mos:session-report"
     },
     {
       "id": "command:/mos:setup",
@@ -3211,18 +3163,6 @@
       "name": "mva-brief"
     },
     {
-      "id": "skill:mva-option",
-      "kind": "skill",
-      "methodology_tier": "mindrian-operation",
-      "name": "mva-option"
-    },
-    {
-      "id": "skill:mva-pipeline",
-      "kind": "skill",
-      "methodology_tier": "mindrian-operation",
-      "name": "mva-pipeline"
-    },
-    {
       "id": "skill:mva-report",
       "kind": "skill",
       "methodology_tier": "mindrian-operation",
@@ -3401,6 +3341,12 @@
       "kind": "skill",
       "methodology_tier": "mindrian-operation",
       "name": "scout"
+    },
+    {
+      "id": "skill:session-report",
+      "kind": "skill",
+      "methodology_tier": "mindrian-operation",
+      "name": "session-report"
     },
     {
       "id": "skill:setup",
@@ -3847,6 +3793,12 @@
       "name": "vault-section-reviewer"
     },
     {
+      "id": "framework:5 Whys Technique",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "5 Whys Technique"
+    },
+    {
       "id": "framework:Ackoff Pyramid",
       "kind": "framework",
       "methodology_tier": "pws",
@@ -3871,6 +3823,18 @@
       "name": "Beautiful Question Framework"
     },
     {
+      "id": "framework:Black Hat Thinking",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "Black Hat Thinking"
+    },
+    {
+      "id": "framework:CIAs approach to challenging analytical assumptions",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "CIAs approach to challenging analytical assumptions"
+    },
+    {
       "id": "framework:Domain Selection",
       "kind": "framework",
       "methodology_tier": "pws",
@@ -3881,6 +3845,18 @@
       "kind": "framework",
       "methodology_tier": "pws",
       "name": "Dominant Design"
+    },
+    {
+      "id": "framework:Era of Ferment Analysis",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "Era of Ferment Analysis"
+    },
+    {
+      "id": "framework:Extensive Searching",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "Extensive Searching"
     },
     {
       "id": "framework:Four Lenses of Innovation",
@@ -3925,6 +3901,12 @@
       "name": "Lean Canvas"
     },
     {
+      "id": "framework:Macro Trends/Macro Trending",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "Macro Trends/Macro Trending"
+    },
+    {
       "id": "framework:MECE (Mutually Exclusive, Collectively Exhaustive)",
       "kind": "framework",
       "methodology_tier": "pws",
@@ -3941,6 +3923,12 @@
       "kind": "framework",
       "methodology_tier": "pws",
       "name": "PEST Analysis"
+    },
+    {
+      "id": "framework:Pre-mortem Analysis",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "Pre-mortem Analysis"
     },
     {
       "id": "framework:Problem Definition Transformation Framework",
@@ -4019,6 +4007,12 @@
       "kind": "framework",
       "methodology_tier": "pws",
       "name": "Trending to the Absurd"
+    },
+    {
+      "id": "framework:TRIZ / Genrich Altshuller Innovation Algorithm",
+      "kind": "framework",
+      "methodology_tier": "pws",
+      "name": "TRIZ / Genrich Altshuller Innovation Algorithm"
     },
     {
       "id": "framework:Usher's Model of Cumulative Synthesis",
@@ -4363,24 +4357,6 @@
       "name": "mullins-seven"
     },
     {
-      "id": "sub_mode:mva-brief",
-      "kind": "sub_mode",
-      "methodology_tier": "mindrian-operation",
-      "name": "mva-brief"
-    },
-    {
-      "id": "sub_mode:mva-option",
-      "kind": "sub_mode",
-      "methodology_tier": "mindrian-operation",
-      "name": "mva-option"
-    },
-    {
-      "id": "sub_mode:mva-pipeline",
-      "kind": "sub_mode",
-      "methodology_tier": "mindrian-operation",
-      "name": "mva-pipeline"
-    },
-    {
       "id": "sub_mode:needs-jtbd",
       "kind": "sub_mode",
       "methodology_tier": "mindrian-operation",
@@ -4711,6 +4687,21 @@
     {
       "type": "OPERATES",
       "from": "command:/mos:challenge-assumptions",
+      "to": "framework:Black Hat Thinking"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:challenge-assumptions",
+      "to": "framework:CIAs approach to challenging analytical assumptions"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:challenge-assumptions",
+      "to": "framework:Pre-mortem Analysis"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:challenge-assumptions",
       "to": "framework:Red Teaming"
     },
     {
@@ -4755,6 +4746,11 @@
     },
     {
       "type": "OPERATES",
+      "from": "command:/mos:dominant-designs",
+      "to": "framework:Era of Ferment Analysis"
+    },
+    {
+      "type": "OPERATES",
       "from": "command:/mos:explore-domains",
       "to": "framework:Domain Selection"
     },
@@ -4775,8 +4771,18 @@
     },
     {
       "type": "OPERATES",
+      "from": "command:/mos:find-analogies",
+      "to": "framework:TRIZ / Genrich Altshuller Innovation Algorithm"
+    },
+    {
+      "type": "OPERATES",
       "from": "command:/mos:find-bottlenecks",
       "to": "framework:Reverse Salient Analysis"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:find-connections",
+      "to": "framework:Extensive Searching"
     },
     {
       "type": "OPERATES",
@@ -4816,6 +4822,11 @@
     {
       "type": "OPERATES",
       "from": "command:/mos:macro-trends",
+      "to": "framework:Macro Trends/Macro Trending"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:macro-trends",
       "to": "framework:PEST Analysis"
     },
     {
@@ -4827,6 +4838,11 @@
       "type": "OPERATES",
       "from": "command:/mos:mos-reason",
       "to": "framework:The Pyramid Principle"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:mullins",
+      "to": "framework:Macro Trends/Macro Trending"
     },
     {
       "type": "OPERATES",
@@ -4846,7 +4862,17 @@
     {
       "type": "OPERATES",
       "from": "command:/mos:root-cause",
+      "to": "framework:5 Whys Technique"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:root-cause",
       "to": "framework:Root Cause Analysis"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:root-cause",
+      "to": "framework:Systems Thinking"
     },
     {
       "type": "OPERATES",
@@ -4877,6 +4903,11 @@
       "type": "OPERATES",
       "from": "command:/mos:scientific-roadmap",
       "to": "framework:Hypothesis-Driven Problem Solving"
+    },
+    {
+      "type": "OPERATES",
+      "from": "command:/mos:scientific-roadmap",
+      "to": "framework:Reverse Salient Analysis"
     },
     {
       "type": "OPERATES",

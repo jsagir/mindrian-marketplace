@@ -61,6 +61,84 @@ const feyNextMove = require('../../core/feyminto/next-move.cjs');
 const nodeFs = require('node:fs');
 const nodePath = require('node:path');
 
+// Phase 395-02: how a first goal job is set with the tools that exist. A fixed sentence, sent only when no job is set
+// and there are jobs to offer. It names no room content.
+const HOW_TO_SET_JOB = [
+  'No job ranks the next move in this nest.',
+  'To set one: show the person job_offers and let the person pick a job id.',
+  'Then call gate_render with kind "strategy_goal", a header that names the job, approving ["rewrite-jtbd"], and options '
+    + JSON.stringify([{ id: 'rewrite-jtbd', label: 'Set this job', preview: JSON.stringify({ jtbd: '<job id>' }) }, { id: 'defer', label: 'Not now' }]) + '.',
+  'To set the problem type too, add "rung" to the preview JSON: UnDefined, IllDefined, WellDefined or Wicked.',
+  'After the person answers the card, call gate_answer with the gate_id, chosen ["rewrite-jtbd"] and verdict "approve", or chosen ["defer"] and verdict "defer".',
+  'The job is set only when the gate_answer reply has strategy_ratification.goal_written true.',
+].join(' ');
+
+// Phase 395-05 (finding MA1): the goal job of the room, sent with every suggest_next reply that has a room. A standard
+// nest has a job of its own, so how_to_set_job above is not sent there, and before this change no reply said how a goal
+// job is set. The offers are job ids from the closed job vocabulary (lib/core/section-registry.cjs JOB_VOCABULARY),
+// `explore` left out (it names no intent), at most GOAL_JOB_OFFERS_MAX. Fixed sentences: no room content, no user words.
+const GOAL_JOB_OFFERS_MAX = 24;
+const GOAL_JOB_STEPS = [
+  'Call gate_render with kind "strategy_goal", a header that names the job, approving ["rewrite-jtbd"], and options '
+    + JSON.stringify([{ id: 'rewrite-jtbd', label: 'Set this job', preview: JSON.stringify({ jtbd: '<job id>' }) }, { id: 'defer', label: 'Not now' }]) + '.',
+  'To set the problem type too, add "rung" to the preview JSON: UnDefined, IllDefined, WellDefined or Wicked.',
+  'After the person answers the card, call gate_answer with the gate_id, chosen ["rewrite-jtbd"] and verdict "approve", or chosen ["defer"] and verdict "defer".',
+  'On a host that takes the answer in a dialog of its own, the gate closes with that answer, gate_answer replies unknown_gate and no job is set: say so to the person.',
+  'When the person closes a dialog with no answer, gate_answer replies card_pending and no job is set: show the card again.',
+  'The job is set only when the gate_answer reply has strategy_ratification.goal_written true.',
+].join(' ');
+const GOAL_JOB_NOT_SET = 'No goal job ranks the next move. The job of a nest ranks the move in that nest, when the nest has one. '
+  + 'To set a goal job: ask the person what they want to get done, show goal_job.offers, and let the person pick one job id. Do not pick for the person. ';
+const GOAL_JOB_SET_HEAD = 'The goal job of this room ranks the next move in every nest: ';
+const GOAL_JOB_SET_TAIL = '. To change it: let the person pick another job id from goal_job.offers. ';
+// Phase 395-07 (cold check 395-05, MA3): with a goal job set nothing must change, so the reply carries the card and
+// one closing sentence, not the six step sentences. The card text is the first two steps of GOAL_JOB_STEPS.
+const GOAL_JOB_STEPS_SHORT = GOAL_JOB_STEPS.slice(0, GOAL_JOB_STEPS.indexOf(' After the person answers the card,'))
+  + ' Then call gate_answer with the gate_id and the choice of the person. The job changes only when the gate_answer reply has'
+  + ' strategy_ratification.goal_written true; a reply unknown_gate or card_pending means no change.';
+// Phase 395-07 (cold check 395-04, MA4): a stored goal that does not rank is named, so "no goal job ranks" is the whole truth.
+const GOAL_JOB_STORED_NO_RANK = 'A goal is stored for this room, but it does not rank: it is the job explore, or it is not a job id of the vocabulary. '
+  + 'The gate does not take explore as a new goal job (reason goal_job_does_not_rank). ';
+
+/**
+ * goalJobFor(roomDir) -- the goal job field of the suggest_next reply. Reads the goal through the one read order
+ * (jtbd-state resolveSelectionJob), so it agrees with the selector and with the brief. Local read only, never writes,
+ * never throws. Returns undefined when there is no room or the read fails, so the reply omits the field.
+ *
+ * @returns {{ state: 'set'|'not_set', id: string|null, offers: string[], how_to: string }|undefined}
+ */
+function goalJobFor(roomDir) {
+  if (typeof roomDir !== 'string' || !roomDir) return undefined;
+  try {
+    const sel = require('../../hmi/jtbd-state.cjs').resolveSelectionJob(roomDir, null);
+    const vocabulary = require('../../core/section-registry.cjs').JOB_VOCABULARY;
+    const offers = vocabulary.filter((id) => id !== 'explore').slice(0, GOAL_JOB_OFFERS_MAX);
+    if (sel && sel.origin === 'goal' && typeof sel.id === 'string' && sel.id.length > 0) {
+      return { state: 'set', id: sel.id, offers: offers, how_to: GOAL_JOB_SET_HEAD + sel.id + GOAL_JOB_SET_TAIL + GOAL_JOB_STEPS_SHORT };
+    }
+    const stored = require('../../hmi/jtbd-state.cjs').getGoal(roomDir);
+    const storedNoRank = !!(stored && typeof stored.jtbd === 'string' && stored.jtbd.length > 0);
+    return { state: 'not_set', id: null, offers: offers, how_to: GOAL_JOB_NOT_SET + (storedNoRank ? GOAL_JOB_STORED_NO_RANK : '') + GOAL_JOB_STEPS };
+  } catch (_e) {
+    return undefined;
+  }
+}
+
+/**
+ * methodJobFor(primary) -- Phase 395-10 (owner rulings 21 and 22): the job statement of the method behind the proposed
+ * command, for display only. Read from data/framework-jobs.json AFTER the move is composed; no sort key, score, ledger
+ * build or filter reads it. A draft carries status "draft" and a note that says so. Never throws; null when there is
+ * no statement, so the reply omits the field.
+ */
+function methodJobFor(primary) {
+  try {
+    if (!primary || typeof primary.command !== 'string') return null;
+    return require('../../core/framework-jobs.cjs').methodJobForCommand(primary.command);
+  } catch (_e) {
+    return null;
+  }
+}
+
 function textResponse(payload, isError) {
   const result = { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
   if (isError) result.isError = true;
@@ -214,9 +292,26 @@ function resolveNextMove(sessionId, roomDir, section) {
     const sectionDir = nodePath.join(roomDir, nest);
     if (!nodeFs.existsSync(sectionDir)) return none('nest_not_found');
     const nm = feyNextMove.nextMoveForSection({ roomDir: roomDir, sectionDir: sectionDir, surface: 'mcp' });
-    if (!nm || !nm.primary) return none('no_runnable_primary', nm && nm.alternatives, nm && nm.outcomes_differ);
+    // Phase 395-01: the job that ranked the move travels with it, on every host.
+    const jobFields = (m) => {
+      const fields = {
+        job: m && m.job ? m.job : null,
+        job_state: m && typeof m.state === 'string' ? m.state : null,
+        job_offers: m && Array.isArray(m.job_offers) ? m.job_offers : [],
+      };
+      // Phase 395-02: with no job and jobs to offer, say how a job is set.
+      if (fields.job_state === 'job_unknown' && fields.job_offers.length > 0) fields.how_to_set_job = HOW_TO_SET_JOB;
+      return fields;
+    };
+    if (!nm || !nm.primary) {
+      const out = none('no_runnable_primary', nm && nm.alternatives, nm && nm.outcomes_differ);
+      Object.assign(out.next_move, jobFields(nm));
+      return out;
+    }
+    // Phase 395-10: the job statement of the method behind the primary, shown beside the move. Omitted when none.
+    const methodJob = methodJobFor(nm.primary);
     return {
-      next_move: { primary: nm.primary, alternatives: nm.alternatives, outcomes_differ: nm.outcomes_differ },
+      next_move: Object.assign({ primary: nm.primary, alternatives: nm.alternatives, outcomes_differ: nm.outcomes_differ }, jobFields(nm), methodJob ? { method_job: methodJob } : {}),
       next_move_source: 'feyminto_face',
       section: nest,
     };
@@ -299,6 +394,8 @@ function register(server, ctx) {
         next_move: nextMovePull.next_move,
         next_move_source: nextMovePull.next_move_source,
         next_move_reason: nextMovePull.next_move_reason || undefined,
+        // Phase 395-05 (finding MA1): the goal job of the room and how the person sets or changes it. Omitted with no room.
+        goal_job: goalJobFor(roomDir),
         // Omit-when-absent, the same idiom note already uses, so the normal
         // payload is byte-unchanged and only a real fault adds a field.
         degraded: pull.degraded || undefined,
