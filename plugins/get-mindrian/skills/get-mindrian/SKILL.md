@@ -113,7 +113,7 @@ You must know the system and its version before the first install command. Keep 
 With a shell, detect it yourself:
 - macOS, Linux and WSL: `uname -s` (Darwin is macOS), `uname -m` (arm64 or x86_64; on a Mac, x86_64 means the terminal runs under Rosetta), `sw_vers -productVersion` (macOS version), `cat /etc/os-release` (Linux name and version), `grep -i microsoft /proc/version` (a match means WSL: Linux inside Windows, with its own PATH and its own Node), `cmd.exe /c ver` (the Windows version, from WSL), `echo $SHELL`.
 - Windows PowerShell: `$PSVersionTable.PSVersion`, `[System.Environment]::OSVersion.VersionString`, `$env:PROCESSOR_ARCHITECTURE`.
-- Git Bash on Windows: `uname -s` prints MINGW or MSYS.
+- Git Bash on Windows: `uname -s` prints MINGW or MSYS. Claude Code on native Windows often runs its own shell in Git Bash. Then the system is Windows for every table and every choice; follow commands.md, "Git Bash on Windows".
 - The prompt `PS C:\>` is PowerShell. A plain `C:\>` is CMD.
 
 Without a shell, ask once, in plain words, with a hint, and ask for the version in the same question: "Which computer are you on, and which version? On a Mac (apple logo in the top-left corner), click the apple, then About This Mac: it shows for example macOS 15. On Windows (a Start button with four squares), press the Windows key, type winver and press Enter: it shows Windows 10 or Windows 11. If you cannot find the version, just tell me Mac or Windows." If there is no answer, assume Windows and add the one-line Mac and Linux variant to each step. Never ask twice. If the version is still unknown, leave it out of a search query and say so.
@@ -170,7 +170,7 @@ If the install fails, run the fallback yourself from the shell: `claude plugin m
 **A9. Restart hand-over.** Plugins load when a session starts. This session ends at the restart, so this step gives one instruction that survives it. Say, in one message:
 1. "Copy this sentence now: [the resume sentence, written out in full]."
 2. "Quit Claude Code (type /exit). Open a new terminal and run [the line for the shell]. When Claude Code starts, paste the sentence as your first message. The new session checks what is done and walks you through the last steps."
-The line for the shell: macOS, Linux and WSL `cd ~/MindrianRooms && claude`; PowerShell `cd "$env:USERPROFILE\MindrianRooms"; claude`; CMD `cd /d "%USERPROFILE%\MindrianRooms" && claude`. Use the chosen folder if it is not the default.
+The line for the shell: macOS, Linux, WSL and Git Bash `cd ~/MindrianRooms && claude`; PowerShell `cd "$env:USERPROFILE\MindrianRooms"; claude`; CMD `cd /d "%USERPROFILE%\MindrianRooms" && claude`. Use the chosen folder if it is not the default.
 
 **A10. In the new session.** The person pasted the resume sentence, and A0 found only A9 lines or the auto-update line left (any other FAIL: do that step first). Guide one step at a time, and check each answer:
 1. Ask whether a line that starts with `⬡ MindrianOS` shows at the bottom of the terminal. If not, ask the person to type `/mos:doctor --statusline-visibility`, then `/mos:doctor --fix`. The line is not required for the rest of the steps.

@@ -3,6 +3,20 @@
 SKILL.md says when to use each block. Never run a block without the consent step SKILL.md names (A1 for tools, A7 for settings and shortcuts).
 Each block names its system, its shell and its source. No block uses sudo; do not add sudo unless the person asks.
 
+## Git Bash on Windows
+
+If `uname -s` prints MINGW or MSYS, you are in Git Bash on Windows. The system is Windows for every table and every choice.
+- Run these in Git Bash as they are: `node`, `npx`, `claude`, the node one-liners (Status check, Settings changes) and `mkdir -p "$HOME/MindrianRooms"` (in Git Bash, `$HOME` is the Windows user folder, so this is `%USERPROFILE%\MindrianRooms`).
+- Run every block marked PowerShell through PowerShell, with the block lines unchanged inside a quoted here-document. The quotes around `PS` stop Git Bash from changing `$` signs and quotes. PowerShell reads the lines from standard input and runs them one statement at a time (https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_powershell_exe, `-Command -`).
+
+```bash
+powershell.exe -NoProfile -Command - <<'PS'
+irm https://claude.ai/install.ps1 | iex
+PS
+```
+
+- Do not run the macOS, Linux and WSL installer lines in Git Bash.
+
 ## Node.js
 
 MindrianOS needs Node.js 22.18.0 or newer. Install the version that nodejs.org marks LTS (26 on 2026-11-19). Source: https://nodejs.org/en/download
@@ -126,6 +140,7 @@ Your shell tool runs each command in a fresh shell that does not read the update
 | Claude Code native, or uv | bash, zsh, Git Bash | `export PATH="$HOME/.local/bin:$PATH" && ` |
 | Claude Code native | PowerShell | `$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; ` |
 | Node.js Windows Installer | PowerShell | `$env:PATH = "$env:ProgramFiles\nodejs;$env:PATH"; ` |
+| Node.js Windows Installer | Git Bash | `export PATH="/c/Program Files/nodejs:$PATH" && ` |
 
 The Windows Installer folder `%ProgramFiles%\nodejs` is its default. If a command is still not found with the prefix, give the resume sentence and ask the person to restart (SKILL.md A9).
 
