@@ -159,7 +159,9 @@ L='export NVM_DIR="$HOME/.nvm"'
 [ -f "$F" ] && cp "$F" "$F.bak-$(date +%Y%m%d-%H%M%S)"
 grep -qF "$L" "$F" 2>/dev/null || echo "$L" >> "$F"
 tail -n 3 "$F"
-``` Git for Windows is optional on native Windows (it gives the Bash tool); WSL does not need it.
+```
+
+Git for Windows is optional on native Windows (it gives the Bash tool); WSL does not need it.
 
 ## MindrianOS
 
