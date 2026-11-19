@@ -20,6 +20,13 @@
       "description": "MindrianOS for Claude Desktop: Larry and the room tools in Cowork and the Code tab; Chat gets the skills and commands. In Claude Code, install mos instead.",
       "version": "2.0.0-beta.87",
       "source": "./plugins/mos-desktop"
+    },
+    {
+      "name": "get-mindrian",
+      "displayName": "Get MindrianOS",
+      "description": "Get MindrianOS: a skill that installs MindrianOS for you, or walks you through it one step at a time, in Claude Code, Claude Desktop or Codex.",
+      "version": "0.1.0",
+      "source": "./plugins/get-mindrian"
     }
   ]
 }

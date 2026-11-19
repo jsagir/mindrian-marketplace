@@ -63,6 +63,23 @@ A raw AI is the engine. MindrianOS is the operating system around it. For a one-
 
 ## Install
 
+### Let your AI install it
+
+Paste this sentence into Claude, ChatGPT, Gemini, Codex or any AI assistant:
+
+```
+Read https://raw.githubusercontent.com/jsagir/mindrian-marketplace/master/plugins/get-mindrian/skills/get-mindrian/SKILL.md and set up MindrianOS for me.
+```
+
+Or install the skill that does it, then say "set up MindrianOS":
+
+```
+/plugin install get-mindrian --marketplace jsagir/mindrian-marketplace
+claude plugin install get-mindrian --marketplace jsagir/mindrian-marketplace
+```
+
+The first line runs inside Claude Code, the second in a terminal. Either way, the assistant installs MindrianOS for you, or walks you through it one step at a time when it cannot run commands.
+
 ### npm (one line, recommended)
 
 ```bash
