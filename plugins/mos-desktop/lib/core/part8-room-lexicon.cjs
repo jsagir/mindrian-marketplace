@@ -72,6 +72,107 @@ function tokenize(s) {
   return String(s).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(function (t) { return t.length > 0; });
 }
 
+// Quick 261118-x1g (owner rulings 2026-11-19, OWNER-P and OWNER-REDUCE): the
+// room check for every profiled script. lib/core/part8-script-proof.cjs loads
+// only for a non-ASCII entry or question (a non-ASCII letter, digit or mark),
+// so an ASCII room and an ASCII question keep the START comparison, the START
+// entries and the hook cold start. A module failure while a non-ASCII entry
+// is built throws inside loadRoomLexicon's try block (ok:false, fail closed).
+const _X1G_NEED_RE = /(?![\x00-\x7F])[\p{L}\p{N}\p{M}]/u;
+let _x1gProof;
+function _x1gProofMod() {
+  if (_x1gProof === undefined) {
+    try { _x1gProof = require('./part8-script-proof.cjs'); } catch (_e) { _x1gProof = null; }
+  }
+  return _x1gProof;
+}
+let _x1gNormalize = null;
+function _x1gNormalizeEntry(text) {
+  if (!/[^\x00-\x7F]/.test(text)) return text;
+  if (!_x1gNormalize) _x1gNormalize = require('./part8-normalize.cjs');
+  return _x1gNormalize.normalizeForGuard(text);
+}
+// A caseless single token is kept for person, venture_name and room_name; for
+// room_term from the node types company, organization and product; and for
+// room_term or room_file in Han or Kana with 2 or more segments.
+function _x1gKeepCaseless(kind, clean, nodeType, sp) {
+  if (/[\p{Lu}\p{Ll}\p{Lt}]/u.test(clean)) return false;
+  if (kind === 'person' || kind === 'venture_name' || kind === 'room_name') return true;
+  if (kind === 'room_term' && (nodeType === 'company' || nodeType === 'organization' || nodeType === 'product')) return true;
+  if ((kind === 'room_term' || kind === 'room_file') && sp.hasSpacelessLetter(clean) && sp.countSpacelessWords(clean) >= 2) return true;
+  return false;
+}
+// The folded fields of a non-ASCII entry: the check-view tokens and needle,
+// and for Han or Kana the compact form (substring match).
+function _x1gFoldFields(entry, clean, sp) {
+  entry.ftokens = sp.lexTokens(clean);
+  entry.foldNeedle = ' ' + entry.ftokens.join(' ') + ' ';
+  if (sp.hasSpacelessLetter(clean)) entry.compact = sp.compactView(clean);
+  if (entry.kind === 'claim' && Array.isArray(entry.content) && !entry.cjkClaim) {
+    entry.fcontent = entry.content.map(function (t) { return sp.lexTokens(t).join(''); }).filter(function (t) { return t.length > 0; });
+  }
+  return entry;
+}
+// A Han or Kana claim: its content words are the Segmenter words of 2 or more
+// letters that are not closed vocabulary; it matches by strict majority.
+function _x1gCjkClaim(clean, tokens, g, sp) {
+  const content = sp.cjkClaimContent(clean).filter(function (t) {
+    return !g.QUESTION_FUNCTION_WORDS.has(t) && !g.METHODOLOGY_TOKEN_SET.has(t);
+  });
+  if (content.length < CLAIM_MIN_TOKENS) return null;
+  const entry = { kind: 'claim', text: clean, tokens: tokens, needle: ' ' + tokens.join(' ') + ' ', content: content,
+    need: Math.floor(content.length / 2) + 1, cjkClaim: true };
+  return _x1gFoldFields(entry, clean, sp);
+}
+// The script comparisons of matchLexicon, in order: the folded needle, the
+// token-wise match (T7: Hebrew and Arabic prefixes on the first entry token,
+// Korean particles, the W2 Latin part, the Cyrillic and Greek stem rule), the
+// confusable-folded question against every START needle, the compact
+// substring of a Han or Kana entry, and the claim majority on the folded
+// question. A Set of question-token variants prefilters the token-wise match.
+function _x1gMatch(str, entries, sp) {
+  const q = sp.lexTokens(str);
+  if (q.length === 0) return null;
+  const padded = ' ' + q.join(' ') + ' ';
+  const have = new Set(q);
+  const conf = tokenize(sp.confusableFold(sp.checkView(str)));
+  const confPadded = ' ' + conf.join(' ') + ' ';
+  const compactQ = sp.compactView(str);
+  const variants = new Set();
+  for (let i = 0; i < q.length; i += 1) sp.tokenVariants(q[i], { prefix: true }).forEach(function (v) { variants.add(v); });
+  for (let i = 0; i < entries.length; i += 1) {
+    const e = entries[i];
+    const ft = Array.isArray(e.ftokens) ? e.ftokens : e.tokens;
+    const fneedle = typeof e.foldNeedle === 'string' ? e.foldNeedle : e.needle;
+    if (padded.indexOf(fneedle) !== -1) return { token_class: e.kind, token_count: e.tokens.length, at: i };
+    if (ft.length > 0 && ft.length <= q.length) {
+      const e0 = ft[0];
+      const e3 = e0.slice(0, 3);
+      if (variants.has(e0) || q.some(function (t) { return t.slice(0, 3) === e3; })) {
+        for (let s = 0; s + ft.length <= q.length; s += 1) {
+          let ok = true;
+          for (let j = 0; ok && j < ft.length; j += 1) ok = sp.tokenMatches(q[s + j], ft[j], { first: j === 0 });
+          if (ok) return { token_class: e.kind, token_count: e.tokens.length, at: i };
+        }
+      }
+    }
+    if (confPadded.indexOf(e.needle) !== -1) return { token_class: e.kind, token_count: e.tokens.length, at: i };
+    if (typeof e.compact === 'string' && e.compact.length > 0 && e.kind !== 'claim' && compactQ.indexOf(e.compact) !== -1) {
+      return { token_class: e.kind, token_count: e.tokens.length, at: i };
+    }
+    if (e.kind === 'claim') {
+      let got = 0;
+      if (e.cjkClaim) {
+        for (let j = 0; j < e.content.length; j += 1) if (compactQ.indexOf(e.content[j]) !== -1) got += 1;
+      } else if (Array.isArray(e.fcontent)) {
+        for (let j = 0; j < e.fcontent.length; j += 1) if (have.has(e.fcontent[j])) got += 1;
+      }
+      if (got >= e.need) return { token_class: 'claim', token_count: got, at: i };
+    }
+  }
+  return null;
+}
+
 /**
  * _genericTokenSet(g) -> Set of lowercase tokens that name no room.
  * The union of the tokens of: the canonical framework phrases, the command
@@ -104,13 +205,143 @@ function _genericTokenSet(g) {
   return set;
 }
 
-/**
- * resolveLexiconRoom(opts) -> abs room dir | null. Never throws.
- */
-function resolveLexiconRoom(opts) {
+// ---------------------------------------------------------------------------
+// Plan 392-11 (P5, 392-SC5, F8): the session-owned lexicon room.
+//
+// The lexicon check protects the room of THIS session, not whichever room
+// another session last activated. With a session id the room is resolved
+// through resolveSessionRoom({sessionId, requireOwnership: true}) of
+// lib/core/resolve-active-room.cjs (the binding file under
+// <rooms home>/.rooms/sessions/<sessionId>.json); only its leg A
+// (session.primary) counts as bound. Its demoted leg B (reg.active) is the
+// fresh-session seed default for WRITES and is declined here: the owner rule
+// says an unbound session has an empty lexicon and is allowed, so two sessions
+// bound to different rooms never share a lexicon and an unbound session never
+// inherits a foreign room's words. Without a session id (the shim on Claude
+// Desktop and Cowork, or any process where CLAUDE_CODE_SESSION_ID is absent)
+// the machine-global active room is used, today's behaviour, and the result
+// says so: lexicon_scope machine_global.
+//
+// "Cannot check" blocks, it never allows: a binding file that does not parse,
+// a traversal-shaped session id, a throw anywhere, or a bound room whose
+// room.db cannot be read (fs.accessSync R_OK on the same path loadRoomLexicon
+// opens, or a non-file in its place) answers status unavailable, and the guard
+// blocks every payload kind with class room_check_unavailable.
+//
+// CLAUDE_ACTIVE_ROOM (the operator pin and the hermetic test seam) outranks
+// the registry in resolveActiveRoom and outranks the binding here too (reason
+// env_override, scope machine_global: it is a machine-wide pin).
+//
+// Result: { status: 'bound' | 'unbound' | 'unavailable', roomDir: string |
+// null, reason, lexicon_scope: 'session' | 'machine_global' }. Reasons:
+// session.primary, reg.active, env_override (bound); no_binding, room_missing,
+// no_active (unbound); resolver_error, room_unreadable (unavailable).
+// Never throws. LOCAL filesystem reads only (Canon Part 8 and 9).
+// ---------------------------------------------------------------------------
+const LEXICON_SCOPES = Object.freeze(['session', 'machine_global']);
+
+function _roomsHome(o) {
+  if (typeof o.home === 'string' && o.home.length > 0) return o.home;
+  const env = process.env.MINDRIAN_ROOMS_HOME;
+  if (typeof env === 'string' && env.length > 0) return env;
+  const os = require('node:os');
+  return path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), 'MindrianRooms');
+}
+
+// 'ok' when the room's db is readable or absent (a names-only lexicon),
+// 'room_unreadable' when a room.db exists and cannot be read as a file.
+function _probeRoomDb(roomDir) {
+  const dbFile = path.join(roomDir, '.mindrian', 'room.db');
+  if (!fs.existsSync(dbFile)) return 'ok';
   try {
-    const r = require('./resolve-active-room.cjs').resolveActiveRoom(opts || {});
-    return (r && typeof r.abs_path === 'string' && r.abs_path.length > 0) ? r.abs_path : null;
+    if (!fs.statSync(dbFile).isFile()) return 'room_unreadable';
+    fs.accessSync(dbFile, fs.constants.R_OK);
+    return 'ok';
+  } catch (_e) {
+    return 'room_unreadable';
+  }
+}
+
+function _envOverrideRoom() {
+  const raw = process.env.CLAUDE_ACTIVE_ROOM;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  try {
+    const v = require('./platform.cjs').windowsDrivePathToPosix(raw.trim());
+    return (v !== null && v.length > 0 && fs.existsSync(v)) ? v : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function resolveLexiconRoom(opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const hasSession = typeof o.sessionId === 'string' && o.sessionId.length > 0;
+  const scope = hasSession ? 'session' : 'machine_global';
+  const out = function (status, roomDir, reason, lexiconScope) {
+    return { status: status, roomDir: roomDir, reason: reason, lexicon_scope: lexiconScope || scope };
+  };
+  try {
+    const home = _roomsHome(o);
+    const rar = require('./resolve-active-room.cjs');
+
+    // The operator pin wins on every path (resolveActiveRoom does the same).
+    const pinned = _envOverrideRoom();
+    if (pinned) {
+      const probe = _probeRoomDb(pinned);
+      return probe === 'ok' ? out('bound', pinned, 'env_override', 'machine_global') : out('unavailable', pinned, probe, 'machine_global');
+    }
+
+    if (hasSession) {
+      // A session id that could climb out of the sessions folder cannot name
+      // a binding; refuse rather than guess. The test is the one
+      // session-binding.cjs isSafeSlug applies (no `..`), inlined so that
+      // module loads only when a binding file exists (the hook's fresh-process
+      // module count, tests/test-386-folder-memory-lazy-timeline.cjs LZ5).
+      if (o.sessionId.indexOf('..') !== -1) return out('unavailable', null, 'resolver_error');
+      const bindingFile = path.join(home, '.rooms', 'sessions', o.sessionId + '.json');
+      if (!fs.existsSync(bindingFile)) return out('unbound', null, 'no_binding');
+      // readSessionBinding collapses a corrupt file to the safe default (an
+      // unbound session). For the lexicon a corrupt binding is "cannot check".
+      let parsed;
+      try {
+        parsed = JSON.parse(fs.readFileSync(bindingFile, 'utf8'));
+      } catch (_e) {
+        return out('unavailable', null, 'resolver_error');
+      }
+      if (!parsed || typeof parsed !== 'object') return out('unavailable', null, 'resolver_error');
+      const hit = rar.resolveSessionRoom({ sessionId: o.sessionId, requireOwnership: o.requireOwnership === true, home: home });
+      if (hit && hit.source === 'session.primary' && typeof hit.abs_path === 'string' && hit.abs_path.length > 0) {
+        const probe = _probeRoomDb(hit.abs_path);
+        return probe === 'ok' ? out('bound', hit.abs_path, 'session.primary') : out('unavailable', hit.abs_path, probe);
+      }
+      // Leg B (reg.active) declined: no primary, or a primary whose room is
+      // not on disk (nothing there to protect).
+      const primary = (typeof parsed.primary === 'string' && parsed.primary.length > 0) ? parsed.primary : null;
+      return out('unbound', null, primary ? 'room_missing' : 'no_binding');
+    }
+
+    // Machine-global: the registry's active room (today's behaviour).
+    const active = rar.resolveActiveRoom({ home: home });
+    if (!active || typeof active.abs_path !== 'string' || active.abs_path.length === 0) return out('unbound', null, 'no_active');
+    const probe = _probeRoomDb(active.abs_path);
+    return probe === 'ok' ? out('bound', active.abs_path, 'reg.active') : out('unavailable', active.abs_path, probe);
+  } catch (_e) {
+    return out('unavailable', null, 'resolver_error');
+  }
+}
+
+/**
+ * resolveLexiconRoomDir(opts) -> abs room dir | null. Never throws.
+ * @deprecated Plan 392-11: the old bare-string form, kept for callers that
+ * pass no session (the guard's own in-process fallback when a caller gives no
+ * roomDir). It answers the machine-global active room; it cannot say
+ * "unavailable", so a caller that needs the fail-closed status must use
+ * resolveLexiconRoom. New code passes {sessionId} and reads status.
+ */
+function resolveLexiconRoomDir(opts) {
+  try {
+    const r = resolveLexiconRoom(opts);
+    return (r.status === 'bound' && typeof r.roomDir === 'string') ? r.roomDir : null;
   } catch (_e) {
     return null;
   }
@@ -128,10 +359,18 @@ function resolveLexiconRoom(opts) {
 // that union keeps the entry. Claim, person, venture_name and room_name entries
 // never pass this rule. Known residual: a word such as "segment" is in none of
 // the five sources, so a name that holds it still blocks.
-function makeEntry(kind, text, g) {
+// Quick 261118-x1g: nodeType (the room.db node type) decides the caseless
+// single-token rule; a non-ASCII entry goes through the guard normaliser first
+// and gets the folded fields; the length floor is 2 for Han and Kana.
+function makeEntry(kind, text, g, nodeType) {
   if (typeof text !== 'string') return null;
+  text = _x1gNormalizeEntry(text);
   const clean = text.replace(/\s+/g, ' ').trim();
-  if (clean.length < 3 || clean.length > 300) return null;
+  const x1gNeeds = _X1G_NEED_RE.test(clean);
+  const sp = x1gNeeds ? _x1gProofMod() : null;
+  if (x1gNeeds && !sp) throw new Error('the script proof could not load');
+  const x1gHanKana = sp !== null && sp.hasSpacelessLetter(clean);
+  if ((clean.length < 3 && !(x1gHanKana && clean.length === 2)) || clean.length > 300) return null;
   const lc = clean.toLowerCase();
   let rest = lc;
   const phrases = g.CANONICAL_PHRASES || [];
@@ -149,7 +388,12 @@ function makeEntry(kind, text, g) {
     const union = _genericTokenSet(g);
     if (tokens.every(function (t) { return union.has(t); })) return null;
   }
-  if (tokens.length === 1) {
+  if (kind === 'claim' && x1gHanKana) {
+    const cjk = _x1gCjkClaim(clean, tokens, g, sp);
+    if (cjk) return cjk;
+  }
+  const x1gKeep = tokens.length === 1 && sp !== null && _x1gKeepCaseless(kind, clean, nodeType, sp);
+  if (tokens.length === 1 && !x1gKeep) {
     if (kind === 'room_file' || kind === 'claim') return null;
     if (clean === lc && !/[0-9_-]/.test(clean)) return null; // a single lowercase plain word
   }
@@ -163,6 +407,7 @@ function makeEntry(kind, text, g) {
     entry.content = content;
     entry.need = Math.floor(content.length / 2) + 1;
   }
+  if (sp !== null) _x1gFoldFields(entry, clean, sp);
   return entry;
 }
 
@@ -214,7 +459,7 @@ function _readDbEntries(roomDir, g, push) {
       let props = null;
       try { props = JSON.parse(row.properties || '{}'); } catch (_e) { props = null; }
       if (!props || typeof props !== 'object') return;
-      if (NAME_TYPES[row.type]) push(NAME_TYPES[row.type], props.name || props.title);
+      if (NAME_TYPES[row.type]) push(NAME_TYPES[row.type], props.name || props.title, row.type);
       else if (CLAIM_TYPES.indexOf(row.type) !== -1) push('claim', props.text || props.statement);
       else if (ARTIFACT_TYPES.indexOf(row.type) !== -1) push('room_file', props.title || props.name);
     });
@@ -244,8 +489,8 @@ function loadRoomLexicon(roomDir, opts) {
     const g = _guardSets();
     const entries = [];
     const seen = new Set();
-    const push = function (kind, text) {
-      const e = makeEntry(kind, text, g);
+    const push = function (kind, text, nodeType) {
+      const e = makeEntry(kind, text, g, nodeType);
       if (!e) return;
       const id = e.kind + '|' + e.needle;
       if (seen.has(id)) return;
@@ -298,6 +543,15 @@ function matchLexicon(str, lexicon) {
       if (got >= e.need) return { token_class: 'claim', token_count: got, at: i };
     }
   }
+  // Quick 261118-x1g: the script comparisons run only for a question with a
+  // non-ASCII letter, digit or mark; an ASCII question keeps the START answer.
+  // The module cannot load: fail closed (a hit on the first entry).
+  if (_X1G_NEED_RE.test(str)) {
+    const sp = _x1gProofMod();
+    if (!sp) return { token_class: entries[0].kind, token_count: 1, at: 0 };
+    const x1gHit = _x1gMatch(str, entries, sp);
+    if (x1gHit) return x1gHit;
+  }
   return null;
 }
 
@@ -305,6 +559,8 @@ module.exports = {
   loadRoomLexicon: loadRoomLexicon,
   matchLexicon: matchLexicon,
   resolveLexiconRoom: resolveLexiconRoom,
+  resolveLexiconRoomDir: resolveLexiconRoomDir,
+  LEXICON_SCOPES: LEXICON_SCOPES,
   _resetLexiconCache: _resetLexiconCache,
   _genericTokenSet: _genericTokenSet,
   KINDS: KINDS,

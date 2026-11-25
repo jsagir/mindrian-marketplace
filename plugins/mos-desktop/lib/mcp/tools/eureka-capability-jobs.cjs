@@ -8,7 +8,8 @@ const crypto = require('node:crypto');
 const { z } = require('zod');
 const { Client } = require('@modelcontextprotocol/client');
 const { StdioClientTransport } = require('@modelcontextprotocol/client/stdio');
-const { registerEurekaTool, response, signalFromExtra, engineRootOrRefusal, engineRefusal, captureStartLine, startFailureRefusal, engineBusyRefusal, setBusyProbe, TEXT_WARNING_BYTES } = require('../eureka-tool-contract.cjs');
+const { registerEurekaTool, response, signalFromExtra, engineRootOrRefusal, engineRefusal, captureStartLine, startFailureRefusal, engineBusyRefusal, setBusyProbe, TEXT_WARNING_BYTES,
+  callOptions, isRequestTimeout, remainingMs, configuredDeadlineMs, engineTimeoutRefusal, CANCEL_DEADLINE_MS } = require('../eureka-tool-contract.cjs');
 const { resolveEngine, describeEngineState } = require('../../core/eureka/eureka-engine-resolver.cjs');
 const { clientOptions, resolveCapability, decodeResponse, ALLOWED_MCP_ROUTES, requestTooLarge, getCatalog, getContract } = require('./eureka-capability-run.cjs');
 const { resolveEffectiveSessionId } = require('../../core/session-binding.cjs');
@@ -189,6 +190,9 @@ async function launchJob(params, deps = {}) {
   // the engine only through this function.
   const busy = engineBusyRefusal();
   if (busy) return busy;
+  // Phase 392 plan 07: the configured workflow deadline rides on every call of this session (timeout and
+  // maxTotalTimeout), else the client default of 60 s wins. The session keeps it for its lifecycle calls.
+  const callDeadlineMs = configuredDeadlineMs(env, 'MINDRIAN_EUREKA_WORKFLOW_TIMEOUT_MS', 900000);
   activeStarts += 1;
   const Transport = deps.StdioClientTransport || StdioClientTransport;
   const McpClient = deps.Client || Client;
@@ -203,7 +207,7 @@ async function launchJob(params, deps = {}) {
     await client.connect(transport);
     connected = true;
     capture.stop();
-    const catalogResponse = await getCatalog(client, rootResult.root, signal);
+    const catalogResponse = await getCatalog(client, rootResult.root, signal, callOptions(callDeadlineMs, signal));
     if (!catalogResponse.ok) return catalogResponse;
     const resolved = resolveCapability(catalogResponse.result, args.capability_id);
     if (!resolved.ok) return resolved;
@@ -220,7 +224,7 @@ async function launchJob(params, deps = {}) {
       return { ok: false, reason: 'capability_requires_approval',
         message: 'This capability starts only after a person approves a plan card. Use eureka_capability_start.' };
     }
-    const contractResponse = await getContract(client, rootResult.root, capability.id, signal);
+    const contractResponse = await getContract(client, rootResult.root, capability.id, signal, callOptions(callDeadlineMs, signal));
     if (!contractResponse.ok) return contractResponse;
     const contract = contractResponse.result;
     if (!contract || !contract.capability || contract.capability.id !== capability.id || !contract.schemas?.input || !contract.schemas?.output) {
@@ -229,7 +233,7 @@ async function launchJob(params, deps = {}) {
     const callArguments = route === 'scout_run_workflow'
       ? { capability_id: capability.id, request: args.request }
       : { request: args.request, ...(args.idempotency_key ? { idempotency_key: args.idempotency_key } : {}) };
-    const startedResponse = decodeResponse(await client.callTool({ name: route, arguments: callArguments }, { signal }), 'Eureka rejected the capability request.');
+    const startedResponse = decodeResponse(await client.callTool({ name: route, arguments: callArguments }, callOptions(callDeadlineMs, signal)), 'Eureka rejected the capability request.');
     if (!startedResponse.ok) return startedResponse;
     const started = startedResponse.result;
     // The pair screen answers a refusal as a normal result (status refused). It shows the plugin's own sentence.
@@ -246,12 +250,14 @@ async function launchJob(params, deps = {}) {
       session_key_hash: owner.sessionKeyHash, room_id: owner.roomId,
       expires_at: Date.now() + SESSION_TTL_MS, timer: null,
       last_status: typeof started.status === 'string' && started.status ? started.status : 'queued', observed: false,
+      call_deadline_ms: callDeadlineMs,
     };
     session.timer = setTimeout(() => { void expireSession(session.job_id); }, SESSION_TTL_MS);
     if (session.timer.unref) session.timer.unref();
     sessions.set(session.job_id, session);
     retained = true;
     const persisted = persistRecord({ session, args, owner, started, env });
+    attachEviction(session);
     return {
       ok: true, capability_id: session.capability_id, job_id: session.job_id,
       ...(persisted ? { record_persisted: true } : { record_persisted: false, record_note: RECORD_NOTE_FAILED }),
@@ -263,6 +269,8 @@ async function launchJob(params, deps = {}) {
     };
   } catch (error) {
     if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'Eureka job start was cancelled.' };
+    // Phase 392 plan 07: a request past the deadline while connected is a timeout, never a start failure.
+    if (connected && isRequestTimeout(error)) return engineTimeoutRefusal(callDeadlineMs, 'job start');
     // Typed refusal from fixed sentences: no raw spawn text, no path (Plans 387-05 and 387-11). The start line
     // is used only when the connect itself failed, before the engine received any request.
     if (capture) { capture.stop(); if (!connected) await capture.settle(); }
@@ -358,6 +366,21 @@ function notFoundAnswer() {
   return { ...base, engine_state: engine.state, ...(d.cause ? { cause: d.cause } : {}), fix: d.fix, message: base.message + ' ' + sentence };
 }
 
+// Phase 392 plan 07: a retained session whose transport closes or fails leaves the session map at once, so a
+// dead engine child never counts against MAX_ACTIVE_SESSIONS until the 30 minute expiry. The client calls
+// its onclose after the transport is gone, so the close inside closeSession is a no-op then.
+function attachEviction(session) {
+  const evict = () => {
+    if (sessions.get(session.job_id) === session) void closeSession(session.job_id);
+  };
+  session.client.onclose = evict;
+  session.client.onerror = evict;
+}
+
+function lifecycleTimeout(session, subject) {
+  return { ...engineTimeoutRefusal(session.call_deadline_ms, subject), capability_id: session.capability_id, job_id: session.job_id, persistence: 'eureka_job_store_only' };
+}
+
 function getSession(jobId, caller) {
   const session = sessions.get(jobId);
   if (!session) return notFoundAnswer();
@@ -377,11 +400,13 @@ async function jobStatus(args, extra, deps = {}) {
   if (!found.ok) return found.reason === 'job_session_not_found' ? recover('status', args.job_id, caller, extra, deps, found) : found;
   const { session } = found;
   let responseResult;
-  try { responseResult = decodeResponse(await session.client.callTool({
-    name: 'scout_status', arguments: { job_id: session.job_id },
-  }, { signal: signalFromExtra(extra) }), 'Eureka could not read job status.'); }
-  catch (_error) { noteUnreachable(session); return { ok: false, reason: 'engine_status_error', capability_id: session.capability_id, job_id: session.job_id,
-    persistence: 'eureka_job_store_only', message: 'Eureka could not read job status.' }; }
+  try { responseResult = decodeResponse(await session.client.callTool({ name: 'scout_status', arguments: { job_id: session.job_id } }, callOptions(session.call_deadline_ms, signalFromExtra(extra))), 'Eureka could not read job status.'); }
+  catch (error) {
+    if (isRequestTimeout(error)) return lifecycleTimeout(session, 'job status');
+    noteUnreachable(session);
+    return { ok: false, reason: 'engine_status_error', capability_id: session.capability_id, job_id: session.job_id,
+      persistence: 'eureka_job_store_only', message: 'Eureka could not read job status.' };
+  }
   if (!responseResult.ok) return { ...responseResult, capability_id: session.capability_id, job_id: session.job_id,
     persistence: 'eureka_job_store_only' };
   noteStatus(session, responseResult.result.status);
@@ -461,11 +486,13 @@ async function fetchResult(args, extra, deps = {}) {
   if (!found.ok) return found.reason === 'job_session_not_found' ? recover('result', args.job_id, caller, extra, deps, found) : found;
   const { session } = found;
   let resultResponse;
-  try { resultResponse = decodeResponse(await session.client.callTool({
-    name: 'scout_result', arguments: { job_id: session.job_id },
-  }, { signal: signalFromExtra(extra) }), 'Eureka could not retrieve the job result.'); }
-  catch (_error) { noteUnreachable(session); return { ok: false, reason: 'engine_result_error', capability_id: session.capability_id, job_id: session.job_id,
-    persistence: 'eureka_job_store_only', message: 'Eureka could not retrieve the job result.' }; }
+  try { resultResponse = decodeResponse(await session.client.callTool({ name: 'scout_result', arguments: { job_id: session.job_id } }, callOptions(session.call_deadline_ms, signalFromExtra(extra))), 'Eureka could not retrieve the job result.'); }
+  catch (error) {
+    if (isRequestTimeout(error)) return lifecycleTimeout(session, 'job result');
+    noteUnreachable(session);
+    return { ok: false, reason: 'engine_result_error', capability_id: session.capability_id, job_id: session.job_id,
+      persistence: 'eureka_job_store_only', message: 'Eureka could not retrieve the job result.' };
+  }
   if (!resultResponse.ok) return { ...resultResponse, capability_id: session.capability_id, job_id: session.job_id,
     persistence: 'eureka_job_store_only' };
   const result = resultResponse.result;
@@ -563,11 +590,13 @@ async function cancelJob(args, extra, deps = {}) {
   if (!found.ok) return found.reason === 'job_session_not_found' ? recover('cancel', args.job_id, caller, extra, deps, found) : found;
   const { session } = found;
   let cancelResponse;
-  try { cancelResponse = decodeResponse(await session.client.callTool({
-    name: 'scout_cancel', arguments: { job_id: session.job_id },
-  }, { signal: signalFromExtra(extra) }), 'Eureka could not request job cancellation.'); }
-  catch (_error) { noteUnreachable(session); return { ok: false, reason: 'engine_cancel_error', capability_id: session.capability_id,
-    job_id: session.job_id, persistence: 'eureka_job_store_only', message: 'Eureka could not request job cancellation.' }; }
+  try { cancelResponse = decodeResponse(await session.client.callTool({ name: 'scout_cancel', arguments: { job_id: session.job_id } }, callOptions(session.call_deadline_ms, signalFromExtra(extra))), 'Eureka could not request job cancellation.'); }
+  catch (error) {
+    if (isRequestTimeout(error)) return lifecycleTimeout(session, 'job cancel');
+    noteUnreachable(session);
+    return { ok: false, reason: 'engine_cancel_error', capability_id: session.capability_id,
+      job_id: session.job_id, persistence: 'eureka_job_store_only', message: 'Eureka could not request job cancellation.' };
+  }
   if (!cancelResponse.ok) return { ...cancelResponse, capability_id: session.capability_id,
     job_id: session.job_id, persistence: 'eureka_job_store_only' };
   return { ok: true, capability_id: session.capability_id, job_id: session.job_id,
@@ -651,6 +680,9 @@ async function recover(operation, jobId, caller, extra, deps, notFound) {
   if (!rootResult.ok) return rootResult;
   const signal = signalFromExtra(extra);
   if (signal && signal.aborted) return { ok: false, reason: 'cancelled', message: 'The Eureka job read was cancelled before launch.' };
+  // Quick 261118-vbv: the plan 392-07 deadline rides on the recovery calls too (timeout and maxTotalTimeout),
+  // else the client default of 60 s wins. A request timeout answers engine_timeout, not an engine error.
+  const callDeadlineMs = configuredDeadlineMs(env, 'MINDRIAN_EUREKA_WORKFLOW_TIMEOUT_MS', 900000);
   // Phase 374 plan 11: recovery opens ONE short child (EXT-02 accepts that risk when nothing runs here). While a job
   // of THIS process runs, that child could end it, so recovery waits. Cancel and a terminal record never get here.
   const busy = engineBusyRefusal();
@@ -663,8 +695,9 @@ async function recover(operation, jobId, caller, extra, deps, notFound) {
   try {
     if (operation === 'status') {
       let statusResponse;
-      try { statusResponse = decodeResponse(await client.callTool({ name: 'scout_status', arguments: { job_id: jobId } }, { signal }), 'Eureka could not read job status.'); }
-      catch (_error) { return { ok: false, reason: 'engine_status_error', capability_id: view.capability_id, job_id: view.job_id,
+      try { statusResponse = decodeResponse(await client.callTool({ name: 'scout_status', arguments: { job_id: jobId } }, callOptions(callDeadlineMs, signal)), 'Eureka could not read job status.'); }
+      catch (error) { if (isRequestTimeout(error)) return { ...engineTimeoutRefusal(callDeadlineMs, 'job status'), capability_id: view.capability_id, job_id: view.job_id, persistence: 'eureka_job_store_only', ...recovered };
+        return { ok: false, reason: 'engine_status_error', capability_id: view.capability_id, job_id: view.job_id,
         persistence: 'eureka_job_store_only', message: 'Eureka could not read job status.', ...recovered }; }
       if (!statusResponse.ok) return { ...statusResponse, capability_id: view.capability_id, job_id: view.job_id, persistence: 'eureka_job_store_only', ...recovered };
       const state = statusResponse.result || {};
@@ -676,8 +709,9 @@ async function recover(operation, jobId, caller, extra, deps, notFound) {
     }
     // operation is result
     let resultResponse;
-    try { resultResponse = decodeResponse(await client.callTool({ name: 'scout_result', arguments: { job_id: jobId } }, { signal }), 'Eureka could not retrieve the job result.'); }
-    catch (_error) { return { ok: false, reason: 'engine_result_error', capability_id: view.capability_id, job_id: view.job_id,
+    try { resultResponse = decodeResponse(await client.callTool({ name: 'scout_result', arguments: { job_id: jobId } }, callOptions(callDeadlineMs, signal)), 'Eureka could not retrieve the job result.'); }
+    catch (error) { if (isRequestTimeout(error)) return { ...engineTimeoutRefusal(callDeadlineMs, 'job result'), capability_id: view.capability_id, job_id: view.job_id, persistence: 'eureka_job_store_only', ...recovered };
+      return { ok: false, reason: 'engine_result_error', capability_id: view.capability_id, job_id: view.job_id,
       persistence: 'eureka_job_store_only', message: 'Eureka could not retrieve the job result.', ...recovered }; }
     if (!resultResponse.ok) return { ...resultResponse, capability_id: view.capability_id, job_id: view.job_id, persistence: 'eureka_job_store_only', ...recovered };
     const result = resultResponse.result;
@@ -690,7 +724,7 @@ async function recover(operation, jobId, caller, extra, deps, notFound) {
     }
     let contract;
     try {
-      const contractResponse = await getContract(client, rootResult.root, view.capability_id, signal);
+      const contractResponse = await getContract(client, rootResult.root, view.capability_id, signal, callOptions(callDeadlineMs, signal));
       if (contractResponse.ok && contractResponse.result && contractResponse.result.schemas) contract = contractResponse.result.schemas;
     } catch (_error) { contract = undefined; }
     const answer = shapeResult(result, { ...view, contract });
@@ -713,11 +747,11 @@ async function closeSession(jobId) {
 async function expireSession(jobId) {
   const session = sessions.get(jobId);
   if (!session) return false;
-  try { await session.client.callTool({ name: 'scout_cancel', arguments: { job_id: jobId } }); } catch (_error) { /* continue bounded cleanup */ }
+  try { await session.client.callTool({ name: 'scout_cancel', arguments: { job_id: jobId } }, callOptions(CANCEL_DEADLINE_MS)); } catch (_error) { /* continue bounded cleanup */ }
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     try {
-      const status = decodeResponse(await session.client.callTool({ name: 'scout_status', arguments: { job_id: jobId } }), 'status unavailable');
+      const status = decodeResponse(await session.client.callTool({ name: 'scout_status', arguments: { job_id: jobId } }, callOptions(remainingMs(deadline))), 'status unavailable');
       if (status.ok && TERMINAL.has(status.result.status)) break;
     } catch (_error) { break; }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -750,9 +784,10 @@ function forgetLocal(jobId, roomId, env) {
 
 // Ask the engine through client: status first (a run that has not ended is refused), then the delete.
 // Returns { answer } for a refusal or { engineDeleted } on success. Never returns engine text.
-async function forgetOnEngine(client, jobId, view, signal) {
+// Quick 261118-vbv: deadlineMs (the plan 392-07 deadline) rides on both calls; a timeout keeps engine_forget_error.
+async function forgetOnEngine(client, jobId, view, signal, deadlineMs) {
   let statusResponse;
-  try { statusResponse = decodeResponse(await client.callTool({ name: 'scout_status', arguments: { job_id: jobId } }, { signal }), 'Eureka could not read job status.'); }
+  try { statusResponse = decodeResponse(await client.callTool({ name: 'scout_status', arguments: { job_id: jobId } }, callOptions(deadlineMs, signal)), 'Eureka could not read job status.'); }
   catch (_error) { statusResponse = { ok: false }; }
   if (!statusResponse.ok) return { answer: { ok: false, reason: 'engine_forget_error', ...view, message: FORGET_ENGINE_ERROR } };
   const status = statusResponse.result && statusResponse.result.status;
@@ -760,7 +795,7 @@ async function forgetOnEngine(client, jobId, view, signal) {
     return { answer: { ok: false, reason: 'job_not_finished', ...view, message: FORGET_NOT_FINISHED }, status };
   }
   let deleteResponse;
-  try { deleteResponse = decodeResponse(await client.callTool({ name: 'scout_delete_job', arguments: { job_id: jobId } }, { signal }), 'Eureka could not delete the job.'); }
+  try { deleteResponse = decodeResponse(await client.callTool({ name: 'scout_delete_job', arguments: { job_id: jobId } }, callOptions(deadlineMs, signal)), 'Eureka could not delete the job.'); }
   catch (_error) { deleteResponse = { ok: false }; }
   if (!deleteResponse.ok) return { answer: { ok: false, reason: 'engine_forget_error', ...view, message: FORGET_ENGINE_ERROR } };
   return { engineDeleted: !(deleteResponse.result && deleteResponse.result.deleted === false), status };
@@ -783,7 +818,7 @@ async function forgetJob(args, extra, deps = {}) {
     // A live session of this process: the retained client makes the call, so no extra child opens.
     const { session } = found;
     const view = { capability_id: session.capability_id, job_id: session.job_id };
-    const done = await forgetOnEngine(session.client, session.job_id, view, signal);
+    const done = await forgetOnEngine(session.client, session.job_id, view, signal, session.call_deadline_ms);
     if (done.answer) {
       if (done.status !== undefined) noteStatus(session, done.status);
       return done.answer;
@@ -809,7 +844,7 @@ async function forgetJob(args, extra, deps = {}) {
     clientName: 'mindrian-os-eureka-job-forget', signal, env, cancelledMessage: 'The Eureka forget was cancelled.' });
   if (opened.answer) return opened.answer;
   try {
-    const done = await forgetOnEngine(opened.client, record.job_id, view, signal);
+    const done = await forgetOnEngine(opened.client, record.job_id, view, signal, configuredDeadlineMs(env, 'MINDRIAN_EUREKA_WORKFLOW_TIMEOUT_MS', 900000));
     if (done.answer) {
       if (done.status !== undefined) touchRecord(env, caller.roomId, record.job_id, { last_status: done.status, terminal: false });
       return { ...done.answer, ...(done.answer.reason === 'engine_forget_error' ? {} : { engine_note: FORGET_CHILD_NOTE }) };
