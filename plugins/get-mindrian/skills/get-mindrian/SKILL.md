@@ -66,6 +66,7 @@ Route A (Claude Code in a terminal), every item is true:
 - The status check prints `PASS A7 auto-update on`, or the person said no.
 - The status check prints `PASS A8 rooms folder exists` for the chosen folder. If it is not `~/MindrianRooms`, `env.MINDRIAN_ROOMS_HOME` in `~/.claude/settings.json` names it.
 - The status check prints `PASS A8 shortcut`, or the person said no.
+- The status check prints `PASS A8 Larry pinned in rooms folder`, or the person said no.
 - If the person said yes to Eureka: the doctor line that starts with `Eureka engine:` says `ready` (for example `Eureka engine: ready for the graph tools`).
 - After the restart: `PASS A9 onboarding marker`, and `PASS A9 persona file` or the person chose Skip in onboarding Step 4.
 - `PASS A9 first room`: the room registry has at least one room.
@@ -88,7 +89,7 @@ Other end states, all honest: you stopped because access was refused (see "Acces
 - [ ] Know the system (section 1).
 - [ ] Get the yes at consent point 1 (scope and missing tools).
 - [ ] Install or update the tools and MindrianOS, and prove it with the doctor.
-- [ ] Get the yes at consent point 2 and set the choices: updates, rooms folder, shortcut, Eureka.
+- [ ] Get the yes at consent point 2 and set the choices: updates, rooms folder, shortcut, the Larry pin, Eureka.
 - [ ] Hand over: restart, onboarding with the persona, the first room.
 
 Routes B and D map the same list: section 1 comes before B0, consent point 1 is B0, the doctor is B9, the choices are B7 (rooms folder) and B11 (updates). Route B offers no shortcut and no Eureka.
@@ -130,7 +131,7 @@ Use your own web search or browsing tool, if you have one, for dependency and pl
 
 ## Route A: Claude Code in a terminal
 
-**A0. Resume check.** Run `node --version` and `claude --version`. If `node` is not found or is older than 22.18.0, go to A1 (the status check needs Node). Else run the status check from commands.md. All are read-only. Only if the status check prints `PASS A4`, also run the read-only doctor (`npx --yes @mindrian_os/cli doctor`). Skip every step whose check passes. Only if the person pasted the resume sentence, or `PASS A4` already shows: for each FAIL line that allows a "no" (auto-update, shortcut, and the persona file once `PASS A9 onboarding marker` shows), ask once whether they said no before; a "no" counts as done. Tell the person which steps are left. If the only FAIL lines left are A9 lines or the auto-update line (way b), go to A10 (route C: go to route C step 4).
+**A0. Resume check.** Run `node --version` and `claude --version`. If `node` is not found or is older than 22.18.0, go to A1 (the status check needs Node). Else run the status check from commands.md. All are read-only. Only if the status check prints `PASS A4`, also run the read-only doctor (`npx --yes @mindrian_os/cli doctor`). Skip every step whose check passes. Only if the person pasted the resume sentence, or `PASS A4` already shows: for each FAIL line that allows a "no" (auto-update, shortcut, the Larry pin, and the persona file once `PASS A9 onboarding marker` shows), ask once whether they said no before; a "no" counts as done. Tell the person which steps are left. If the only FAIL lines left are A9 lines or the auto-update line (way b), go to A10 (route C: go to route C step 4).
 
 **A1. Consent point 1.** Use the A0 results, or run the read-only tool checks: `node --version` (MindrianOS needs 22.18.0 or newer) and `claude --version` (Claude Code must be on PATH). uv and Python are only for the optional Eureka engine: do not check or install them now; A7 asks about Eureka.
 Then show the scope in 3 lines and the list of missing tools with the command for each, from commands.md. Get one yes. The scope:
@@ -159,10 +160,12 @@ If the install fails, run the fallback yourself from the shell: `claude plugin m
 2. Rooms folder: `~/MindrianRooms` (Windows: `%USERPROFILE%\MindrianRooms`). This is the plugin default, so there is nothing else to set. Warn: do not pick a folder that OneDrive, iCloud Drive, Dropbox or Google Drive syncs; a sync tool can copy a room's database while it is in use, and that copy can be corrupt. On a Mac, Desktop and Documents are synced when the iCloud Drive option for Desktop and Documents folders is on. If the person wants Documents, ask whether that option is on (Apple menu, System Settings, the person's name, iCloud, iCloud Drive); if it is on or they do not know, recommend `~/MindrianRooms`. If the person still wants another place after the warning, it is their choice: use a folder named `MindrianRooms` inside it (for example `~/Documents/MindrianRooms`), set `env.MINDRIAN_ROOMS_HOME` with the settings script, and name the sync risk again in the end summary.
 3. A shortcut to the rooms folder on the Desktop (also Quick Access on Windows; on a Mac the Finder sidebar is an optional by-hand step). Commands per system are in commands.md.
 4. Eureka engine: no (the default). "Do you want the optional Eureka engine now? Its setup downloads a model and installs Python packages, and it can install uv and Python itself. You can add it later."
+5. Larry as the running agent in the rooms folder: on. Say it plainly: "So that Larry answers every session you start in your rooms folder, I add one setting to a settings file inside that folder. Your other folders and your own Claude Code settings stay as they are, and one command takes it out again." The setting is the documented `"agent": "mos:larry-extended"` in `<rooms folder>/.claude/settings.json` (the pin script in commands.md). Why it is needed: the plugin also names Larry as its default agent, but Claude Code deprecated that plugin default in version 2.1.323, and an agent the person set for all their projects would win over it. Inside the rooms folder the pin wins over both. If the status check printed an `INFO user-wide agent` line, say this before the yes: "You have set the agent <name> for all your projects. Inside the rooms folder Larry will answer in its place; everywhere else yours stays." The apply also writes a small record file next to the settings file, and a backup if the settings file already existed.
 
 **A8. Apply each choice and prove it.**
 - Auto-update: run the settings script with `preview`, show it, get the yes, run it with `apply`. Confirm `PASS A7 auto-update on`.
 - Rooms folder: create only the empty folder (commands.md, "Rooms folder"). Never create a room, a ROOM.md or a registry entry yourself; the first room comes only from `/mos:ignite` or `/mos:rooms new <name>` in A10. Confirm `PASS A8 rooms folder exists`.
+- Larry pin (after the rooms folder exists, and after `MINDRIAN_ROOMS_HOME` is set when the folder is in another place): run the pin script with `preview`, show it, get the yes, run it with `apply`. Confirm `PASS A8 Larry pinned in rooms folder`. Never change an `agent` key outside the rooms folder. If the script prints `OVERRIDDEN BY`, or the FAIL line says `(from settings.local.json)`, that file is the person's own override: show the line and ask before anything changes.
 - Shortcut: run the block for the system with the chosen folder, then its check line; the block's check line decides. If the block fails, guide the person to make it by hand (commands.md). It is optional.
 - Eureka yes: run `npx --yes @mindrian_os/cli --eureka --yes` (the second `--yes` answers the installer's Eureka question; the A7 yes covers it). The engine setup prints a card and can install uv and Python itself, so do not check `python3` first. Then run the doctor and check the `Eureka engine:` line. Eureka no: tell the person they can add it later inside Claude Code with `/mos:eureka enable engine --setup`.
 - Run the doctor again (A5) after the choices.
@@ -175,7 +178,7 @@ The line for the shell: macOS, Linux, WSL and Git Bash `cd ~/MindrianRooms && cl
 **A10. In the new session.** The person pasted the resume sentence, and A0 found only A9 lines or the auto-update line left (any other FAIL: do that step first). Guide one step at a time, and check each answer:
 1. Ask whether a line that starts with `⬡ MindrianOS` shows at the bottom of the terminal. If not, ask the person to type `/mos:doctor --statusline-visibility`, then `/mos:doctor --fix`. The line is not required for the rest of the steps.
 2. If `A7 auto-update on` is FAIL and the person did not say no, run the auto-update script with `preview`; on `NO ENTRY`, ask once whether they want the `/plugin` toggle (way b), guide it, then run the status check.
-3. Ask the person to type `/mos:onboard`. In Step 4, Larry asks "who are you"; the person answers or chooses Skip.
+3. Ask the person to type `/mos:onboard`. In Step 4, Larry asks "who are you"; the person answers or chooses Skip. Larry's replies open with Larry's sign. If they do not, run the status check. On `FAIL A8 Larry pinned in rooms folder` (and no earlier "no"): run the pin script with `preview`, show it, get the yes, run it with `apply`, then give the A9 hand-over again (the resume sentence, quit, start in the rooms folder). On `PASS` with the sign still missing: the session started before the pin was written, so give the A9 hand-over again. In any folder, also after a "no" to the pin, `claude --agent mos:larry-extended` starts Larry for that one session, whatever the settings say.
 4. When Larry offers to start a room, the person picks it. That runs `/mos:ignite`, which makes the first room. The person can also type `/mos:rooms new <name>` at any time.
 5. Run the status check and confirm every DONE WHEN item.
 
@@ -223,7 +226,7 @@ Say this in your own words, in 2 sentences: "I cannot install MindrianOS from th
 
 - No at consent point 1, or no to a required tool (Node.js or Claude Code): stop the install. Say what is not installed and the one step they can run later (the start sentence). Do not retry.
 - No to the PATH fix: in every line the person types, use the full path `~/.local/bin/claude` (Windows: `%USERPROFILE%\.local\bin\claude.exe`) in place of `claude`, and name it at the end.
-- No to a choice in A7 (auto-update, another rooms folder, shortcut, Eureka): skip that choice, keep the default, and continue. Name it at the end.
+- No to a choice in A7 (auto-update, another rooms folder, shortcut, the Larry pin, Eureka): skip that choice, keep the default, and continue. Name it at the end.
 - The plan does not include Claude Code (route A or C), or neither Cowork nor the Code tab (route B): stop. Say that Larry and the rooms need one of them, that Chat alone gets only the skills and commands, and that a paid plan (Pro or higher) opens them. Give the start sentence for later.
 - A denied approval prompt (Claude Code or a sandbox): the step did not run. Ask once whether they want to approve it. If no, treat it as a no to that step, as above.
 
@@ -258,6 +261,7 @@ The most common cases. The reference file has more rows and the check for each.
 | The doctor still shows a warning after `--fix` | Report the line exactly as printed. Do not patch files by hand. Open the reference. | the Summary shows 0 warnings, or the warning is reported as open |
 | Desktop: "Marketplace sync failed" | See the note at the end of route B. | `mindrian-marketplace` is in the plugin list |
 | No `⬡ MindrianOS` line after the restart | `/mos:doctor --statusline-visibility`, then `/mos:doctor --fix`, then restart. Desktop has no status line by design. | the line shows at the bottom of the terminal |
+| Claude Code answers without Larry's sign in the rooms folder | Run the status check. On `FAIL A8 Larry pinned in rooms folder`, run the pin script (Needs a yes), then restart Claude Code in the rooms folder. | a reply opens with Larry's sign |
 | A sandbox blocks a command (route C) | Ask the person to approve it. Do not work around it. | the command runs |
 
 ## What to say at the end

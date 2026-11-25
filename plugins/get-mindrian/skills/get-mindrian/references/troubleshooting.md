@@ -226,6 +226,11 @@ Source: https://code.claude.com/docs/en/setup. Which method installed Claude Cod
 - Fix: 1. Run `/mos:doctor --statusline-visibility`. 2. Run `/mos:doctor --fix`. 3. Restart Claude Code. If it is still missing, note it and continue: the line is not needed for Larry or the rooms.
 - Check: the line shows at the bottom of the terminal.
 
+### Claude Code answers without Larry's sign (no colored square, no `Larry | MindrianOS`)
+- Cause: Larry is not the running agent of this session. The session was started outside the rooms folder, the Larry pin is not in the rooms folder, or a `settings.local.json` in the rooms folder names another agent.
+- Fix: 1. Start Claude Code in the rooms folder (SKILL.md A9 has the line for each shell). 2. Run the status check. On `FAIL A8 Larry pinned in rooms folder`, run the pin script in commands.md (**Needs a yes**), then restart Claude Code. 3. For one session in any folder: `claude --agent mos:larry-extended`. 4. To take the pin out again: the same pin script with `undo`.
+- Check: the status check prints `PASS A8 Larry pinned in rooms folder`, and a reply opens with Larry's sign.
+
 ### A room is "missing"
 - Cause: rooms live in the rooms folder (`~/MindrianRooms`, Windows `%USERPROFILE%\MindrianRooms`, or the folder that `MINDRIAN_ROOMS_HOME` names), not in the folder the terminal was in.
 - Fix: 1. Run `/mos:rooms` to list the rooms. 2. Open the rooms folder.
