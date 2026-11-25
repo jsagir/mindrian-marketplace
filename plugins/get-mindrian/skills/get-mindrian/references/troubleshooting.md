@@ -228,7 +228,7 @@ Source: https://code.claude.com/docs/en/setup. Which method installed Claude Cod
 
 ### Claude Code answers without Larry's sign (no colored square, no `Larry | MindrianOS`)
 - Cause: Larry is not the running agent of this session. The session was started outside the rooms folder, the Larry pin is not in the rooms folder, or a `settings.local.json` in the rooms folder names another agent.
-- Fix: 1. Start Claude Code in the rooms folder (SKILL.md A9 has the line for each shell). 2. Run the status check. On `FAIL A8 Larry pinned in rooms folder`, run the pin script in commands.md (**Needs a yes**), then restart Claude Code. 3. For one session in any folder: `claude --agent mos:larry-extended`. 4. To take the pin out again: the same pin script with `undo`.
+- Fix: 1. Start Claude Code in the rooms folder (SKILL.md A9 has the line for each shell). 2. Run the status check. On `FAIL A8 Larry pinned in rooms folder`, run the pin script in commands.md (**Needs a yes**), then restart Claude Code. 3. For one session in any folder: `claude --agent mos:larry-extended`. 4. To take the pin out again: the same pin script with `undo`; if it prints `LEFT AS IT IS`, delete the `agent` line in `<rooms folder>/.claude/settings.json` by hand.
 - Check: the status check prints `PASS A8 Larry pinned in rooms folder`, and a reply opens with Larry's sign.
 
 ### A room is "missing"
